@@ -27,9 +27,10 @@ This engine is not:
 2. Every state change creates a new version object.
 3. Version history is a DAG via `parents: Vec<VersionId>`.
 4. Persist version objects by content hash (`blake3`).
-5. Use atomic file replacement for index updates (`heads.json`, `nodes.json`).
+5. Use atomic file replacement for index snapshot updates (`index/state.json`).
 6. Keep behavior deterministic and explicit.
 7. Prefer minimal dependencies and simple data structures.
+8. Default storage root must be project-local: `<project>/.M2W/memory`.
 
 ## Repository Anchors
 
@@ -45,16 +46,32 @@ Read these first before major changes:
 ## Storage Contract
 
 Data layout:
-- `data/index/nodes.json`
-- `data/index/heads.json`
-- `data/objects/<hash_prefix>/<version_hash>.json`
+- `<project>/.M2W/memory/index/state.json`
+- `<project>/.M2W/memory/index/heads.json` (compat mirror)
+- `<project>/.M2W/memory/index/nodes.json` (compat mirror)
+- `<project>/.M2W/memory/objects/<hash_prefix>/<version_hash>.json`
 
 Write path:
 1. Build new `NodeVersion` in memory.
 2. Serialize and hash content.
 3. Write object file if absent (dedupe by hash).
-4. Atomically update `heads.json` and `nodes.json`.
+4. Atomically commit `index/state.json` (and keep compatibility mirrors in sync).
 5. Rebuild or incrementally update graph index.
+
+## Runtime and CLI Contract
+
+Preferred execution modes:
+1. One-shot CLI:
+   - `agent_memory --project /path/to/project --action '<json>'`
+   - `agent_memory --project /path/to/project --action-file action.json`
+2. Runtime process mode:
+   - `agent_memory --project /path/to/project --serve`
+   - stdin/stdout protocol is NDJSON (one request line -> one response line)
+
+Rules:
+- Use `--project` to select knowledge tree; each project is isolated.
+- Avoid `--data` unless a custom path is explicitly required.
+- In `--serve` mode, payloads must be line-delimited JSON.
 
 ## Execution Workflow
 
@@ -70,7 +87,7 @@ Write path:
 - version transitions: `versioning`
 - in-memory connectivity: `graph`
 - external interface: `api`
-- orchestration/demo: `runtime`
+- runtime process: `runtime`
 
 3. Keep compatibility checks explicit:
 - parent links valid
@@ -80,7 +97,7 @@ Write path:
 4. Verify locally:
 - `cargo fmt`
 - `cargo check`
-- `cargo run`
+- `cargo run -- --help`
 - `cargo test` (when tests exist)
 
 ## Merge Rules
@@ -111,7 +128,7 @@ Before finalizing, confirm:
 3. Index updates are atomic.
 4. Traversal complexity stays predictable.
 5. Error paths are explicit and typed.
-6. New behavior is covered by at least demo flow or tests.
+6. New behavior is covered by CLI/runtime flow tests or unit tests.
 
 ## Output Style for Tasks Using This Skill
 

@@ -8,6 +8,10 @@
 
 适用场景：需要可追溯、可分叉、可合并、可解释的结构化记忆，而不是传统 RAG 文本召回。
 
+默认存储位置（按项目隔离）：
+- `<project>/.M2W/memory`
+- 不同项目目录天然对应不同知识文件树
+
 ## 1. 快速开始
 
 ### 1.1 环境要求
@@ -22,6 +26,7 @@ cargo run -- --help
 ```
 
 CLI 不会自动写入示例数据，必须显式传入 action JSON。
+如果未指定 `--project`，默认使用当前工作目录作为项目根目录。
 
 ### 1.3 开发常用命令
 
@@ -41,16 +46,16 @@ cat > action.json <<'JSON'
 JSON
 
 # 2) 执行 action（创建节点）
-cargo run -- --action-file action.json
+cargo run -- --project /path/to/project --action-file action.json
 
 # 3) 再执行读取
-cargo run -- --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
 
 # 4) 运行测试，确认核心行为可用
 cargo test
 
 # 5) 查看产生的数据结构
-find data -maxdepth 3 -type f | sort
+find /path/to/project/.M2W -maxdepth 4 -type f | sort
 ```
 
 ## 2. 5 分钟理解核心模型
@@ -158,9 +163,19 @@ let output_json = engine.execute_action_json(input_json_str);
 ### 5.2.1 CLI 调用方式
 
 ```bash
-cargo run -- --action '{"action":"open_node","node_id":"Fatigue_Model"}'
-cargo run -- --action-file action.json
-cat action.json | cargo run -- --stdin
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo run -- --project /path/to/project --action-file action.json
+cat action.json | cargo run -- --project /path/to/project --stdin
+```
+
+### 5.2.2 Runtime 进程模式（常驻）
+
+```bash
+# 启动一个常驻 runtime（每行一个 action JSON，返回一行响应 JSON）
+cargo run -- --project /path/to/project --serve
+
+# 退出 runtime
+:quit
 ```
 
 ### 5.3 完整请求示例（create -> update -> open）
@@ -249,15 +264,14 @@ src/
 ### Q4: 如何重置本地数据？
 
 ```bash
-rm -rf data
-cargo run
+rm -rf /path/to/project/.M2W
 ```
 
 ### Q5: 启动时报 object missing 怎么办？
 通常是索引引用了不存在的对象文件。处理方式：
 1. 先备份 `data/`
-2. 检查 `data/index/state.json` 中的 `heads` 指向
-3. 确认 `data/objects/<prefix>/<version>.json` 文件存在
+2. 检查 `.M2W/memory/index/state.json` 中的 `heads` 指向
+3. 确认 `.M2W/memory/objects/<prefix>/<version>.json` 文件存在
 4. 必要时回滚到可用备份，避免手工篡改历史对象
 
 ## 10. 给集成方的建议

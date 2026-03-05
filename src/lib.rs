@@ -4,5 +4,6 @@ pub mod decay;
 pub mod graph;
 pub mod merge;
 pub mod promotion;
+pub mod runtime;
 pub mod storage;
 pub mod versioning;
