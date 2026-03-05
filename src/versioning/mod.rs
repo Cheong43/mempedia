@@ -1,0 +1,217 @@
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::core::{MemoryError, MemoryResult, Node, NodeContent, NodePatch, NodeVersion};
+use crate::merge::merge_content;
+use crate::storage::{FileStorage, IndexSnapshot};
+
+pub struct VersionEngine;
+
+impl VersionEngine {
+    pub fn create_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+        content: NodeContent,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        validate_scores(confidence, importance)?;
+
+        if heads.contains_key(node_id) {
+            return Err(MemoryError::Invalid(format!(
+                "node {node_id} already exists"
+            )));
+        }
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents: vec![],
+            timestamp: now_ts(),
+            content,
+            confidence,
+            importance,
+        };
+
+        version.version = storage.write_object(&version)?;
+
+        heads.insert(node_id.to_string(), version.version.clone());
+        nodes.insert(
+            node_id.to_string(),
+            Node {
+                id: node_id.to_string(),
+                head: version.version.clone(),
+                branches: vec![version.version.clone()],
+            },
+        );
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
+
+    pub fn update_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+        patch: NodePatch,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        validate_scores(confidence, importance)?;
+
+        let head_id = heads
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+        let head = storage.read_object(&head_id)?;
+
+        let mut content = head.content;
+        apply_patch(&mut content, patch);
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents: vec![head_id],
+            timestamp: now_ts(),
+            content,
+            confidence,
+            importance,
+        };
+        version.version = storage.write_object(&version)?;
+
+        heads.insert(node_id.to_string(), version.version.clone());
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.head = version.version.clone();
+            append_unique(&mut node.branches, version.version.clone());
+        }
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
+
+    pub fn fork_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+    ) -> MemoryResult<NodeVersion> {
+        let head_id = heads
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+        let head = storage.read_object(&head_id)?;
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents: vec![head_id],
+            timestamp: now_ts(),
+            content: head.content,
+            confidence: head.confidence,
+            importance: head.importance,
+        };
+        version.version = storage.write_object(&version)?;
+
+        if let Some(node) = nodes.get_mut(node_id) {
+            append_unique(&mut node.branches, version.version.clone());
+        }
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
+
+    pub fn merge_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+        left_version: &str,
+        right_version: &str,
+    ) -> MemoryResult<NodeVersion> {
+        let left = storage.read_object(left_version)?;
+        let right = storage.read_object(right_version)?;
+        if left.node_id != node_id || right.node_id != node_id {
+            return Err(MemoryError::Invalid(
+                "merge versions must belong to same node".to_string(),
+            ));
+        }
+
+        let (content, _) = merge_content(&left, &right);
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents: vec![left_version.to_string(), right_version.to_string()],
+            timestamp: now_ts(),
+            content,
+            confidence: left.confidence.max(right.confidence),
+            importance: left.importance.max(right.importance),
+        };
+        version.version = storage.write_object(&version)?;
+
+        heads.insert(node_id.to_string(), version.version.clone());
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.head = version.version.clone();
+            append_unique(&mut node.branches, version.version.clone());
+        }
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
+}
+
+fn apply_patch(content: &mut NodeContent, patch: NodePatch) {
+    if let Some(title) = patch.title {
+        content.title = title;
+    }
+    if let Some(body) = patch.body {
+        content.body = body;
+    }
+
+    for (k, v) in patch.structured_upserts {
+        content.structured_data.insert(k, v);
+    }
+    content.links.extend(patch.add_links);
+    content.highlights.extend(patch.add_highlights);
+}
+
+fn persist_index(
+    storage: &FileStorage,
+    heads: &HashMap<String, String>,
+    nodes: &HashMap<String, Node>,
+) -> MemoryResult<()> {
+    storage.persist_index_snapshot(&IndexSnapshot {
+        heads: heads.clone(),
+        nodes: nodes.clone(),
+    })
+}
+
+fn validate_scores(confidence: f32, importance: f32) -> MemoryResult<()> {
+    if !(0.0..=1.0).contains(&confidence) {
+        return Err(MemoryError::Invalid(
+            "confidence must be within [0.0, 1.0]".to_string(),
+        ));
+    }
+    if !importance.is_finite() || importance < 0.0 {
+        return Err(MemoryError::Invalid(
+            "importance must be finite and >= 0.0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn append_unique(items: &mut Vec<String>, value: String) {
+    if !items.iter().any(|v| v == &value) {
+        items.push(value);
+    }
+}
+
+fn now_ts() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_secs()
+}

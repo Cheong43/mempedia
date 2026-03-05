@@ -1,0 +1,22 @@
+{
+  "heads": {
+    "Fatigue_Model": "2fb95af0556cbd3761224f3f3e6739ebaf35f33a4ef85d5fbfbcd17f2af0e3f1"
+  },
+  "nodes": {
+    "Fatigue_Model": {
+      "id": "Fatigue_Model",
+      "head": "2fb95af0556cbd3761224f3f3e6739ebaf35f33a4ef85d5fbfbcd17f2af0e3f1",
+      "branches": [
+        "9929fbd68122e4aa62a194a0753ff2e05bb3a5a32d7feeacfac9041a1bafaec6",
+        "44e1fee2c0e2300394e5cf5d12b70c3038451d936409101b6f3670ff9f24afce",
+        "a713f8632ff946bc843fe602050a5cc5b50b4e71d9e274be56d6534d15a5774a",
+        "7a0a32a451ddbddf41a50d060fed1095653e72157ed8e2565772668326552af8",
+        "d099c36c5b1d7b7734904590e582bb9d8f6b19c5318811c8b6130e928c263ed6",
+        "769a499a03038441eed78bd010626223e228922ff7339b04b8bfd7b56fe76b28",
+        "dbc8c017d76689f9e0af095cc44ffc66447faadb80fbe659d4e89856a3908277",
+        "990390953c1cc1f28382a6f43954c7b7074be6fa6a8dca5bfea19ddd1bfc2bb5",
+        "2fb95af0556cbd3761224f3f3e6739ebaf35f33a4ef85d5fbfbcd17f2af0e3f1"
+      ]
+    }
+  }
+}

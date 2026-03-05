@@ -1,0 +1,4 @@
+version: 1
+display_name: Agent Memory Rust
+short_description: Build and harden Rust append-only versioned memory graph engine
+default_prompt: Implement or optimize the Rust memory engine with strict append-only version DAG invariants, filesystem object storage, deterministic traversal, and production-safe persistence behavior.

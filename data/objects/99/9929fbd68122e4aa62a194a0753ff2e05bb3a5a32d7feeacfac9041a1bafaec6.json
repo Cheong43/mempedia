@@ -1,0 +1,1 @@
+{"node_id":"Fatigue_Model","version":"","parents":[],"timestamp":1772700095,"content":{"title":"Fatigue Model","body":"Base assumptions for fatigue detection","structured_data":{"state":"draft"},"links":[{"target":"SleepSignals","label":"depends_on","weight":0.9}],"highlights":["circadian","recovery"]},"confidence":0.8,"importance":1.0}
