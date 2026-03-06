@@ -6,8 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, MemoryError, MemoryResult, Node, NodeContent, NodePatch, NodeVersion,
+    AccessLog, AccessStats, MemoryError, MemoryResult, Node, NodeContent, NodePatch, NodeVersion,
+    SearchHit,
 };
+use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
 use crate::promotion::{PromotionSignal, compute_importance};
 use crate::storage::{FileStorage, IndexSnapshot};
@@ -18,9 +20,32 @@ pub struct MemoryEngine {
     heads: HashMap<String, String>,
     nodes: HashMap<String, Node>,
     graph_index: GraphIndex,
+    access_state: HashMap<String, AccessStats>,
+    auto_promotion: AutoPromotionConfig,
 }
 
 pub type SharedMemoryEngine = Arc<RwLock<MemoryEngine>>;
+
+#[derive(Debug, Clone)]
+pub struct AutoPromotionConfig {
+    pub enabled: bool,
+    pub promote_every_n_access: u64,
+    pub promote_interval_seconds: u64,
+    pub alpha: f32,
+    pub decay_lambda: f32,
+}
+
+impl Default for AutoPromotionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            promote_every_n_access: 1,
+            promote_interval_seconds: 300,
+            alpha: 0.10,
+            decay_lambda: 0.00002,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -47,6 +72,13 @@ pub enum ToolAction {
     },
     OpenNode {
         node_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+    },
+    AccessNode {
+        node_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
     },
     CompareVersions {
         left_version: String,
@@ -60,6 +92,10 @@ pub enum ToolAction {
     },
     SearchByHighlight {
         query: String,
+    },
+    SearchByKeyword {
+        query: String,
+        limit: Option<usize>,
     },
 }
 
@@ -88,6 +124,9 @@ pub enum ToolResponse {
     NodeList {
         nodes: Vec<String>,
     },
+    SearchResults {
+        results: Vec<SearchHit>,
+    },
     Error {
         message: String,
     },
@@ -98,17 +137,24 @@ impl MemoryEngine {
         let storage = FileStorage::new(data_root)?;
         let snapshot = storage.load_index_snapshot()?;
         let graph_index = GraphIndex::build(&storage, &snapshot.heads)?;
+        let access_state = storage.load_access_state()?;
 
         Ok(Self {
             storage,
             heads: snapshot.heads,
             nodes: snapshot.nodes,
             graph_index,
+            access_state,
+            auto_promotion: AutoPromotionConfig::default(),
         })
     }
 
     pub fn open_shared<P: AsRef<Path>>(data_root: P) -> MemoryResult<SharedMemoryEngine> {
         Ok(Arc::new(RwLock::new(Self::open(data_root)?)))
+    }
+
+    pub fn set_auto_promotion_config(&mut self, config: AutoPromotionConfig) {
+        self.auto_promotion = config;
     }
 
     pub fn create_node(
@@ -241,20 +287,58 @@ impl MemoryEngine {
         Ok(matches)
     }
 
-    pub fn log_access(&self, agent_id: &str, node_id: &str) -> MemoryResult<()> {
+    pub fn search_by_keyword(&self, query: &str, limit: usize) -> MemoryResult<Vec<SearchHit>> {
+        let query_tokens = tokenize(query);
+        if query_tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut hits = Vec::new();
+        for (node_id, version_id) in &self.heads {
+            let version = self.storage.read_object(version_id)?;
+            let score = keyword_score(&version.content, &query_tokens);
+            if score > 0.0 {
+                hits.push(SearchHit {
+                    node_id: node_id.clone(),
+                    score,
+                });
+            }
+        }
+
+        hits.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
+        if hits.len() > limit {
+            hits.truncate(limit);
+        }
+        Ok(hits)
+    }
+
+    pub fn log_access(&mut self, agent_id: &str, node_id: &str) -> MemoryResult<()> {
         let version = self
             .head(node_id)
             .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
             .clone();
+        let timestamp = now_ts();
 
         let log = AccessLog {
             agent_id: agent_id.to_string(),
             node_id: node_id.to_string(),
             version,
-            timestamp: now_ts(),
+            timestamp,
         };
 
-        self.storage.append_access_log(&log)
+        self.storage.append_access_log(&log)?;
+
+        let stats = self.access_state.entry(node_id.to_string()).or_default();
+        stats.total_access = stats.total_access.saturating_add(1);
+        stats.pending_access = stats.pending_access.saturating_add(1);
+        stats.last_access_ts = timestamp;
+        self.storage.persist_access_state(&self.access_state)?;
+
+        self.maybe_auto_promote_from_access(node_id, timestamp)
     }
 
     pub fn promote_node(
@@ -266,6 +350,60 @@ impl MemoryEngine {
         let importance = compute_importance(signal);
         let patch = NodePatch::default();
         self.update_node(node_id, patch, confidence, importance)
+    }
+
+    fn maybe_auto_promote_from_access(
+        &mut self,
+        node_id: &str,
+        timestamp: u64,
+    ) -> MemoryResult<()> {
+        if !self.auto_promotion.enabled {
+            return Ok(());
+        }
+
+        let stats = match self.access_state.get(node_id) {
+            Some(s) => s.clone(),
+            None => return Ok(()),
+        };
+
+        let meets_count = stats.pending_access >= self.auto_promotion.promote_every_n_access;
+        let meets_interval = self.auto_promotion.promote_interval_seconds > 0
+            && stats.pending_access > 0
+            && (timestamp.saturating_sub(stats.last_promote_ts)
+                >= self.auto_promotion.promote_interval_seconds);
+
+        if !meets_count && !meets_interval {
+            return Ok(());
+        }
+
+        let head_version_id = self
+            .head(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+        let head = self.get_version(&head_version_id)?;
+
+        let age_seconds = timestamp.saturating_sub(head.timestamp) as f32;
+        let decayed = exponential_decay(
+            head.importance.max(0.0),
+            self.auto_promotion.decay_lambda,
+            age_seconds,
+        );
+        let access_boost = self.auto_promotion.alpha * (stats.pending_access as f32).ln_1p();
+        let new_importance = (decayed + access_boost).max(0.0);
+
+        let _ = self.update_node(
+            node_id,
+            NodePatch::default(),
+            head.confidence,
+            new_importance,
+        )?;
+
+        if let Some(mutable_stats) = self.access_state.get_mut(node_id) {
+            mutable_stats.pending_access = 0;
+            mutable_stats.last_promote_ts = timestamp;
+        }
+        self.storage.persist_access_state(&self.access_state)?;
+        Ok(())
     }
 
     pub fn execute_action(&mut self, action: ToolAction) -> ToolResponse {
@@ -296,11 +434,28 @@ impl MemoryEngine {
             } => self
                 .merge_node(&node_id, &left_version, &right_version)
                 .map(|version| ToolResponse::Version { version }),
-            ToolAction::OpenNode { node_id } => self
-                .head(&node_id)
-                .cloned()
-                .map_or(Ok(None), |head| self.get_version(&head).map(Some))
-                .map(|version| ToolResponse::OptionalVersion { version }),
+            ToolAction::OpenNode { node_id, agent_id } => {
+                if self.head(&node_id).is_none() {
+                    Ok(ToolResponse::OptionalVersion { version: None })
+                } else {
+                    let agent = agent_id.unwrap_or_else(|| "agent-unknown".to_string());
+                    match self.log_access(&agent, &node_id) {
+                        Ok(_) => self
+                            .head(&node_id)
+                            .cloned()
+                            .map_or(Ok(None), |head| self.get_version(&head).map(Some))
+                            .map(|version| ToolResponse::OptionalVersion { version }),
+                        Err(err) => Err(err),
+                    }
+                }
+            }
+            ToolAction::AccessNode { node_id, agent_id } => {
+                let agent = agent_id.unwrap_or_else(|| "agent-unknown".to_string());
+                self.log_access(&agent, &node_id)
+                    .map(|_| ToolResponse::NodeList {
+                        nodes: vec![node_id],
+                    })
+            }
             ToolAction::CompareVersions {
                 left_version,
                 right_version,
@@ -330,6 +485,9 @@ impl MemoryEngine {
             ToolAction::SearchByHighlight { query } => self
                 .search_by_highlight(&query)
                 .map(|nodes| ToolResponse::NodeList { nodes }),
+            ToolAction::SearchByKeyword { query, limit } => self
+                .search_by_keyword(&query, limit.unwrap_or(10))
+                .map(|results| ToolResponse::SearchResults { results }),
         };
 
         result.unwrap_or_else(|err| ToolResponse::Error {
@@ -358,10 +516,60 @@ impl MemoryEngine {
         }
     }
 
+    pub fn get_access_stats(&self, node_id: &str) -> Option<&AccessStats> {
+        self.access_state.get(node_id)
+    }
+
     fn rebuild_index(&mut self) -> MemoryResult<()> {
         self.graph_index = GraphIndex::build(&self.storage, &self.heads)?;
         Ok(())
     }
+}
+
+fn keyword_score(content: &NodeContent, query_tokens: &[String]) -> f32 {
+    let title = content.title.to_lowercase();
+    let body = content.body.to_lowercase();
+    let highlights = content.highlights.join(" ").to_lowercase();
+    let structured = content
+        .structured_data
+        .iter()
+        .map(|(k, v)| format!("{k} {v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut score = 0.0;
+    for token in query_tokens {
+        if token.is_empty() {
+            continue;
+        }
+        if title.contains(token) {
+            score += 5.0;
+        }
+        if body.contains(token) {
+            score += 2.0;
+        }
+        if highlights.contains(token) {
+            score += 2.5;
+        }
+        if structured.contains(token) {
+            score += 1.5;
+        }
+    }
+
+    let covered = query_tokens
+        .iter()
+        .filter(|token| title.contains(token.as_str()) || body.contains(token.as_str()))
+        .count() as f32;
+    score + covered
+}
+
+fn tokenize(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 2)
+        .collect()
 }
 
 fn now_ts() -> u64 {
@@ -531,5 +739,112 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn keyword_search_returns_ranked_wiki_like_hits() {
+        let dir = temp_data_dir("keyword-search");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "Circadian_Model",
+                NodeContent {
+                    title: "Circadian Fatigue Wiki".to_string(),
+                    body: "# Summary\nWearable telemetry and circadian rhythm markers.".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "keywords".to_string(),
+                        "fatigue circadian telemetry".to_string(),
+                    )]),
+                    links: vec![],
+                    highlights: vec!["circadian".to_string(), "fatigue".to_string()],
+                },
+                0.9,
+                1.5,
+            )
+            .expect("create circadian");
+
+        engine
+            .create_node(
+                "Nutrition",
+                NodeContent {
+                    title: "Nutrition Notes".to_string(),
+                    body: "Protein planning and hydration.".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["diet".to_string()],
+                },
+                0.8,
+                1.0,
+            )
+            .expect("create nutrition");
+
+        let hits = engine
+            .search_by_keyword("circadian fatigue telemetry", 5)
+            .expect("keyword search");
+        assert_eq!(
+            hits.first().map(|h| h.node_id.as_str()),
+            Some("Circadian_Model")
+        );
+        assert!(hits.iter().all(|h| h.score > 0.0));
+
+        let resp = engine.execute_action(ToolAction::SearchByKeyword {
+            query: "fatigue telemetry".to_string(),
+            limit: Some(3),
+        });
+        match resp {
+            ToolResponse::SearchResults { results } => {
+                assert_eq!(
+                    results.first().map(|h| h.node_id.as_str()),
+                    Some("Circadian_Model")
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_auto_updates_importance() {
+        let dir = temp_data_dir("access-auto");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        let v0 = engine
+            .create_node("A", sample_content("A", "# Summary\nBase", "B"), 0.8, 1.0)
+            .expect("create");
+
+        engine.log_access("agent-main", "A").expect("log access");
+        let head_id = engine.head("A").expect("head exists").clone();
+        let head = engine.get_version(&head_id).expect("head version");
+
+        assert_ne!(v0.version, head.version);
+        assert!(head.importance > v0.importance);
+        let stats = engine.get_access_stats("A").expect("stats");
+        assert_eq!(stats.total_access, 1);
+        assert_eq!(stats.pending_access, 0);
+    }
+
+    #[test]
+    fn open_node_action_auto_logs_access() {
+        let dir = temp_data_dir("open-access");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node("OpenNode", sample_content("Open", "Body", "Ref"), 0.8, 1.0)
+            .expect("create node");
+
+        let response = engine.execute_action(ToolAction::OpenNode {
+            node_id: "OpenNode".to_string(),
+            agent_id: None,
+        });
+        match response {
+            ToolResponse::OptionalVersion { version } => {
+                let version = version.expect("version exists");
+                assert!(!version.version.is_empty());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let stats = engine.get_access_stats("OpenNode").expect("stats");
+        assert_eq!(stats.total_access, 1);
     }
 }

@@ -139,7 +139,7 @@ For each non-trivial memory operation, the calling AI should internally justify:
 - node lifecycle (`create`, `update`, `fork`, `merge`)
 - traversal (`BFS`, `DFS`, importance-first, confidence-filtered)
 - scoring (`promotion`, `decay`)
-- protocol/API actions (`open_node`, `compare_versions`, etc.)
+- protocol/API actions (`open_node`, `access_node`, `compare_versions`, `search_by_keyword`, etc.)
 
 2. Implement in the correct layer:
 - schema: `core`
@@ -179,6 +179,37 @@ Importance should combine:
 
 Recommended formula pattern:
 `importance = decay(log(in_degree+1) + access + highlights + cross_branch_presence)`
+
+Important runtime behavior:
+1. Every access should be recorded (`open_node` with `agent_id`, or explicit `access_node`/`log_access`).
+2. Access increments persisted counters in `index/access_state.json`.
+3. Default auto-promotion is enabled: access can trigger `importance` update via appended versions.
+4. `confidence` does not auto-increase from access alone.
+5. Agent may still call `promote_node` for additional policy-driven re-scoring.
+
+## Wiki-Style Content Guidance
+
+When writing `NodeContent`, prefer wiki-like structure:
+1. `title`: clear canonical concept name.
+2. `body`: Markdown format with concise sections.
+3. `structured_data`: durable facts/keys for machine-friendly retrieval.
+4. `highlights`: short keyword anchors for quick recall.
+
+Recommended Markdown skeleton for `body`:
+```markdown
+# Summary
+One paragraph overview.
+
+## Key Facts
+- Fact 1
+- Fact 2
+
+## Details
+Deeper explanation and caveats.
+
+## Sources or Evidence
+- Optional source notes
+```
 
 ## Review Checklist
 

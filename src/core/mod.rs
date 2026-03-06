@@ -58,6 +58,20 @@ pub struct AccessLog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub node_id: NodeId,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccessStats {
+    pub total_access: u64,
+    pub pending_access: u64,
+    pub last_access_ts: u64,
+    pub last_promote_ts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MergeConflict {
     FieldConflict(String),
 }

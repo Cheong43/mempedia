@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{AccessLog, MemoryError, MemoryResult, Node, NodeVersion};
+use crate::core::{AccessLog, AccessStats, MemoryError, MemoryResult, Node, NodeVersion};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexSnapshot {
@@ -60,6 +60,10 @@ impl FileStorage {
         self.index_dir().join("access.log")
     }
 
+    fn access_state_path(&self) -> PathBuf {
+        self.index_dir().join("access_state.json")
+    }
+
     pub fn load_index_snapshot(&self) -> MemoryResult<IndexSnapshot> {
         let state_path = self.index_state_path();
         if state_path.exists() {
@@ -80,6 +84,17 @@ impl FileStorage {
         self.atomic_write_json(self.heads_path(), &snapshot.heads)?;
         self.atomic_write_json(self.nodes_path(), &snapshot.nodes)?;
         Ok(())
+    }
+
+    pub fn load_access_state(&self) -> MemoryResult<HashMap<String, AccessStats>> {
+        self.load_json(self.access_state_path())
+    }
+
+    pub fn persist_access_state(
+        &self,
+        access_state: &HashMap<String, AccessStats>,
+    ) -> MemoryResult<()> {
+        self.atomic_write_json(self.access_state_path(), access_state)
     }
 
     fn load_json<T: serde::de::DeserializeOwned + Default>(
@@ -109,8 +124,14 @@ impl FileStorage {
     }
 
     pub fn write_object(&self, version: &NodeVersion) -> MemoryResult<String> {
-        let bytes = serde_json::to_vec(version)?;
-        let version_id = blake3::hash(&bytes).to_hex().to_string();
+        // Hash must be stable and cannot depend on its own id field.
+        let mut normalized = version.clone();
+        normalized.version.clear();
+        let hash_input = serde_json::to_vec(&normalized)?;
+        let version_id = blake3::hash(&hash_input).to_hex().to_string();
+
+        normalized.version = version_id.clone();
+        let bytes = serde_json::to_vec(&normalized)?;
 
         let prefix = &version_id[0..2];
         let dir = self.objects_dir().join(prefix);

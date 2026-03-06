@@ -15,6 +15,11 @@
 - `<project>/.M2W/memory`
 - 不同项目目录天然对应不同知识文件树
 
+Wiki 风格建议：
+- `title` 用明确主题名（类似词条标题）
+- `body` 建议使用 Markdown，先摘要再细节（高效且详细）
+- 关键事实放进 `structured_data`，便于后续检索和比较
+
 ## 1. 快速开始
 
 ### 1.1 环境要求
@@ -130,8 +135,13 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 1. 进程启动时创建/打开引擎：`MemoryEngine::open("./data")`
 2. 每次业务状态变化调用 `update_node`（不要原地改旧版本）
 3. Agent 推理前调用 `traverse_*` 获取候选上下文
-4. 关键访问记录 `log_access(agent_id, node_id)`
-5. 周期性按 signal 调用 `promote_node`
+4. 节点访问时调用 `open_node`（或显式 `log_access` / `access_node`）
+5. 根据业务需要可继续调用 `promote_node` 做额外提升
+
+说明：
+- 每次访问都会增加访问计数（持久化在 `.M2W/memory/index/access_state.json`）
+- 默认开启自动提升：访问会触发 `importance` 自动更新（通过追加新版本）
+- `confidence` 不会因访问自动变化
 
 ## 5. Tool Protocol（JSON Action）
 
@@ -141,9 +151,11 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 - `fork_node`
 - `merge_node`
 - `open_node`
+- `access_node`（显式记录访问，可用于非 open 场景）
 - `compare_versions`
 - `traverse`
 - `search_by_highlight`
+- `search_by_keyword`（关键词模糊检索，返回分数排序结果）
 
 ### 5.1 请求示例
 
@@ -166,7 +178,7 @@ let output_json = engine.execute_action_json(input_json_str);
 ### 5.2.1 CLI 调用方式
 
 ```bash
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","agent_id":"agent-main"}'
 cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
 ```
@@ -218,11 +230,28 @@ cargo run -- --project /path/to/project --serve
 ```json
 {
   "action": "open_node",
-  "node_id": "Fatigue_Model"
+  "node_id": "Fatigue_Model",
+  "agent_id": "agent-main"
 }
 ```
 
-返回统一是 `ToolResponse` JSON（`version`/`optional_version`/`node_list`/`error`）。
+```json
+{
+  "action": "access_node",
+  "node_id": "Fatigue_Model",
+  "agent_id": "agent-main"
+}
+```
+
+```json
+{
+  "action": "search_by_keyword",
+  "query": "circadian fatigue telemetry",
+  "limit": 5
+}
+```
+
+返回统一是 `ToolResponse` JSON（`version`/`optional_version`/`node_list`/`search_results`/`error`）。
 
 ## 6. 当前模块结构
 
