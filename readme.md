@@ -1,42 +1,40 @@
 # Agent Memory Engine (Rust)
 
-一个为 AI Agent 设计的轻量级长期记忆引擎：
-- 追加写（append-only）
-- 版本不可变（immutable）
+A lightweight long-term memory engine for AI agents:
+- Append-only history
+- Immutable versions
 - Node/Version DAG
-- 文件系统存储（无外部数据库）
+- Filesystem storage (no external database)
 
-适用场景：需要可追溯、可分叉、可合并、可解释的结构化记忆，而不是传统 RAG 文本召回。
+Use cases: projects that need traceable, forkable, mergeable, and explainable structured memory, rather than plain-text RAG retrieval.
 
-命名说明：
+Naming:
 - `M2W` = `Memory to Wiki`
 
-默认存储位置（按项目隔离）：
+Default storage location (project-scoped):
 - `<project>/.M2W/memory`
-- 不同项目目录天然对应不同知识文件树
 
-Wiki 风格建议：
-- `title` 用明确主题名（类似词条标题）
-- `body` 建议使用 Markdown，先摘要再细节（高效且详细）
-- 关键事实放进 `structured_data`，便于后续检索和比较
+---
 
-## 1. 快速开始
+## English
 
-### 1.1 环境要求
+### 1. Quick Start
 
-- Rust 1.93+（建议 stable 最新版）
+#### 1.1 Requirements
+
+- Rust `1.93+` (latest stable recommended)
 - macOS / Linux
 
-### 1.2 运行 CLI（生产入口）
+#### 1.2 Run the CLI
 
 ```bash
 cargo run -- --help
 ```
 
-CLI 不会自动写入示例数据，必须显式传入 action JSON。
-如果未指定 `--project`，默认使用当前工作目录作为项目根目录。
+CLI will not write demo data automatically. You must pass an action JSON explicitly.
+If `--project` is omitted, current working directory is used as project root.
 
-### 1.3 开发常用命令
+#### 1.3 Common Dev Commands
 
 ```bash
 cargo fmt
@@ -45,70 +43,70 @@ cargo test
 cargo run
 ```
 
-### 1.4 从零开始本地体验（推荐顺序）
+#### 1.4 Local Demo from Scratch
 
 ```bash
-# 1) 写一个 action 请求
+# 1) Create an action request
 cat > action.json <<'JSON'
 {"action":"create_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
 JSON
 
-# 2) 执行 action（创建节点）
+# 2) Execute action (create node)
 cargo run -- --project /path/to/project --action-file action.json
 
-# 3) 再执行读取
+# 3) Open the node
 cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
 
-# 4) 运行测试，确认核心行为可用
+# 4) Run tests
 cargo test
 
-# 5) 查看产生的数据结构
+# 5) Inspect generated data
 find /path/to/project/.M2W -maxdepth 4 -type f | sort
 ```
 
-## 2. 5 分钟理解核心模型
+### 2. Core Model in 5 Minutes
 
-### 2.1 Node 和 Version
+#### 2.1 Node and Version
 
-- `Node` 是身份（identity），不直接存内容
-- `NodeVersion` 是某时刻状态（state），内容不可变
-- 任意更新都创建新版本，不覆盖旧版本
+- `Node` is identity and does not store mutable content directly.
+- `NodeVersion` is an immutable snapshot at a point in time.
+- Every update creates a new version (no in-place overwrite).
 
-### 2.2 Version DAG
+#### 2.2 Version DAG
 
-每个 `NodeVersion` 有 `parents: Vec<VersionId>`，支持：
-- 线性历史
-- 分叉（fork）
-- 合并（merge，多父）
+Each `NodeVersion` has `parents: Vec<VersionId>`, enabling:
+- Linear history
+- Forks
+- Merges (multi-parent)
 
-### 2.3 追加写原则
+#### 2.3 Append-only Principle
 
-- 历史版本对象只增不改
-- 头指针（head）移动到新版本
-- 索引以快照原子落盘
+- Historical versions are never modified
+- Head pointer moves to the latest version
+- Index snapshots are written atomically
 
-## 3. 存储布局
+### 3. Storage Layout
 
 ```text
 data/
   index/
-    state.json      # 索引快照（heads + nodes）
-    heads.json      # 兼容/可读副本
-    nodes.json      # 兼容/可读副本
-    access.log      # 可选访问日志
+    state.json      # index snapshot (heads + nodes)
+    heads.json      # compatibility/readable copy
+    nodes.json      # compatibility/readable copy
+    access.log      # optional access log
   objects/
     <hash_prefix>/
       <version_hash>.json
 ```
 
-说明：
+Notes:
 - `version_hash = blake3(serialized_node_version)`
-- 对象文件按 hash 分桶存储
-- 索引使用原子写入（tmp + rename + fsync）
+- Objects are bucketed by hash prefix
+- Index files are atomically written (`tmp + rename + fsync`)
 
-## 4. API 用法（Rust）
+### 4. Rust API
 
-入口文件：`src/api/mod.rs`
+Entry: `src/api/mod.rs`
 
 ```rust
 use agent_memory::api::MemoryEngine;
@@ -130,37 +128,24 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-### 4.1 最小接入流程（你的业务代码）
+### 5. Tool Protocol (JSON Action)
 
-1. 进程启动时创建/打开引擎：`MemoryEngine::open("./data")`
-2. 每次业务状态变化调用 `update_node`（不要原地改旧版本）
-3. Agent 推理前调用 `traverse_*` 获取候选上下文
-4. 节点访问时调用 `open_node`（或显式 `log_access` / `access_node`）
-5. 根据业务需要可继续调用 `promote_node` 做额外提升
-
-说明：
-- 每次访问都会增加访问计数（持久化在 `.M2W/memory/index/access_state.json`）
-- 默认开启自动提升：访问会触发 `importance` 自动更新（通过追加新版本）
-- `confidence` 不会因访问自动变化
-
-## 5. Tool Protocol（JSON Action）
-
-用于 Agent 直接调用：
+For agent-side direct calls:
 - `create_node`
 - `update_node`
 - `fork_node`
 - `merge_node`
 - `open_node`
-- `access_node`（显式记录访问，可用于非 open 场景）
+- `access_node`
 - `compare_versions`
 - `traverse`
 - `search_by_highlight`
-- `search_by_keyword`（关键词模糊检索，返回分数排序结果）
-- `suggest_exploration`（推荐下一层可探索节点）
-- `explore_with_budget`（按深度预算返回多跳探索路线）
-- `auto_link_related`（自动把高分候选补成 links）
+- `search_by_keyword`
+- `suggest_exploration`
+- `explore_with_budget`
+- `auto_link_related`
 
-### 5.1 请求示例
+Request example:
 
 ```json
 {
@@ -172,13 +157,7 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 }
 ```
 
-### 5.2 调用方式
-
-```rust
-let output_json = engine.execute_action_json(input_json_str);
-```
-
-### 5.2.1 CLI 调用方式
+CLI examples:
 
 ```bash
 cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","agent_id":"agent-main"}'
@@ -186,171 +165,111 @@ cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
 ```
 
-### 5.2.2 Runtime 进程模式（常驻）
+Runtime mode:
 
 ```bash
-# 启动一个常驻 runtime（每行一个 action JSON，返回一行响应 JSON）
+# start runtime process (line-delimited action JSON input / output)
 cargo run -- --project /path/to/project --serve
 
-# 退出 runtime
+# quit runtime
 :quit
 ```
 
-### 5.3 完整请求示例（create -> update -> open）
+### 6. Web UI Localization
 
-```json
-{
-  "action": "create_node",
-  "node_id": "Fatigue_Model",
-  "content": {
-    "title": "Fatigue Model",
-    "body": "Base assumptions",
-    "structured_data": {"state": "draft"},
-    "links": [],
-    "highlights": ["recovery"]
-  },
-  "confidence": 0.8,
-  "importance": 1.0
-}
-```
+`M2W-UI` now includes bilingual UI support:
+- Default language: **English**
+- Optional language: 简体中文
+- Language selector in top-right of the page
+- Selection persisted in browser `localStorage`
 
-```json
-{
-  "action": "update_node",
-  "node_id": "Fatigue_Model",
-  "patch": {
-    "title": null,
-    "body": "Base assumptions + wearable telemetry",
-    "structured_upserts": {"state": "validated"},
-    "add_links": [],
-    "add_highlights": ["circadian"]
-  },
-  "confidence": 0.9,
-  "importance": 1.3
-}
-```
+---
 
-```json
-{
-  "action": "open_node",
-  "node_id": "Fatigue_Model",
-  "agent_id": "agent-main"
-}
-```
+## 中文
 
-```json
-{
-  "action": "access_node",
-  "node_id": "Fatigue_Model",
-  "agent_id": "agent-main"
-}
-```
+### 1. 快速开始
 
-```json
-{
-  "action": "search_by_keyword",
-  "query": "circadian fatigue telemetry",
-  "limit": 5
-}
-```
+#### 1.1 环境要求
 
-```json
-{
-  "action": "suggest_exploration",
-  "node_id": "swift_learning_resources",
-  "limit": 6
-}
-```
+- Rust `1.93+`（建议最新 stable）
+- macOS / Linux
 
-```json
-{
-  "action": "explore_with_budget",
-  "node_id": "swift_learning_resources",
-  "depth_budget": 2,
-  "per_layer_limit": 5,
-  "total_limit": 12,
-  "min_score": 35.0
-}
-```
-
-```json
-{
-  "action": "auto_link_related",
-  "node_id": "y_combinator_overview",
-  "limit": 3,
-  "min_score": 45.0
-}
-```
-
-返回统一是 `ToolResponse` JSON（`version`/`optional_version`/`node_list`/`search_results`/`explore_results`/`explore_budget_results`/`error`）。
-
-### 5.4 推荐探索流程（让智能体知道还能看什么）
-
-1. `open_node` 读取当前节点（并记录访问）
-2. `explore_with_budget` 先拿到多跳路线（depth 预算）
-3. 对预算结果中的高分候选执行 `open_node` 继续深挖
-4. 需要补图时再用 `suggest_exploration` / `auto_link_related` 回写关联
-
-## 6. 当前模块结构
-
-```text
-src/
-  core/         # 数据模型与错误类型
-  storage/      # 文件系统持久化与索引快照
-  versioning/   # create/update/fork/merge
-  graph/        # BFS/DFS/importance/confidence traversal
-  merge/        # 合并策略
-  promotion/    # importance 计算
-  decay/        # 时间衰减
-  api/          # 对外接口 + tool protocol
-  main.rs       # CLI 入口（action JSON 执行）
-```
-
-## 7. 生产约束（必须遵守）
-
-1. 不引入外部数据库（PostgreSQL/Neo4j/Redis/RocksDB）。
-2. 不做分布式写入与集群一致性。
-3. 保持单进程单写者模型，优先确定性与可解释性。
-4. 任何历史版本不得覆盖修改。
-
-## 8. 性能目标
-
-- 节点规模：`<= 100k`
-- 启动时间：`< 3s`（目标）
-- Head 查询：`O(1)`
-- 图遍历：`O(N + E)`
-
-## 9. 常见问题
-
-### Q1: 这是数据库吗？
-不是。它是 Agent 记忆运行时组件。
-
-### Q2: 支持向量检索吗？
-核心不内置。可作为未来可选扩展，不污染主路径。
-
-### Q3: 为什么不用多进程并发写？
-设计目标是简单、稳定、可预测。当前明确采用单写者模型。
-
-### Q4: 如何重置本地数据？
+#### 1.2 运行 CLI
 
 ```bash
-rm -rf /path/to/project/.M2W
+cargo run -- --help
 ```
 
-### Q5: 启动时报 object missing 怎么办？
-通常是索引引用了不存在的对象文件。处理方式：
-1. 先备份 `data/`
-2. 检查 `.M2W/memory/index/state.json` 中的 `heads` 指向
-3. 确认 `.M2W/memory/objects/<prefix>/<version>.json` 文件存在
-4. 必要时回滚到可用备份，避免手工篡改历史对象
+CLI 不会自动写入示例数据，必须显式传入 action JSON。
+未指定 `--project` 时，默认当前目录为项目根目录。
 
-## 10. 给集成方的建议
+#### 1.3 开发常用命令
 
-1. 将 `MemoryEngine` 作为进程级单例，避免重复加载索引。
-2. 把 `NodeId` 设计成稳定业务主键，不要随展示文案变化。
-3. 对外暴露 `execute_action_json` 时，建议在网关层做输入校验和限流。
-4. 高频写入场景下，优先批量组织 patch，减少碎片版本数量。
+```bash
+cargo fmt
+cargo check
+cargo test
+cargo run
+```
 
-## 11. 设计一句话
+#### 1.4 本地从零体验
 
-`Git + Wiki + In-memory Graph Index`，面向 Agent 推理的结构化长期记忆内核。
+```bash
+cat > action.json <<'JSON'
+{"action":"create_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
+JSON
+
+cargo run -- --project /path/to/project --action-file action.json
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo test
+find /path/to/project/.M2W -maxdepth 4 -type f | sort
+```
+
+### 2. 核心模型
+
+- `Node` 是身份，不直接承载可变内容
+- `NodeVersion` 是状态快照，内容不可变
+- 任何更新都会创建新版本，不覆盖旧版本
+
+`NodeVersion.parents` 支持线性历史、分叉和合并。
+
+### 3. 存储结构
+
+```text
+data/
+  index/
+    state.json
+    heads.json
+    nodes.json
+    access.log
+  objects/
+    <hash_prefix>/
+      <version_hash>.json
+```
+
+### 4. API 与 Action
+
+Rust API 入口：`src/api/mod.rs`。
+
+支持 action：
+- `create_node`
+- `update_node`
+- `fork_node`
+- `merge_node`
+- `open_node`
+- `access_node`
+- `compare_versions`
+- `traverse`
+- `search_by_highlight`
+- `search_by_keyword`
+- `suggest_exploration`
+- `explore_with_budget`
+- `auto_link_related`
+
+### 5. UI 多语言
+
+`M2W-UI` 已支持双语：
+- 默认英文
+- 可切换简体中文
+- 右上角语言切换器
+- 语言偏好会保存在浏览器本地

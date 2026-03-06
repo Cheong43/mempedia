@@ -1,5 +1,75 @@
-# Build directories
-target/
+# M2W - Agent Memory Engine
+# Git Ignore File
 
-# Data directories
+# Rust / Cargo
+target/
+**/target/
+*.d
+**/*.rs.bk
+Cargo.lock
+
+# IDE and editors
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Linux
+*~
+.nfs*
+
+# Application specific
 data/
+*.memory/
+*.db
+*.log
+test_output/
+tmp/
+temp/
+debug/
+*.debug
+
+# Security
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.pfx
+config.local.toml
+secrets.toml
+
+# Build
+build/
+dist/
+out/
+
+# CI/CD
+.github/workflows/*.local.yml
+.gitlab-ci.local.yml
+
+# Docker
+Dockerfile.local
+docker-compose.local.yml
+.dockerignore

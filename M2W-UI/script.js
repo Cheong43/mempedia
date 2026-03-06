@@ -1,6 +1,138 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
+const STORAGE_LANG_KEY = "m2w_ui_lang";
+
+const I18N = {
+  en: {
+    skipToMain: "Skip to main content",
+    pageTitle: "Project Memory Graph Encyclopedia",
+    pageSubtitle:
+      "Browse nodes like a wiki page and inspect relationships with version evolution.",
+    languageLabel: "Language",
+    importData: "Import Data",
+    chooseFolder: "Choose Folder",
+    storageRoot: "Storage Root",
+    parseBtn: "Parse",
+    importHint:
+      "Prefer selecting <code>.M2W/memory</code> directly (compatible with <code>data</code> layout).",
+    statusWaiting: "Waiting for folder import...",
+    metricNodes: "Nodes",
+    metricEdges: "Edges",
+    metricVersions: "Versions",
+    metricAccess: "Access Logs",
+    articleNone: "No node selected",
+    articleGuide: "Import data, then choose a node from the index on the right.",
+    summary: "Summary",
+    noContent: "No content yet.",
+    structuredFields: "Structured Fields",
+    field: "Field",
+    value: "Value",
+    relatedLinks: "Related Links",
+    outgoingNodes: "Outgoing",
+    incomingNodes: "Incoming",
+    versionTimeline: "Version Timeline",
+    nodeIndex: "Node Index",
+    searchNodes: "Search Nodes",
+    relationView: "Relation View (Current Node)",
+    versionDag: "Version DAG (Current Node)",
+    rootNotDetected: "No storage roots detected",
+    currentDirectory: "(current directory)",
+    statusRootsDetected: "Detected {count} storage root(s). Please click Parse.",
+    statusNoRoots: "No compatible storage structure found.",
+    statusMissingFolder: "Please choose a folder first.",
+    statusParsing: "Parsing files...",
+    statusReady:
+      "Loaded {nodes} nodes, {edges} edges, {versions} versions. Select a node to browse details.",
+    statusNoSnapshot: "Missing index files (state.json or heads/nodes).",
+    statusParseFailed: "Parse failed: {message}",
+    nodeCount: "{filtered} / {total} nodes",
+    nodeCountOnly: "{total} nodes",
+    noNodeMatched: "No matching node.",
+    nodeTitleEmpty: "(untitled)",
+    trackedNode: "tracked",
+    referencedNode: "referenced",
+    none: "None",
+    noStructuredFields: "No structured fields",
+    referencedWithoutHead: "This node is referenced but has no independent head content yet.",
+    trackedWithoutBody: "This node currently has no body content.",
+    relationHint: "Select a node to show relation view",
+    versionHint: "Select a node to show version DAG",
+    timelineEmpty: "No version records",
+    metaNodeId: "Node ID",
+    metaHead: "Head",
+    metaUpdated: "Updated",
+    metaConfidence: "Confidence",
+    metaImportance: "Importance",
+    metaAccess: "Access",
+    versionTime: "Time",
+    versionParents: "Parents",
+    searchPlaceholder: "Filter by ID or title",
+  },
+  "zh-CN": {
+    skipToMain: "跳到主要内容",
+    pageTitle: "项目记忆图谱百科页",
+    pageSubtitle: "像 Wiki 一样阅读节点内容，并查看关联关系与版本演进。",
+    languageLabel: "语言",
+    importData: "导入数据",
+    chooseFolder: "选择目录",
+    storageRoot: "存储根",
+    parseBtn: "解析",
+    importHint: "推荐直接选择 <code>.M2W/memory</code>（兼容 <code>data</code> 布局）。",
+    statusWaiting: "等待导入目录...",
+    metricNodes: "节点",
+    metricEdges: "关系边",
+    metricVersions: "版本",
+    metricAccess: "访问日志",
+    articleNone: "未选择节点",
+    articleGuide: "导入后从右侧索引选择节点。",
+    summary: "摘要",
+    noContent: "暂无内容。",
+    structuredFields: "结构化字段",
+    field: "字段",
+    value: "值",
+    relatedLinks: "本文关联",
+    outgoingNodes: "指向节点",
+    incomingNodes: "被引用来源",
+    versionTimeline: "版本时间线",
+    nodeIndex: "节点索引",
+    searchNodes: "搜索节点",
+    relationView: "关系视图（当前节点）",
+    versionDag: "版本 DAG（当前节点）",
+    rootNotDetected: "未检测到存储目录",
+    currentDirectory: "（当前目录）",
+    statusRootsDetected: "检测到 {count} 个存储根，请点击解析。",
+    statusNoRoots: "未找到兼容的存储结构。",
+    statusMissingFolder: "请先选择目录。",
+    statusParsing: "正在解析文件...",
+    statusReady: "已加载 {nodes} 个节点、{edges} 条边、{versions} 个版本。请选择节点查看详情。",
+    statusNoSnapshot: "缺少索引文件（state.json 或 heads/nodes）。",
+    statusParseFailed: "解析失败：{message}",
+    nodeCount: "{filtered} / {total} 个节点",
+    nodeCountOnly: "{total} 个节点",
+    noNodeMatched: "没有匹配节点。",
+    nodeTitleEmpty: "（无标题）",
+    trackedNode: "主节点",
+    referencedNode: "引用节点",
+    none: "无",
+    noStructuredFields: "无结构化字段",
+    referencedWithoutHead: "该节点是被引用节点，目前没有独立 head 内容。",
+    trackedWithoutBody: "该节点暂无正文内容。",
+    relationHint: "选择节点后显示关系视图",
+    versionHint: "选择节点后显示版本 DAG",
+    timelineEmpty: "暂无版本记录",
+    metaNodeId: "Node ID",
+    metaHead: "Head",
+    metaUpdated: "更新",
+    metaConfidence: "Confidence",
+    metaImportance: "Importance",
+    metaAccess: "访问",
+    versionTime: "时间",
+    versionParents: "父版本",
+    searchPlaceholder: "按 ID 或标题过滤",
+  },
+};
 
 const elements = {
+  langSelect: document.getElementById("lang-select"),
   folderInput: document.getElementById("folder-input"),
   rootSelect: document.getElementById("root-select"),
   parseBtn: document.getElementById("parse-btn"),
@@ -25,6 +157,7 @@ const elements = {
 };
 
 const app = {
+  lang: "en",
   fileMap: new Map(),
   roots: [],
   currentRoot: "",
@@ -44,6 +177,30 @@ const app = {
   selectedNodeId: null,
   searchQuery: "",
 };
+
+function t(key, vars = {}) {
+  const table = I18N[app.lang] || I18N.en;
+  const fallback = I18N.en;
+  const raw = table[key] ?? fallback[key] ?? key;
+  return raw.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
+}
+
+function setHtmlLang() {
+  document.documentElement.lang = app.lang;
+}
+
+function applyStaticI18n() {
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const key = el.getAttribute("data-i18n");
+    const msg = t(key);
+    if (msg.includes("<code>")) {
+      el.innerHTML = msg;
+    } else {
+      el.textContent = msg;
+    }
+  });
+  elements.nodeSearch.placeholder = t("searchPlaceholder");
+}
 
 function setStatus(text, type = "") {
   elements.status.textContent = text;
@@ -76,9 +233,9 @@ function shortId(id) {
 function formatTimestamp(seconds) {
   const n = Number(seconds);
   if (!Number.isFinite(n) || n <= 0) {
-    return "未知";
+    return t("none");
   }
-  return new Date(n * 1000).toLocaleString("zh-CN", {
+  return new Date(n * 1000).toLocaleString(app.lang === "zh-CN" ? "zh-CN" : "en-US", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -150,7 +307,7 @@ function updateRootSelect() {
   if (app.roots.length === 0) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "未检测到存储目录";
+    option.textContent = t("rootNotDetected");
     elements.rootSelect.appendChild(option);
     elements.rootSelect.disabled = true;
     return;
@@ -160,7 +317,7 @@ function updateRootSelect() {
   app.roots.forEach((root) => {
     const option = document.createElement("option");
     option.value = root;
-    option.textContent = root || "(当前目录)";
+    option.textContent = root || t("currentDirectory");
     elements.rootSelect.appendChild(option);
   });
   elements.rootSelect.value = app.currentRoot;
@@ -200,7 +357,6 @@ async function readAccessLog(relativePath) {
 
 function getNodeVersions(nodeId) {
   const ids = new Set();
-
   const branches = app.snapshot.nodes?.[nodeId]?.branches;
   if (Array.isArray(branches)) {
     branches.forEach((id) => ids.add(id));
@@ -256,7 +412,6 @@ function buildModel(snapshot, versions, accessLogs) {
     if (!versionsByNode.has(nodeId)) {
       versionsByNode.set(nodeId, []);
     }
-
     versionsByNode.get(nodeId).push({
       id: versionId,
       timestamp: Number(version.timestamp) || 0,
@@ -377,32 +532,32 @@ function getFilteredNodes() {
   }
 
   return app.model.nodes.filter((node) => {
-    return (
-      node.id.toLowerCase().includes(query) ||
-      node.title.toLowerCase().includes(query) ||
-      node.body.toLowerCase().includes(query)
-    );
+    return node.id.toLowerCase().includes(query) || node.title.toLowerCase().includes(query);
   });
 }
 
 function renderNodeList() {
   const filtered = getFilteredNodes();
-  elements.nodeCountLabel.textContent = `${filtered.length} / ${app.model.nodes.length} 个节点`;
+  const labelKey = filtered.length === app.model.nodes.length ? "nodeCountOnly" : "nodeCount";
+  elements.nodeCountLabel.textContent = t(labelKey, {
+    filtered: filtered.length,
+    total: app.model.nodes.length,
+  });
 
   if (filtered.length === 0) {
-    elements.nodeList.innerHTML = `<p class="hint">没有匹配的节点。</p>`;
+    elements.nodeList.innerHTML = `<p class="hint">${escapeHtml(t("noNodeMatched"))}</p>`;
     return;
   }
 
   const html = filtered
     .map((node) => {
       const active = node.id === app.selectedNodeId ? "active" : "";
-      const title = node.title && node.title !== node.id ? node.title : "(无标题)";
-      const tag = node.isTracked ? "主节点" : "引用节点";
+      const title = node.title && node.title !== node.id ? node.title : t("nodeTitleEmpty");
+      const tag = node.isTracked ? t("trackedNode") : t("referencedNode");
       return `
         <button type="button" class="node-item ${active}" data-node-id="${escapeHtml(node.id)}">
           <strong>${escapeHtml(node.id)}</strong>
-          <small>${escapeHtml(title)} | ${tag} | 出${node.outDegree} / 入${node.inDegree}</small>
+          <small>${escapeHtml(title)} | ${escapeHtml(tag)} | out ${node.outDegree} / in ${node.inDegree}</small>
         </button>
       `;
     })
@@ -413,7 +568,7 @@ function renderNodeList() {
 
 function renderLinkButtons(nodeIds) {
   if (!nodeIds || nodeIds.length === 0) {
-    return '<span class="hint">无</span>';
+    return `<span class="hint">${escapeHtml(t("none"))}</span>`;
   }
 
   return nodeIds
@@ -426,14 +581,14 @@ function renderLinkButtons(nodeIds) {
 function renderArticle() {
   const nodeId = app.selectedNodeId;
   if (!nodeId) {
-    elements.articleTitle.textContent = "未选择节点";
-    elements.articleMeta.textContent = "导入后从右侧索引选择节点。";
-    elements.articleBody.textContent = "暂无内容。";
-    elements.structuredTableBody.innerHTML = '<tr><td colspan="2">无结构化字段</td></tr>';
-    elements.highlightsList.innerHTML = '<span class="chip">无</span>';
-    elements.outgoingLinks.innerHTML = '<span class="hint">无</span>';
-    elements.incomingLinks.innerHTML = '<span class="hint">无</span>';
-    elements.versionList.innerHTML = "";
+    elements.articleTitle.textContent = t("articleNone");
+    elements.articleMeta.textContent = t("articleGuide");
+    elements.articleBody.textContent = t("noContent");
+    elements.structuredTableBody.innerHTML = `<tr><td colspan="2">${escapeHtml(t("noStructuredFields"))}</td></tr>`;
+    elements.highlightsList.innerHTML = `<span class="chip">${escapeHtml(t("none"))}</span>`;
+    elements.outgoingLinks.innerHTML = `<span class="hint">${escapeHtml(t("none"))}</span>`;
+    elements.incomingLinks.innerHTML = `<span class="hint">${escapeHtml(t("none"))}</span>`;
+    elements.versionList.innerHTML = `<li>${escapeHtml(t("timelineEmpty"))}</li>`;
     return;
   }
 
@@ -455,12 +610,12 @@ function renderArticle() {
   const incoming = Array.from(app.model.incoming.get(nodeId) || []).sort((a, b) => a.localeCompare(b));
 
   const metaParts = [
-    `Node ID: ${nodeId}`,
-    `Head: ${headVersionId ? shortId(headVersionId) : "无"}`,
-    `更新: ${formatTimestamp(current?.timestamp)}`,
-    `Confidence: ${(Number(current?.confidence) || 0).toFixed(2)}`,
-    `Importance: ${(Number(current?.importance) || 0).toFixed(2)}`,
-    `访问: ${node?.accessCount || 0}`,
+    `${t("metaNodeId")}: ${nodeId}`,
+    `${t("metaHead")}: ${headVersionId ? shortId(headVersionId) : t("none")}`,
+    `${t("metaUpdated")}: ${formatTimestamp(current?.timestamp)}`,
+    `${t("metaConfidence")}: ${(Number(current?.confidence) || 0).toFixed(2)}`,
+    `${t("metaImportance")}: ${(Number(current?.importance) || 0).toFixed(2)}`,
+    `${t("metaAccess")}: ${node?.accessCount || 0}`,
   ];
 
   elements.articleTitle.textContent = title || nodeId;
@@ -469,9 +624,9 @@ function renderArticle() {
   if (body) {
     elements.articleBody.textContent = body;
   } else if (!node?.isTracked) {
-    elements.articleBody.textContent = "该节点是被引用节点，目前没有独立 head 内容。";
+    elements.articleBody.textContent = t("referencedWithoutHead");
   } else {
-    elements.articleBody.textContent = "该节点暂无正文内容。";
+    elements.articleBody.textContent = t("trackedWithoutBody");
   }
 
   const structuredRows = Object.entries(structured)
@@ -480,31 +635,36 @@ function renderArticle() {
     })
     .join("");
   elements.structuredTableBody.innerHTML =
-    structuredRows || '<tr><td colspan="2">无结构化字段</td></tr>';
+    structuredRows || `<tr><td colspan="2">${escapeHtml(t("noStructuredFields"))}</td></tr>`;
 
   elements.highlightsList.innerHTML =
     highlights.length > 0
       ? highlights.map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")
-      : '<span class="chip">无</span>';
+      : `<span class="chip">${escapeHtml(t("none"))}</span>`;
 
   elements.outgoingLinks.innerHTML = renderLinkButtons(outgoing);
   elements.incomingLinks.innerHTML = renderLinkButtons(incoming);
 
-  elements.versionList.innerHTML = versions
-    .map((item) => {
-      const parents = item.parents.length
-        ? item.parents.map((parentId) => shortId(parentId)).join(", ")
-        : "无";
-      return `
-        <li>
-          <strong>${escapeHtml(shortId(item.id))}</strong>
-          <span class="mono"> ${escapeHtml(item.id)}</span><br/>
-          时间: ${escapeHtml(formatTimestamp(item.timestamp))} | 父版本: ${escapeHtml(parents)}<br/>
-          Confidence: ${item.confidence.toFixed(2)} | Importance: ${item.importance.toFixed(2)}
-        </li>
-      `;
-    })
-    .join("");
+  elements.versionList.innerHTML =
+    versions.length === 0
+      ? `<li>${escapeHtml(t("timelineEmpty"))}</li>`
+      : versions
+          .map((item) => {
+            const parents = item.parents.length
+              ? item.parents.map((parentId) => shortId(parentId)).join(", ")
+              : t("none");
+            return `
+              <li>
+                <strong>${escapeHtml(shortId(item.id))}</strong>
+                <span class="mono"> ${escapeHtml(item.id)}</span><br/>
+                ${escapeHtml(t("versionTime"))}: ${escapeHtml(formatTimestamp(item.timestamp))} |
+                ${escapeHtml(t("versionParents"))}: ${escapeHtml(parents)}<br/>
+                ${escapeHtml(t("metaConfidence"))}: ${item.confidence.toFixed(2)} |
+                ${escapeHtml(t("metaImportance"))}: ${item.importance.toFixed(2)}
+              </li>
+            `;
+          })
+          .join("");
 }
 
 function renderRelationGraph() {
@@ -514,18 +674,16 @@ function renderRelationGraph() {
   const nodeId = app.selectedNodeId;
   if (!nodeId) {
     const text = createSvgEl("text", {
-      x: 145,
+      x: 130,
       y: 142,
       fill: "#5a6779",
       "font-size": "14",
     });
-    text.textContent = "选择节点后显示关系";
+    text.textContent = t("relationHint");
     svg.appendChild(text);
     return;
   }
 
-  const width = 460;
-  const height = 280;
   const center = { x: 230, y: 140 };
 
   const outgoing = Array.from(app.model.outgoing.get(nodeId) || []).sort((a, b) => a.localeCompare(b));
@@ -569,15 +727,14 @@ function renderRelationGraph() {
 
   incoming.forEach((source) => {
     const from = nodePos.get(source);
-    const to = center;
     if (!from) {
       return;
     }
     const line = createSvgEl("line", {
       x1: from.x,
       y1: from.y,
-      x2: to.x,
-      y2: to.y,
+      x2: center.x,
+      y2: center.y,
       stroke: "#9db2d8",
       "stroke-width": "1.4",
       "marker-end": "url(#ego-arrow)",
@@ -587,14 +744,13 @@ function renderRelationGraph() {
   });
 
   outgoing.forEach((target) => {
-    const from = center;
     const to = nodePos.get(target);
     if (!to) {
       return;
     }
     const line = createSvgEl("line", {
-      x1: from.x,
-      y1: from.y,
+      x1: center.x,
+      y1: center.y,
       x2: to.x,
       y2: to.y,
       stroke: "#6f95cd",
@@ -610,7 +766,7 @@ function renderRelationGraph() {
     const group = createSvgEl("g", {
       role: "button",
       tabindex: "0",
-      "aria-label": `查看节点 ${id}`,
+      "aria-label": `${t("metaNodeId")}: ${id}`,
     });
 
     const circle = createSvgEl("circle", {
@@ -646,19 +802,19 @@ function renderRelationGraph() {
   });
 }
 
-function renderVersionDag() {
+function renderVersionGraph() {
   const svg = elements.versionSvg;
   svg.innerHTML = "";
 
   const nodeId = app.selectedNodeId;
   if (!nodeId) {
     const text = createSvgEl("text", {
-      x: 145,
-      y: 126,
+      x: 126,
+      y: 132,
       fill: "#5a6779",
       "font-size": "14",
     });
-    text.textContent = "选择节点后显示版本 DAG";
+    text.textContent = t("versionHint");
     svg.appendChild(text);
     return;
   }
@@ -666,106 +822,77 @@ function renderVersionDag() {
   const versions = getNodeVersions(nodeId);
   if (versions.length === 0) {
     const text = createSvgEl("text", {
-      x: 120,
-      y: 126,
+      x: 176,
+      y: 132,
       fill: "#5a6779",
       "font-size": "14",
     });
-    text.textContent = "该节点暂无版本对象";
+    text.textContent = t("timelineEmpty");
     svg.appendChild(text);
     return;
   }
 
-  const ordered = [...versions].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
-  const laneByVersion = new Map();
-  let nextRootLane = 0;
-
-  ordered.forEach((record) => {
-    const parentLanes = record.parents
-      .map((parentId) => laneByVersion.get(parentId))
-      .filter((lane) => lane !== undefined);
-
-    let lane = 0;
-    if (parentLanes.length === 0) {
-      lane = nextRootLane;
-      nextRootLane += 1;
-    } else if (parentLanes.length === 1) {
-      lane = parentLanes[0];
-    } else {
-      lane = Math.min(...parentLanes);
-    }
-    laneByVersion.set(record.id, lane);
+  const lanes = new Map();
+  const pos = new Map();
+  versions.forEach((item, idx) => {
+    const lane = idx % 4;
+    lanes.set(item.id, lane);
+    pos.set(item.id, { x: 58 + idx * 88, y: 48 + lane * 46 });
   });
 
-  const maxLane = Math.max(...Array.from(laneByVersion.values()), 0);
-  const height = Math.max(240, 110 + (maxLane + 1) * 52);
-  svg.setAttribute("viewBox", `0 0 460 ${height}`);
-
-  const marginX = 28;
-  const spacingX = ordered.length > 1 ? (460 - marginX * 2) / (ordered.length - 1) : 0;
-  const laneGap = maxLane > 0 ? Math.min(64, (height - 90) / maxLane) : 0;
-
-  const points = new Map();
-  ordered.forEach((record, i) => {
-    const lane = laneByVersion.get(record.id) || 0;
-    points.set(record.id, {
-      x: marginX + i * spacingX,
-      y: 48 + lane * laneGap,
-    });
+  const defs = createSvgEl("defs");
+  const marker = createSvgEl("marker", {
+    id: "dag-arrow",
+    viewBox: "0 0 10 10",
+    refX: "8",
+    refY: "5",
+    markerWidth: "7",
+    markerHeight: "7",
+    orient: "auto-start-reverse",
   });
+  marker.appendChild(createSvgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#90a4c9" }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
 
-  ordered.forEach((record) => {
-    const to = points.get(record.id);
-    record.parents.forEach((parentId) => {
-      const from = points.get(parentId);
-      if (!from) {
+  versions.forEach((item) => {
+    const from = pos.get(item.id);
+    item.parents.forEach((parentId) => {
+      const to = pos.get(parentId);
+      if (!to) {
         return;
       }
-
       const path = createSvgEl("path", {
-        d: `M ${from.x + 9} ${from.y} C ${from.x + 32} ${from.y}, ${to.x - 32} ${to.y}, ${to.x - 9} ${to.y}`,
+        d: `M ${from.x} ${from.y} C ${from.x - 22} ${from.y}, ${to.x + 22} ${to.y}, ${to.x} ${to.y}`,
         fill: "none",
-        stroke: "#98abcc",
-        "stroke-width": "1.5",
+        stroke: "#90a4c9",
+        "stroke-width": "1.2",
+        "marker-end": "url(#dag-arrow)",
+        opacity: "0.82",
       });
       svg.appendChild(path);
     });
   });
 
-  const headVersionId = app.snapshot.heads?.[nodeId] || "";
-  ordered.forEach((record) => {
-    const point = points.get(record.id);
-    const isHead = record.id === headVersionId;
+  versions.forEach((item) => {
+    const p = pos.get(item.id);
     const circle = createSvgEl("circle", {
-      cx: point.x,
-      cy: point.y,
-      r: isHead ? 9 : 7,
-      fill: isHead ? "#2a5db0" : "#5f87c2",
+      cx: p.x,
+      cy: p.y,
+      r: 10,
+      fill: "#2a5db0",
       stroke: "#ffffff",
-      "stroke-width": "1.8",
+      "stroke-width": "2",
     });
-
-    const idText = createSvgEl("text", {
-      x: point.x - 15,
-      y: point.y - 11,
-      fill: "#1f2a37",
-      "font-size": "9.5",
-      "font-family": "JetBrains Mono, Menlo, Consolas, monospace",
-    });
-    idText.textContent = shortId(record.id);
-
-    const timeText = createSvgEl("text", {
-      x: point.x - 21,
-      y: point.y + 16,
-      fill: "#5a6779",
-      "font-size": "9",
-    });
-    const ts = formatTimestamp(record.timestamp);
-    timeText.textContent = ts === "未知" ? ts : ts.slice(5);
-
     svg.appendChild(circle);
-    svg.appendChild(idText);
-    svg.appendChild(timeText);
+
+    const label = createSvgEl("text", {
+      x: p.x + 14,
+      y: p.y + 4,
+      fill: "#1f2a37",
+      "font-size": "11",
+    });
+    label.textContent = shortId(item.id);
+    svg.appendChild(label);
   });
 }
 
@@ -774,7 +901,7 @@ function renderAll() {
   renderNodeList();
   renderArticle();
   renderRelationGraph();
-  renderVersionDag();
+  renderVersionGraph();
 }
 
 function selectNode(nodeId) {
@@ -785,175 +912,140 @@ function selectNode(nodeId) {
   renderAll();
 }
 
-async function parseAndRender() {
-  if (app.roots.length === 0) {
-    setStatus("请先选择包含 index/objects 的目录。", "warn");
+async function parseCurrentRoot() {
+  if (!app.currentRoot) {
+    setStatus(t("statusMissingFolder"), "warn");
     return;
   }
 
+  setStatus(t("statusParsing"));
+
   try {
-    const root = app.currentRoot;
-    const stateJson = await readJsonOptional(`${root}index/state.json`);
+    const statePath = `${app.currentRoot}index/state.json`;
+    const headsPath = `${app.currentRoot}index/heads.json`;
+    const nodesPath = `${app.currentRoot}index/nodes.json`;
 
-    let heads = {};
-    let nodes = {};
+    const state = await readJsonOptional(statePath);
+    const heads = state?.heads || (await readJsonOptional(headsPath));
+    const nodes = state?.nodes || (await readJsonOptional(nodesPath));
 
-    if (stateJson && typeof stateJson === "object") {
-      heads = toSafeObject(stateJson.heads);
-      nodes = toSafeObject(stateJson.nodes);
-    } else {
-      heads = toSafeObject(await readJsonOptional(`${root}index/heads.json`));
-      nodes = toSafeObject(await readJsonOptional(`${root}index/nodes.json`));
+    if (!heads || !nodes) {
+      setStatus(t("statusNoSnapshot"), "warn");
+      return;
     }
 
     app.snapshot = { heads, nodes };
 
     const versions = new Map();
-    let objectFileCount = 0;
-    let objectParseErrorCount = 0;
+    Array.from(app.fileMap.keys())
+      .filter((path) => path.startsWith(`${app.currentRoot}objects/`) && path.endsWith(".json"))
+      .forEach((path) => {
+        const id = path.split("/").pop().replace(/\.json$/, "");
+        versions.set(id, app.fileMap.get(path));
+      });
 
-    app.fileMap.forEach((_, path) => {
-      if (path.startsWith(`${root}objects/`) && path.endsWith(".json")) {
-        objectFileCount += 1;
-      }
-    });
-
-    for (const [path, file] of app.fileMap.entries()) {
-      if (!path.startsWith(`${root}objects/`) || !path.endsWith(".json")) {
-        continue;
-      }
-
-      const fileName = path.split("/").pop() || "";
-      const versionId = fileName.replace(/\.json$/i, "");
-
+    const loadedVersions = new Map();
+    for (const [versionId, file] of versions.entries()) {
       try {
         const parsed = JSON.parse(await file.text());
-        if (!parsed || typeof parsed !== "object") {
-          objectParseErrorCount += 1;
-          continue;
-        }
-        if (!parsed.version) {
-          parsed.version = versionId;
-        }
-        versions.set(versionId, parsed);
+        loadedVersions.set(versionId, parsed);
       } catch (_) {
-        objectParseErrorCount += 1;
+        // Ignore malformed object files.
       }
     }
+    app.versions = loadedVersions;
 
-    app.versions = versions;
-    app.accessLogs = await readAccessLog(`${root}index/access.log`);
+    app.accessLogs = await readAccessLog(`${app.currentRoot}index/access.log`);
     app.model = buildModel(app.snapshot, app.versions, app.accessLogs);
 
-    const tracked = app.model.nodes.filter((node) => node.isTracked);
-    app.selectedNodeId = tracked[0]?.id || app.model.nodes[0]?.id || null;
+    if (!app.selectedNodeId || !app.model.nodeById.has(app.selectedNodeId)) {
+      app.selectedNodeId = app.model.nodes[0]?.id || null;
+    }
 
     renderAll();
-
-    const summary = [
-      `已解析：${root || "(当前目录)"}`,
-      `节点 ${app.model.nodes.length}`,
-      `关系边 ${app.model.edges.length}`,
-      `版本 ${app.versions.size}/${objectFileCount}`,
-    ];
-
-    if (objectParseErrorCount > 0) {
-      summary.push(`对象解析失败 ${objectParseErrorCount}`);
-    }
-    if (app.model.missingHeadObjects > 0) {
-      summary.push(`head 缺失对象 ${app.model.missingHeadObjects}`);
-    }
-
-    setStatus(summary.join(" | "), objectParseErrorCount > 0 ? "warn" : "ok");
+    setStatus(
+      t("statusReady", {
+        nodes: app.model.nodes.length,
+        edges: app.model.edges.length,
+        versions: app.versions.size,
+      }),
+      "ok",
+    );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setStatus(`解析失败：${message}`, "warn");
+    setStatus(t("statusParseFailed", { message: error.message || String(error) }), "warn");
   }
 }
 
-function clearVisuals() {
-  app.snapshot = { heads: {}, nodes: {} };
-  app.versions = new Map();
-  app.accessLogs = [];
-  app.model = buildModel(app.snapshot, app.versions, app.accessLogs);
-  app.selectedNodeId = null;
-  app.searchQuery = "";
-  if (elements.nodeSearch) {
-    elements.nodeSearch.value = "";
-  }
+function resetViewForLanguage() {
+  applyStaticI18n();
+  updateRootSelect();
   renderAll();
 }
 
-function handleNodeJumpClick(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-
-  const btn = target.closest("[data-node-id]");
-  if (!(btn instanceof HTMLElement)) {
-    return;
-  }
-
-  const nodeId = btn.getAttribute("data-node-id") || "";
-  if (!nodeId) {
-    return;
-  }
-
-  selectNode(nodeId);
+function setLanguage(lang) {
+  app.lang = I18N[lang] ? lang : "en";
+  elements.langSelect.value = app.lang;
+  localStorage.setItem(STORAGE_LANG_KEY, app.lang);
+  setHtmlLang();
+  resetViewForLanguage();
 }
 
-elements.folderInput.addEventListener("change", async (event) => {
-  const files = event.target.files;
+function bindEvents() {
+  elements.langSelect.addEventListener("change", () => {
+    setLanguage(elements.langSelect.value);
+  });
 
-  if (!files || files.length === 0) {
-    app.fileMap.clear();
-    app.roots = [];
-    app.currentRoot = "";
+  elements.folderInput.addEventListener("change", () => {
+    const files = elements.folderInput.files;
+    app.fileMap = buildFileMap(files || []);
+    app.roots = detectStorageRoots(Array.from(app.fileMap.keys()));
+    app.currentRoot = app.roots[0] || "";
     updateRootSelect();
-    clearVisuals();
-    setStatus("未选择任何目录。", "warn");
-    return;
-  }
 
-  app.fileMap = buildFileMap(files);
-  const paths = Array.from(app.fileMap.keys());
-  app.roots = detectStorageRoots(paths);
-  app.currentRoot = app.roots[0] || "";
+    if (app.roots.length > 0) {
+      setStatus(t("statusRootsDetected", { count: app.roots.length }), "ok");
+    } else {
+      setStatus(t("statusNoRoots"), "warn");
+    }
+  });
+
+  elements.rootSelect.addEventListener("change", () => {
+    app.currentRoot = elements.rootSelect.value;
+  });
+
+  elements.parseBtn.addEventListener("click", () => {
+    parseCurrentRoot();
+  });
+
+  elements.nodeSearch.addEventListener("input", () => {
+    app.searchQuery = elements.nodeSearch.value;
+    renderNodeList();
+  });
+
+  elements.nodeList.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-node-id]");
+    if (!btn) {
+      return;
+    }
+    selectNode(btn.dataset.nodeId);
+  });
+
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest(".wiki-link[data-node-id]");
+    if (!link) {
+      return;
+    }
+    selectNode(link.dataset.nodeId);
+  });
+}
+
+function init() {
+  bindEvents();
   updateRootSelect();
+  app.selectedNodeId = null;
+  const storedLang = localStorage.getItem(STORAGE_LANG_KEY) || "en";
+  setLanguage(storedLang);
+  setStatus(t("statusWaiting"));
+}
 
-  if (app.roots.length === 0) {
-    clearVisuals();
-    setStatus("未检测到 M2W 存储结构（需要 index/ + objects/）。", "warn");
-    return;
-  }
-
-  if (app.roots.length === 1) {
-    setStatus(`已检测到存储目录：${app.currentRoot || "(当前目录)"}，正在解析...`);
-    await parseAndRender();
-  } else {
-    setStatus(`检测到 ${app.roots.length} 个存储目录，请选择后点击“解析”。`, "ok");
-  }
-});
-
-elements.rootSelect.addEventListener("change", () => {
-  app.currentRoot = elements.rootSelect.value;
-});
-
-elements.parseBtn.addEventListener("click", async () => {
-  app.currentRoot = elements.rootSelect.value;
-  await parseAndRender();
-});
-
-elements.nodeSearch.addEventListener("input", () => {
-  app.searchQuery = elements.nodeSearch.value || "";
-  renderNodeList();
-});
-
-elements.nodeList.addEventListener("click", handleNodeJumpClick);
-
-elements.outgoingLinks.addEventListener("click", handleNodeJumpClick);
-
-elements.incomingLinks.addEventListener("click", handleNodeJumpClick);
-
-clearVisuals();
+init();

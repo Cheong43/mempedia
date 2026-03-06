@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,70 +7,87 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <a class="skip-link" href="#main-content" data-i18n="skipToMain">Skip to main content</a>
 
-    <header class="topbar" aria-label="页面头部">
-      <p class="brand">M2W Knowledge Wiki</p>
-      <h1>项目记忆图谱百科页</h1>
-      <p class="subtitle">像 Wikipedia 一样阅读节点内容，并查看关联关系与版本演进。</p>
+    <header class="topbar" aria-label="Page header">
+      <div>
+        <p class="brand">M2W Knowledge Wiki</p>
+        <h1 data-i18n="pageTitle">Project Memory Graph Encyclopedia</h1>
+        <p class="subtitle" data-i18n="pageSubtitle">
+          Browse nodes like a wiki page and inspect relationships with version evolution.
+        </p>
+      </div>
+      <label class="lang-switch" for="lang-select">
+        <span data-i18n="languageLabel">Language</span>
+        <select id="lang-select" aria-label="Language selector">
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+        </select>
+      </label>
     </header>
 
     <main id="main-content" class="layout">
       <section class="panel controls" aria-labelledby="controls-title">
-        <h2 id="controls-title">导入数据</h2>
+        <h2 id="controls-title" data-i18n="importData">Import Data</h2>
         <div class="controls-row">
           <label class="field">
-            <span>选择目录</span>
+            <span data-i18n="chooseFolder">Choose Folder</span>
             <input id="folder-input" type="file" webkitdirectory directory multiple />
           </label>
           <label class="field">
-            <span>存储根</span>
-            <select id="root-select" aria-label="选择存储根"></select>
+            <span data-i18n="storageRoot">Storage Root</span>
+            <select id="root-select" aria-label="Choose storage root"></select>
           </label>
-          <button id="parse-btn" type="button">解析</button>
+          <button id="parse-btn" type="button" data-i18n="parseBtn">Parse</button>
         </div>
-        <p class="hint">推荐直接选择目标项目的 <code>.M2W/memory</code>（兼容 <code>data</code> 布局）。</p>
-        <p id="status" role="status" aria-live="polite">等待导入目录...</p>
+        <p class="hint" data-i18n="importHint">
+          Prefer selecting <code>.M2W/memory</code> directly (compatible with <code>data</code> layout).
+        </p>
+        <p id="status" role="status" aria-live="polite" data-i18n="statusWaiting">
+          Waiting for folder import...
+        </p>
       </section>
 
-      <section class="metrics" aria-label="统计信息">
+      <section class="metrics" aria-label="Metrics">
         <article class="panel metric">
-          <h2>节点</h2>
+          <h2 data-i18n="metricNodes">Nodes</h2>
           <p id="metric-nodes">0</p>
         </article>
         <article class="panel metric">
-          <h2>关系边</h2>
+          <h2 data-i18n="metricEdges">Edges</h2>
           <p id="metric-edges">0</p>
         </article>
         <article class="panel metric">
-          <h2>版本</h2>
+          <h2 data-i18n="metricVersions">Versions</h2>
           <p id="metric-versions">0</p>
         </article>
         <article class="panel metric">
-          <h2>访问日志</h2>
+          <h2 data-i18n="metricAccess">Access Logs</h2>
           <p id="metric-access">0</p>
         </article>
       </section>
 
-      <section class="wiki-layout" aria-label="百科内容区">
+      <section class="wiki-layout" aria-label="Encyclopedia content">
         <article class="panel article" aria-labelledby="article-title">
           <header class="article-head">
-            <h2 id="article-title">未选择节点</h2>
-            <p id="article-meta" class="article-meta">导入后从右侧索引选择节点。</p>
+            <h2 id="article-title" data-i18n="articleNone">No node selected</h2>
+            <p id="article-meta" class="article-meta" data-i18n="articleGuide">
+              Import data, then choose a node from the index on the right.
+            </p>
           </header>
 
           <section class="article-section" aria-labelledby="summary-title">
-            <h3 id="summary-title">摘要</h3>
-            <p id="article-body" class="article-body">暂无内容。</p>
+            <h3 id="summary-title" data-i18n="summary">Summary</h3>
+            <p id="article-body" class="article-body" data-i18n="noContent">No content yet.</p>
           </section>
 
           <section class="article-section" aria-labelledby="structured-title">
-            <h3 id="structured-title">结构化字段</h3>
+            <h3 id="structured-title" data-i18n="structuredFields">Structured Fields</h3>
             <table class="structured-table">
               <thead>
                 <tr>
-                  <th scope="col">字段</th>
-                  <th scope="col">值</th>
+                  <th scope="col" data-i18n="field">Field</th>
+                  <th scope="col" data-i18n="value">Value</th>
                 </tr>
               </thead>
               <tbody id="structured-table-body"></tbody>
@@ -83,42 +100,42 @@
           </section>
 
           <section class="article-section" aria-labelledby="links-title">
-            <h3 id="links-title">本文关联</h3>
+            <h3 id="links-title" data-i18n="relatedLinks">Related Links</h3>
             <div class="relation-columns">
               <div>
-                <h4>指向节点</h4>
+                <h4 data-i18n="outgoingNodes">Outgoing</h4>
                 <div id="outgoing-links" class="wiki-links"></div>
               </div>
               <div>
-                <h4>被这些节点引用</h4>
+                <h4 data-i18n="incomingNodes">Incoming</h4>
                 <div id="incoming-links" class="wiki-links"></div>
               </div>
             </div>
           </section>
 
           <section class="article-section" aria-labelledby="timeline-title">
-            <h3 id="timeline-title">版本时间线</h3>
+            <h3 id="timeline-title" data-i18n="versionTimeline">Version Timeline</h3>
             <ol id="version-list" class="timeline"></ol>
           </section>
         </article>
 
         <aside class="panel sidebar" aria-labelledby="sidebar-title">
-          <h2 id="sidebar-title">节点索引</h2>
+          <h2 id="sidebar-title" data-i18n="nodeIndex">Node Index</h2>
           <label class="field search-field">
-            <span>搜索节点</span>
-            <input id="node-search" type="search" placeholder="按 ID 或标题过滤" />
+            <span data-i18n="searchNodes">Search Nodes</span>
+            <input id="node-search" type="search" placeholder="Filter by ID or title" />
           </label>
-          <p id="node-count-label" class="hint">0 个节点</p>
-          <nav id="node-list" class="node-list" aria-label="节点列表"></nav>
+          <p id="node-count-label" class="hint">0 nodes</p>
+          <nav id="node-list" class="node-list" aria-label="Node list"></nav>
 
           <section class="mini-section" aria-labelledby="relation-title">
-            <h3 id="relation-title">关系视图（当前节点）</h3>
-            <svg id="relation-svg" viewBox="0 0 460 280" role="img" aria-label="关系图"></svg>
+            <h3 id="relation-title" data-i18n="relationView">Relation View (Current Node)</h3>
+            <svg id="relation-svg" viewBox="0 0 460 280" role="img" aria-label="Relation graph"></svg>
           </section>
 
           <section class="mini-section" aria-labelledby="version-dag-title">
-            <h3 id="version-dag-title">版本 DAG（当前节点）</h3>
-            <svg id="version-svg" viewBox="0 0 460 260" role="img" aria-label="版本图"></svg>
+            <h3 id="version-dag-title" data-i18n="versionDag">Version DAG (Current Node)</h3>
+            <svg id="version-svg" viewBox="0 0 460 260" role="img" aria-label="Version graph"></svg>
           </section>
         </aside>
       </section>
