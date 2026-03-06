@@ -7,6 +7,9 @@ description: Build, evolve, and review the Rust append-only versioned knowledge 
 
 Use this skill when the request is about implementing or modifying the memory engine in this repository.
 
+Terminology:
+- `M2W` means `Memory to Wiki`.
+
 ## Scope
 
 This engine is:

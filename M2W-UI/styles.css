@@ -1,0 +1,408 @@
+:root {
+  --bg: #f8f9fb;
+  --panel: #ffffff;
+  --ink: #1f2a37;
+  --muted: #5a6779;
+  --line: #d8dee8;
+  --primary: #2a5db0;
+  --primary-soft: #e8f0ff;
+  --ok: #0f766e;
+  --warn: #b45309;
+  --shadow: 0 10px 22px rgba(24, 39, 75, 0.08);
+  --radius: 12px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Source Sans 3", "PingFang SC", "Noto Sans SC", sans-serif;
+  color: var(--ink);
+  background: linear-gradient(180deg, #fdfefe 0%, var(--bg) 55%, #f3f5f9 100%);
+}
+
+code,
+.mono {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 0.6rem;
+  z-index: 20;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 8px;
+  text-decoration: none;
+  padding: 0.45rem 0.75rem;
+}
+
+.skip-link:focus {
+  top: 0.6rem;
+}
+
+:focus-visible {
+  outline: 3px solid #0c4a6e;
+  outline-offset: 2px;
+}
+
+.topbar,
+.layout {
+  width: min(1220px, 95vw);
+  margin-inline: auto;
+}
+
+.topbar {
+  padding: 1.2rem 0 0.8rem;
+}
+
+.brand {
+  margin: 0;
+  color: var(--primary);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.topbar h1 {
+  margin: 0.2rem 0 0;
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-size: clamp(1.35rem, 2.6vw, 2.25rem);
+}
+
+.subtitle {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+}
+
+.layout {
+  padding-bottom: 1.4rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem;
+}
+
+.panel h2,
+.panel h3,
+.panel h4 {
+  margin: 0;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: end;
+  margin-top: 0.75rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 220px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+input,
+select,
+button {
+  height: 2.35rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 0.7rem;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+}
+
+input[type="file"] {
+  width: min(440px, 78vw);
+  padding-top: 0.45rem;
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(180deg, #ffffff 0%, #f2f6ff 100%);
+}
+
+button:hover {
+  background: var(--primary-soft);
+}
+
+.hint,
+#status {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+#status.ok {
+  color: var(--ok);
+}
+
+#status.warn {
+  color: var(--warn);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.metric h2 {
+  font-size: 0.94rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.metric p {
+  margin: 0.45rem 0 0;
+  font-size: 1.8rem;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.wiki-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.05fr) minmax(300px, 1fr);
+  gap: 0.85rem;
+}
+
+.article {
+  padding: 1.2rem;
+}
+
+.article-head {
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.article-head h2 {
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-size: 1.7rem;
+}
+
+.article-meta {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.article-section {
+  margin-top: 1rem;
+}
+
+.article-section h3 {
+  font-size: 1.03rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.35rem;
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+}
+
+.article-body {
+  margin: 0.65rem 0 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  font-size: 1.03rem;
+}
+
+.structured-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.6rem;
+}
+
+.structured-table th,
+.structured-table td {
+  border-bottom: 1px solid #e4e9f2;
+  text-align: left;
+  padding: 0.45rem 0.3rem;
+  font-size: 0.92rem;
+  vertical-align: top;
+}
+
+.structured-table th {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.chips {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.relation-columns {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.relation-columns h4 {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.wiki-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.wiki-link {
+  border: 1px solid #c8d7f3;
+  background: #f7faff;
+  color: var(--primary);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.84rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.wiki-link:hover {
+  background: #e9f1ff;
+}
+
+.timeline {
+  margin: 0.7rem 0 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.timeline li {
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 0.9rem;
+}
+
+.timeline strong {
+  color: var(--ink);
+}
+
+.sidebar {
+  padding: 1rem;
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.search-field {
+  min-width: 100%;
+}
+
+.node-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafbfd;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.35rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.node-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0.45rem 0.5rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.node-item small {
+  display: block;
+  margin-top: 0.1rem;
+  color: var(--muted);
+}
+
+.node-item:hover {
+  border-color: #d0dbef;
+  background: #f4f8ff;
+}
+
+.node-item.active {
+  border-color: #a7bee8;
+  background: #eaf2ff;
+}
+
+.mini-section {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mini-section h3 {
+  font-size: 0.94rem;
+}
+
+svg {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fbfdff, #f4f8ff);
+}
+
+@media (max-width: 1040px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wiki-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .node-list {
+    max-height: 230px;
+  }
+}
+
+@media (max-width: 640px) {
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .relation-columns {
+    grid-template-columns: 1fr;
+  }
+
+  input[type="file"] {
+    width: 100%;
+  }
+
+  .field {
+    min-width: 100%;
+  }
+}
