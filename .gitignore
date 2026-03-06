@@ -1,22 +1,48 @@
 # M2W - Agent Memory Engine
 # Git Ignore File
 
+# ============================================
 # Rust / Cargo
+# ============================================
+# 编译输出目录
 target/
 **/target/
-*.d
-**/*.rs.bk
+
+# Cargo 锁定文件（对于应用项目通常忽略，对于库项目保留）
 Cargo.lock
 
-# IDE and editors
+# 增量编译文件
+**/*.rs.bk
+*.rmeta
+*.rlib
+*.d
+
+# ============================================
+# IDE 和编辑器
+# ============================================
+# IntelliJ / CLion / RustRover
 .idea/
 *.iml
+
+# VS Code
 .vscode/
 *.code-workspace
+
+# Vim / Neovim
 *.swp
 *.swo
 *~
 
+# Emacs
+*~
+\#*\#
+
+# Sublime Text
+*.sublime-*
+
+# ============================================
+# 操作系统文件
+# ============================================
 # macOS
 .DS_Store
 .AppleDouble
@@ -38,34 +64,51 @@ $RECYCLE.BIN/
 *~
 .nfs*
 
-# Application specific
+# ============================================
+# 应用特定文件
+# ============================================
+# M2W 数据目录（实际数据不应该提交）
 data/
 *.memory/
 *.db
 *.log
+
+# 测试生成的文件
 test_output/
 tmp/
 temp/
+
+# 调试输出
 debug/
 *.debug
 
-# Security
+# ============================================
+# 安全相关
+# ============================================
+# 环境变量文件（包含敏感信息）
 .env
 .env.local
 .env.*.local
+
+# 密钥文件
 *.key
 *.pem
 *.p12
 *.pfx
+
+# 配置文件（包含敏感信息）
 config.local.toml
 secrets.toml
 
-# Build
+# ============================================
+# 构建和 CI/CD
+# ============================================
+# 构建脚本输出
 build/
 dist/
 out/
 
-# CI/CD
+# CI/CD 生成的文件
 .github/workflows/*.local.yml
 .gitlab-ci.local.yml
 
@@ -73,3 +116,19 @@ out/
 Dockerfile.local
 docker-compose.local.yml
 .dockerignore
+
+# ============================================
+# 文档生成
+# ============================================
+# 自动生成的文档
+doc/generated/
+book/
+site/
+
+# ============================================
+# 临时文件
+# ============================================
+*.tmp
+*.temp
+*.cache
+cache/
