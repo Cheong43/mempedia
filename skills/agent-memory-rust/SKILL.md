@@ -73,6 +73,63 @@ Rules:
 - Avoid `--data` unless a custom path is explicitly required.
 - In `--serve` mode, payloads must be line-delimited JSON.
 
+## Agent Decision Policy (LLM-Driven, Not Hardcoded)
+
+This policy is for the calling AI agent to reason about whether to read, update, fork, or merge memory.
+Do not require deterministic program-side hardcoded rules for this decision.
+
+### Step 1: Default to Read-First
+
+Before writing, the agent should usually:
+1. `open_node` if node is known.
+2. `traverse` for relevant neighborhood context.
+3. `compare_versions` if conflicting history is suspected.
+
+### Step 2: Choose Action by Evidence and Intent
+
+Use these heuristics:
+
+1. Read only (no write):
+- User asks explanatory questions with no new durable fact.
+- Content is speculative, temporary, or not source-grounded.
+- Existing memory already answers with sufficient confidence.
+
+2. Update existing node (`update_node`):
+- New information refines or extends existing concept.
+- No major contradiction with current head.
+- Agent can provide a clearer, more current, or better structured state.
+
+3. Fork then evolve (`fork_node` + update path):
+- New input conflicts with current head but cannot be confidently resolved now.
+- Multiple valid hypotheses should coexist temporarily.
+- Cross-agent disagreement exists and should remain traceable.
+
+4. Merge branches (`merge_node`):
+- Two branches represent complementary truth and can be reconciled.
+- Conflicts are resolvable via confidence/source quality.
+
+### Step 3: Confidence and Explainability Discipline
+
+When the agent writes:
+1. Prefer adding structured fields over rewriting free text blindly.
+2. Preserve uncertainty explicitly (do not overstate confidence).
+3. Keep version history interpretable so future agents can audit reasoning.
+4. Log significant reads/writes when reasoning trace is useful.
+
+### Step 4: High-Risk Domains
+
+For legal/medical/financial/safety-critical topics:
+1. Bias toward read + verify before write.
+2. If evidence is weak or conflicting, fork instead of force-updating head.
+3. Keep changes conservative and traceable.
+
+### Decision Output Requirement
+
+For each non-trivial memory operation, the calling AI should internally justify:
+1. Why read was enough, or why write was needed.
+2. Why update vs fork vs merge was selected.
+3. Why this preserves long-term memory quality.
+
 ## Execution Workflow
 
 1. Clarify operation type:
