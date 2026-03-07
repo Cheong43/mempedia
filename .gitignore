@@ -132,3 +132,6 @@ site/
 *.temp
 *.cache
 cache/
+
+# Claude Code files
+.claude/
