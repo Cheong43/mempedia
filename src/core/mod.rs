@@ -63,6 +63,22 @@ pub struct SearchHit {
     pub score: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExploreCandidate {
+    pub node_id: NodeId,
+    pub score: f32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExploreBudgetItem {
+    pub node_id: NodeId,
+    pub depth: usize,
+    pub score: f32,
+    pub reason: String,
+    pub via: Option<NodeId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccessStats {
     pub total_access: u64,

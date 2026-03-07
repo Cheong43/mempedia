@@ -156,6 +156,9 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 - `traverse`
 - `search_by_highlight`
 - `search_by_keyword`（关键词模糊检索，返回分数排序结果）
+- `suggest_exploration`（推荐下一层可探索节点）
+- `explore_with_budget`（按深度预算返回多跳探索路线）
+- `auto_link_related`（自动把高分候选补成 links）
 
 ### 5.1 请求示例
 
@@ -251,7 +254,42 @@ cargo run -- --project /path/to/project --serve
 }
 ```
 
-返回统一是 `ToolResponse` JSON（`version`/`optional_version`/`node_list`/`search_results`/`error`）。
+```json
+{
+  "action": "suggest_exploration",
+  "node_id": "swift_learning_resources",
+  "limit": 6
+}
+```
+
+```json
+{
+  "action": "explore_with_budget",
+  "node_id": "swift_learning_resources",
+  "depth_budget": 2,
+  "per_layer_limit": 5,
+  "total_limit": 12,
+  "min_score": 35.0
+}
+```
+
+```json
+{
+  "action": "auto_link_related",
+  "node_id": "y_combinator_overview",
+  "limit": 3,
+  "min_score": 45.0
+}
+```
+
+返回统一是 `ToolResponse` JSON（`version`/`optional_version`/`node_list`/`search_results`/`explore_results`/`explore_budget_results`/`error`）。
+
+### 5.4 推荐探索流程（让智能体知道还能看什么）
+
+1. `open_node` 读取当前节点（并记录访问）
+2. `explore_with_budget` 先拿到多跳路线（depth 预算）
+3. 对预算结果中的高分候选执行 `open_node` 继续深挖
+4. 需要补图时再用 `suggest_exploration` / `auto_link_related` 回写关联
 
 ## 6. 当前模块结构
 

@@ -1,1 +1,5 @@
-target/*
+# Build directories
+target/
+
+# Data directories
+data/

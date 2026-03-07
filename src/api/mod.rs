@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, AccessStats, MemoryError, MemoryResult, Node, NodeContent, NodePatch, NodeVersion,
-    SearchHit,
+    AccessLog, AccessStats, ExploreBudgetItem, ExploreCandidate, Link, MemoryError, MemoryResult,
+    Node, NodeContent, NodePatch, NodeVersion, SearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
@@ -97,6 +97,22 @@ pub enum ToolAction {
         query: String,
         limit: Option<usize>,
     },
+    SuggestExploration {
+        node_id: String,
+        limit: Option<usize>,
+    },
+    ExploreWithBudget {
+        node_id: String,
+        depth_budget: Option<usize>,
+        per_layer_limit: Option<usize>,
+        total_limit: Option<usize>,
+        min_score: Option<f32>,
+    },
+    AutoLinkRelated {
+        node_id: String,
+        limit: Option<usize>,
+        min_score: Option<f32>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +142,12 @@ pub enum ToolResponse {
     },
     SearchResults {
         results: Vec<SearchHit>,
+    },
+    ExploreResults {
+        results: Vec<ExploreCandidate>,
+    },
+    ExploreBudgetResults {
+        results: Vec<ExploreBudgetItem>,
     },
     Error {
         message: String,
@@ -316,6 +338,214 @@ impl MemoryEngine {
         Ok(hits)
     }
 
+    pub fn suggest_exploration(
+        &self,
+        node_id: &str,
+        limit: usize,
+    ) -> MemoryResult<Vec<ExploreCandidate>> {
+        let head_id = self
+            .head(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?;
+        let head = self.get_version(head_id)?;
+
+        let mut candidates: HashMap<String, ExploreCandidate> = HashMap::new();
+
+        for link in &head.content.links {
+            if link.target == node_id {
+                continue;
+            }
+            let importance = self
+                .graph_index
+                .importance_index
+                .get(&link.target)
+                .copied()
+                .unwrap_or(0.0);
+            let score = 90.0 + link.weight.max(0.0) * 5.0 + importance.min(10.0);
+            upsert_candidate(
+                &mut candidates,
+                &link.target,
+                score,
+                format!("linked:{}", link.label.as_deref().unwrap_or("related")),
+            );
+        }
+
+        for source in self.graph_index.inbound_neighbors(node_id) {
+            if source == node_id {
+                continue;
+            }
+            let importance = self
+                .graph_index
+                .importance_index
+                .get(&source)
+                .copied()
+                .unwrap_or(0.0);
+            let score = 70.0 + importance.min(10.0);
+            upsert_candidate(&mut candidates, &source, score, "referenced_by".to_string());
+        }
+
+        let query = build_exploration_query(&head.content);
+        for hit in self.search_by_keyword(&query, limit.saturating_mul(4).max(10))? {
+            if hit.node_id == node_id {
+                continue;
+            }
+            let score = 40.0 + hit.score;
+            upsert_candidate(&mut candidates, &hit.node_id, score, "keyword".to_string());
+        }
+
+        if candidates.is_empty() {
+            let mut fallback: Vec<(String, f32)> = self
+                .graph_index
+                .importance_index
+                .iter()
+                .filter(|(id, _)| *id != node_id)
+                .map(|(id, imp)| (id.clone(), *imp))
+                .collect();
+            fallback.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (id, imp) in fallback.into_iter().take(limit.max(1)) {
+                upsert_candidate(
+                    &mut candidates,
+                    &id,
+                    20.0 + imp.max(0.0),
+                    "high_importance_fallback".to_string(),
+                );
+            }
+        }
+
+        let mut result: Vec<ExploreCandidate> = candidates.into_values().collect();
+        result.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
+        if result.len() > limit {
+            result.truncate(limit);
+        }
+        Ok(result)
+    }
+
+    pub fn auto_link_related(
+        &mut self,
+        node_id: &str,
+        limit: usize,
+        min_score: f32,
+    ) -> MemoryResult<NodeVersion> {
+        let head_id = self
+            .head(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+        let head = self.get_version(&head_id)?;
+        let existing: HashSet<String> = head
+            .content
+            .links
+            .iter()
+            .map(|l| l.target.clone())
+            .collect();
+
+        let candidates = self.suggest_exploration(node_id, limit.saturating_mul(4).max(10))?;
+        let mut add_links = Vec::new();
+        for c in candidates {
+            if c.node_id == node_id || existing.contains(&c.node_id) || c.score < min_score {
+                continue;
+            }
+            let normalized = (c.score / 100.0).clamp(0.1, 1.0);
+            add_links.push(Link {
+                target: c.node_id,
+                label: Some(format!("auto_related:{}", c.reason)),
+                weight: normalized,
+            });
+            if add_links.len() >= limit {
+                break;
+            }
+        }
+
+        if add_links.is_empty() {
+            return Err(MemoryError::Invalid(
+                "no related candidates above min_score".to_string(),
+            ));
+        }
+
+        let patch = NodePatch {
+            add_links,
+            ..NodePatch::default()
+        };
+        self.update_node(node_id, patch, head.confidence, head.importance)
+    }
+
+    pub fn explore_with_budget(
+        &self,
+        node_id: &str,
+        depth_budget: usize,
+        per_layer_limit: usize,
+        total_limit: usize,
+        min_score: f32,
+    ) -> MemoryResult<Vec<ExploreBudgetItem>> {
+        if depth_budget == 0 {
+            return Err(MemoryError::Invalid(
+                "depth_budget must be >= 1".to_string(),
+            ));
+        }
+        if per_layer_limit == 0 || total_limit == 0 {
+            return Err(MemoryError::Invalid(
+                "per_layer_limit and total_limit must be >= 1".to_string(),
+            ));
+        }
+        if self.head(node_id).is_none() {
+            return Err(MemoryError::NotFound(format!("node {node_id} not found")));
+        }
+
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(node_id.to_string());
+
+        let mut frontier: Vec<String> = vec![node_id.to_string()];
+        let mut items: Vec<ExploreBudgetItem> = Vec::new();
+
+        for depth in 1..=depth_budget {
+            if frontier.is_empty() || items.len() >= total_limit {
+                break;
+            }
+
+            let mut next_frontier: Vec<String> = Vec::new();
+            for parent in frontier {
+                let suggestions = self.suggest_exploration(&parent, per_layer_limit)?;
+                for cand in suggestions {
+                    if cand.score < min_score || cand.node_id == node_id {
+                        continue;
+                    }
+                    if !visited.insert(cand.node_id.clone()) {
+                        continue;
+                    }
+
+                    let depth_penalty = 1.0 / (depth as f32);
+                    items.push(ExploreBudgetItem {
+                        node_id: cand.node_id.clone(),
+                        depth,
+                        score: cand.score * depth_penalty,
+                        reason: cand.reason,
+                        via: Some(parent.clone()),
+                    });
+                    next_frontier.push(cand.node_id);
+
+                    if items.len() >= total_limit {
+                        break;
+                    }
+                }
+                if items.len() >= total_limit {
+                    break;
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        items.sort_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| b.score.total_cmp(&a.score))
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
+
+        Ok(items)
+    }
+
     pub fn log_access(&mut self, agent_id: &str, node_id: &str) -> MemoryResult<()> {
         let version = self
             .head(node_id)
@@ -488,6 +718,31 @@ impl MemoryEngine {
             ToolAction::SearchByKeyword { query, limit } => self
                 .search_by_keyword(&query, limit.unwrap_or(10))
                 .map(|results| ToolResponse::SearchResults { results }),
+            ToolAction::SuggestExploration { node_id, limit } => self
+                .suggest_exploration(&node_id, limit.unwrap_or(8))
+                .map(|results| ToolResponse::ExploreResults { results }),
+            ToolAction::ExploreWithBudget {
+                node_id,
+                depth_budget,
+                per_layer_limit,
+                total_limit,
+                min_score,
+            } => self
+                .explore_with_budget(
+                    &node_id,
+                    depth_budget.unwrap_or(2),
+                    per_layer_limit.unwrap_or(5),
+                    total_limit.unwrap_or(12),
+                    min_score.unwrap_or(35.0),
+                )
+                .map(|results| ToolResponse::ExploreBudgetResults { results }),
+            ToolAction::AutoLinkRelated {
+                node_id,
+                limit,
+                min_score,
+            } => self
+                .auto_link_related(&node_id, limit.unwrap_or(3), min_score.unwrap_or(45.0))
+                .map(|version| ToolResponse::Version { version }),
         };
 
         result.unwrap_or_else(|err| ToolResponse::Error {
@@ -570,6 +825,58 @@ fn tokenize(input: &str) -> Vec<String> {
         .map(|s| s.trim().to_lowercase())
         .filter(|s| s.len() >= 2)
         .collect()
+}
+
+fn build_exploration_query(content: &NodeContent) -> String {
+    let mut parts = vec![content.title.clone()];
+    parts.extend(content.highlights.clone());
+
+    for (k, v) in &content.structured_data {
+        if k.contains("keyword")
+            || k.contains("topic")
+            || k.contains("category")
+            || k.contains("tag")
+            || k.contains("inspiration")
+            || k.contains("parent")
+        {
+            parts.push(v.clone());
+        }
+    }
+
+    if parts.len() < 4 {
+        let body_tokens: Vec<String> = tokenize(&content.body).into_iter().take(8).collect();
+        parts.extend(body_tokens);
+    }
+
+    parts.join(" ")
+}
+
+fn upsert_candidate(
+    map: &mut HashMap<String, ExploreCandidate>,
+    node_id: &str,
+    score: f32,
+    reason: String,
+) {
+    match map.get_mut(node_id) {
+        Some(existing) => {
+            if score > existing.score {
+                existing.score = score;
+            }
+            if !existing.reason.contains(&reason) {
+                existing.reason = format!("{},{}", existing.reason, reason);
+            }
+        }
+        None => {
+            map.insert(
+                node_id.to_string(),
+                ExploreCandidate {
+                    node_id: node_id.to_string(),
+                    score,
+                    reason,
+                },
+            );
+        }
+    }
 }
 
 fn now_ts() -> u64 {
@@ -846,5 +1153,214 @@ mod tests {
 
         let stats = engine.get_access_stats("OpenNode").expect("stats");
         assert_eq!(stats.total_access, 1);
+    }
+
+    #[test]
+    fn suggest_exploration_prioritizes_links_then_keywords() {
+        let dir = temp_data_dir("suggest-exploration");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "swift_learning_resources",
+                NodeContent {
+                    title: "Swift 学习资源与设计开发工具".to_string(),
+                    body: "## Summary\n包含 y combinator 与 design inspiration".to_string(),
+                    structured_data: BTreeMap::from([
+                        ("category".to_string(), "resources_tools".to_string()),
+                        (
+                            "inspiration".to_string(),
+                            "product_hunt,apple_design_awards,yc".to_string(),
+                        ),
+                    ]),
+                    links: vec![Link {
+                        target: "swift_learning_path".to_string(),
+                        label: Some("next".to_string()),
+                        weight: 0.9,
+                    }],
+                    highlights: vec!["resources".to_string(), "inspiration".to_string()],
+                },
+                0.9,
+                2.0,
+            )
+            .expect("create source");
+
+        engine
+            .create_node(
+                "swift_learning_path",
+                sample_content("Swift Path", "roadmap", "swift_learning_resources"),
+                0.8,
+                1.5,
+            )
+            .expect("create linked");
+
+        engine
+            .create_node(
+                "y_combinator_overview",
+                NodeContent {
+                    title: "Y Combinator - 全球顶级创业加速器".to_string(),
+                    body: "startup accelerator and demo day".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["yc".to_string(), "startup".to_string()],
+                },
+                0.9,
+                3.0,
+            )
+            .expect("create yc");
+
+        let results = engine
+            .suggest_exploration("swift_learning_resources", 5)
+            .expect("suggest");
+        assert!(!results.is_empty());
+        assert_eq!(
+            results.first().map(|r| r.node_id.as_str()),
+            Some("swift_learning_path")
+        );
+        assert!(
+            results.iter().any(|r| r.node_id == "y_combinator_overview"),
+            "keyword expansion should surface yc node"
+        );
+    }
+
+    #[test]
+    fn auto_link_related_adds_links_for_lonely_node() {
+        let dir = temp_data_dir("auto-link-related");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "y_combinator_overview",
+                NodeContent {
+                    title: "Y Combinator - 全球顶级创业加速器".to_string(),
+                    body: "startup accelerator demo day alumni".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "category".to_string(),
+                        "startup_accelerator".to_string(),
+                    )]),
+                    links: vec![],
+                    highlights: vec!["yc".to_string(), "startup".to_string()],
+                },
+                0.95,
+                3.5,
+            )
+            .expect("create yc");
+
+        engine
+            .create_node(
+                "startup_accelerator_model",
+                sample_content(
+                    "Startup Accelerator Model",
+                    "program structure and mentorship",
+                    "x",
+                ),
+                0.8,
+                2.2,
+            )
+            .expect("create model");
+
+        engine
+            .create_node(
+                "demo_day_playbook",
+                sample_content("Demo Day Playbook", "pitching and investor workflow", "x"),
+                0.8,
+                2.0,
+            )
+            .expect("create demo day");
+
+        let updated = engine
+            .auto_link_related("y_combinator_overview", 2, 35.0)
+            .expect("auto link");
+        assert!(!updated.content.links.is_empty());
+    }
+
+    #[test]
+    fn explore_with_budget_returns_multi_depth_candidates() {
+        let dir = temp_data_dir("explore-budget");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "swift_learning_resources",
+                NodeContent {
+                    title: "Swift 学习资源与设计开发工具".to_string(),
+                    body: "swift resource hub".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "category".to_string(),
+                        "resources_tools".to_string(),
+                    )]),
+                    links: vec![Link {
+                        target: "swift_learning_path".to_string(),
+                        label: Some("next".to_string()),
+                        weight: 0.9,
+                    }],
+                    highlights: vec!["swift".to_string(), "resources".to_string()],
+                },
+                0.9,
+                2.0,
+            )
+            .expect("create root");
+
+        engine
+            .create_node(
+                "swift_learning_path",
+                NodeContent {
+                    title: "Swift Learning Path".to_string(),
+                    body: "covers startup inspiration and yc".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![Link {
+                        target: "y_combinator_overview".to_string(),
+                        label: Some("inspiration".to_string()),
+                        weight: 0.8,
+                    }],
+                    highlights: vec!["learning".to_string()],
+                },
+                0.8,
+                1.8,
+            )
+            .expect("create middle");
+
+        engine
+            .create_node(
+                "y_combinator_overview",
+                NodeContent {
+                    title: "Y Combinator".to_string(),
+                    body: "startup accelerator".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["yc".to_string()],
+                },
+                0.95,
+                3.2,
+            )
+            .expect("create leaf");
+
+        let results = engine
+            .explore_with_budget("swift_learning_resources", 2, 4, 10, 0.0)
+            .expect("explore with budget");
+        assert!(
+            results
+                .iter()
+                .any(|i| i.node_id == "swift_learning_path" && i.depth == 1)
+        );
+        assert!(
+            results
+                .iter()
+                .any(|i| i.node_id == "y_combinator_overview" && i.depth == 2)
+        );
+
+        let resp = engine.execute_action(ToolAction::ExploreWithBudget {
+            node_id: "swift_learning_resources".to_string(),
+            depth_budget: Some(2),
+            per_layer_limit: Some(4),
+            total_limit: Some(10),
+            min_score: Some(0.0),
+        });
+        match resp {
+            ToolResponse::ExploreBudgetResults { results } => {
+                assert!(!results.is_empty());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }

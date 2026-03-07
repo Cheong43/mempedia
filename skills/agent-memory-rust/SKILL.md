@@ -87,6 +87,7 @@ Before writing, the agent should usually:
 1. `open_node` if node is known.
 2. `traverse` for relevant neighborhood context.
 3. `compare_versions` if conflicting history is suspected.
+4. `explore_with_budget` to plan multi-hop exploration within bounded depth.
 
 ### Step 2: Choose Action by Evidence and Intent
 
@@ -139,7 +140,7 @@ For each non-trivial memory operation, the calling AI should internally justify:
 - node lifecycle (`create`, `update`, `fork`, `merge`)
 - traversal (`BFS`, `DFS`, importance-first, confidence-filtered)
 - scoring (`promotion`, `decay`)
-- protocol/API actions (`open_node`, `access_node`, `compare_versions`, `search_by_keyword`, etc.)
+- protocol/API actions (`open_node`, `access_node`, `compare_versions`, `search_by_keyword`, `suggest_exploration`, `explore_with_budget`, `auto_link_related`, etc.)
 
 2. Implement in the correct layer:
 - schema: `core`
@@ -186,6 +187,27 @@ Important runtime behavior:
 3. Default auto-promotion is enabled: access can trigger `importance` update via appended versions.
 4. `confidence` does not auto-increase from access alone.
 5. Agent may still call `promote_node` for additional policy-driven re-scoring.
+
+## Exploration Protocol (Default)
+
+Goal: help agents know what to explore next, especially when a node has sparse links.
+
+Recommended sequence:
+1. `open_node` current topic.
+2. `explore_with_budget` to get multi-hop candidates constrained by depth/branch budgets.
+3. `suggest_exploration` for focused next-step candidates with reasons:
+   - `linked:*` (explicit graph edge, highest trust)
+   - `referenced_by` (inbound edge)
+   - `keyword` (fuzzy semantic candidate)
+   - `high_importance_fallback` (last-resort discovery)
+4. Explore top candidates with `open_node`.
+5. If current node has weak outgoing graph, use `auto_link_related` to append high-score links.
+
+Notes:
+- Prefer explicit links for explainability.
+- Use keyword candidates for expansion, then write links back so future traversals become deterministic.
+- Use `explore_with_budget` when the task needs controllable breadth/depth search in one turn.
+- `auto_link_related` is optional and should be used conservatively with sensible `min_score`.
 
 ## Wiki-Style Content Guidance
 

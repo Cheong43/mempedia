@@ -127,4 +127,15 @@ impl GraphIndex {
 
         Ok(out)
     }
+
+    pub fn neighbors(&self, node_id: &str) -> Vec<String> {
+        self.adjacency.get(node_id).cloned().unwrap_or_default()
+    }
+
+    pub fn inbound_neighbors(&self, node_id: &str) -> Vec<String> {
+        self.reverse_adjacency
+            .get(node_id)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
