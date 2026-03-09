@@ -64,6 +64,15 @@ pub struct SearchHit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeHistoryItem {
+    pub version: VersionId,
+    pub timestamp: u64,
+    pub parents: Vec<VersionId>,
+    pub confidence: f32,
+    pub importance: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExploreCandidate {
     pub node_id: NodeId,
     pub score: f32,
@@ -85,6 +94,17 @@ pub struct AccessStats {
     pub pending_access: u64,
     pub last_access_ts: u64,
     pub last_promote_ts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentActionLog {
+    pub timestamp: u64,
+    pub agent_id: String,
+    pub action: String,
+    pub node_id: NodeId,
+    pub version: VersionId,
+    pub reason: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{AccessLog, AccessStats, MemoryError, MemoryResult, Node, NodeVersion};
+use crate::core::{
+    AccessLog, AccessStats, AgentActionLog, MemoryError, MemoryResult, Node, NodeVersion,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexSnapshot {
@@ -29,6 +31,7 @@ impl FileStorage {
     fn ensure_layout(&self) -> MemoryResult<()> {
         fs::create_dir_all(self.index_dir())?;
         fs::create_dir_all(self.objects_dir())?;
+        fs::create_dir_all(self.knowledge_nodes_dir())?;
         Ok(())
     }
 
@@ -42,6 +45,14 @@ impl FileStorage {
 
     fn objects_dir(&self) -> PathBuf {
         self.root.join("objects")
+    }
+
+    fn knowledge_dir(&self) -> PathBuf {
+        self.root.join("knowledge")
+    }
+
+    fn knowledge_nodes_dir(&self) -> PathBuf {
+        self.knowledge_dir().join("nodes")
     }
 
     fn nodes_path(&self) -> PathBuf {
@@ -62,6 +73,17 @@ impl FileStorage {
 
     fn access_state_path(&self) -> PathBuf {
         self.index_dir().join("access_state.json")
+    }
+
+    fn agent_action_log_path(&self) -> PathBuf {
+        self.index_dir().join("agent_actions.log")
+    }
+
+    fn markdown_node_path(&self, node_id: &str) -> PathBuf {
+        let digest = blake3::hash(node_id.as_bytes()).to_hex();
+        let safe_name = sanitize_node_id(node_id);
+        self.knowledge_nodes_dir()
+            .join(format!("{safe_name}-{}.md", &digest[..8]))
     }
 
     pub fn load_index_snapshot(&self) -> MemoryResult<IndexSnapshot> {
@@ -111,14 +133,17 @@ impl FileStorage {
     fn atomic_write_json<T: serde::Serialize>(&self, path: PathBuf, value: &T) -> MemoryResult<()> {
         let tmp = path.with_extension("tmp");
         let bytes = serde_json::to_vec_pretty(value)?;
+        self.atomic_write_bytes(path, &tmp, &bytes)
+    }
 
+    fn atomic_write_bytes(&self, path: PathBuf, tmp: &Path, bytes: &[u8]) -> MemoryResult<()> {
         {
-            let mut file = fs::File::create(&tmp)?;
+            let mut file = fs::File::create(tmp)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
         }
 
-        fs::rename(&tmp, &path)?;
+        fs::rename(tmp, &path)?;
         sync_parent_dir(&path)?;
         Ok(())
     }
@@ -181,6 +206,33 @@ impl FileStorage {
         f.sync_all()?;
         Ok(())
     }
+
+    pub fn append_agent_action_log(&self, log: &AgentActionLog) -> MemoryResult<()> {
+        let line = serde_json::to_string(log)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.agent_action_log_path())?;
+        writeln!(f, "{line}")?;
+        f.sync_all()?;
+        Ok(())
+    }
+
+    pub fn write_markdown_node(&self, node_id: &str, markdown: &str) -> MemoryResult<PathBuf> {
+        let path = self.markdown_node_path(node_id);
+        let tmp = path.with_extension("tmp");
+        self.atomic_write_bytes(path.clone(), &tmp, markdown.as_bytes())?;
+        Ok(path)
+    }
+
+    pub fn read_markdown_node(&self, node_id: &str) -> MemoryResult<Option<(PathBuf, String)>> {
+        let path = self.markdown_node_path(node_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)?;
+        Ok(Some((path, content)))
+    }
 }
 
 fn sync_parent_dir(path: &Path) -> MemoryResult<()> {
@@ -189,4 +241,22 @@ fn sync_parent_dir(path: &Path) -> MemoryResult<()> {
         dir.sync_all()?;
     }
     Ok(())
+}
+
+fn sanitize_node_id(node_id: &str) -> String {
+    let mut out = String::with_capacity(node_id.len());
+    for ch in node_id.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "node".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }

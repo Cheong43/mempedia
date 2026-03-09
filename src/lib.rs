@@ -2,6 +2,7 @@ pub mod api;
 pub mod core;
 pub mod decay;
 pub mod graph;
+pub mod markdown;
 pub mod merge;
 pub mod promotion;
 pub mod runtime;

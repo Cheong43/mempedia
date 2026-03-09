@@ -6,11 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, AccessStats, ExploreBudgetItem, ExploreCandidate, Link, MemoryError, MemoryResult,
-    Node, NodeContent, NodePatch, NodeVersion, SearchHit,
+    AccessLog, AccessStats, AgentActionLog, ExploreBudgetItem, ExploreCandidate, Link, MemoryError,
+    MemoryResult, Node, NodeContent, NodeHistoryItem, NodePatch, NodeVersion, SearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
+use crate::markdown::{parse_markdown, render_node_markdown};
 use crate::promotion::{PromotionSignal, compute_importance};
 use crate::storage::{FileStorage, IndexSnapshot};
 use crate::versioning::VersionEngine;
@@ -20,8 +21,10 @@ pub struct MemoryEngine {
     heads: HashMap<String, String>,
     nodes: HashMap<String, Node>,
     graph_index: GraphIndex,
+    keyword_index: HashMap<String, HashMap<String, f32>>,
     access_state: HashMap<String, AccessStats>,
     auto_promotion: AutoPromotionConfig,
+    agent_governance: AgentGovernanceConfig,
 }
 
 pub type SharedMemoryEngine = Arc<RwLock<MemoryEngine>>;
@@ -43,6 +46,23 @@ impl Default for AutoPromotionConfig {
             promote_interval_seconds: 300,
             alpha: 0.10,
             decay_lambda: 0.00002,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentGovernanceConfig {
+    pub min_confidence: f32,
+    pub min_reason_chars: usize,
+    pub max_markdown_bytes: usize,
+}
+
+impl Default for AgentGovernanceConfig {
+    fn default() -> Self {
+        Self {
+            min_confidence: 0.55,
+            min_reason_chars: 8,
+            max_markdown_bytes: 200_000,
         }
     }
 }
@@ -113,6 +133,31 @@ pub enum ToolAction {
         limit: Option<usize>,
         min_score: Option<f32>,
     },
+    AgentUpsertMarkdown {
+        node_id: String,
+        markdown: String,
+        confidence: f32,
+        importance: f32,
+        agent_id: String,
+        reason: String,
+        source: String,
+    },
+    RollbackNode {
+        node_id: String,
+        target_version: String,
+        confidence: f32,
+        importance: f32,
+        #[serde(default)]
+        agent_id: Option<String>,
+        reason: String,
+    },
+    OpenMarkdownNode {
+        node_id: String,
+    },
+    NodeHistory {
+        node_id: String,
+        limit: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +194,16 @@ pub enum ToolResponse {
     ExploreBudgetResults {
         results: Vec<ExploreBudgetItem>,
     },
+    Markdown {
+        node_id: String,
+        version: Option<String>,
+        path: Option<String>,
+        markdown: Option<String>,
+    },
+    History {
+        node_id: String,
+        items: Vec<NodeHistoryItem>,
+    },
     Error {
         message: String,
     },
@@ -158,17 +213,20 @@ impl MemoryEngine {
     pub fn open<P: AsRef<Path>>(data_root: P) -> MemoryResult<Self> {
         let storage = FileStorage::new(data_root)?;
         let snapshot = storage.load_index_snapshot()?;
-        let graph_index = GraphIndex::build(&storage, &snapshot.heads)?;
         let access_state = storage.load_access_state()?;
-
-        Ok(Self {
+        let mut engine = Self {
             storage,
             heads: snapshot.heads,
             nodes: snapshot.nodes,
-            graph_index,
+            graph_index: GraphIndex::default(),
+            keyword_index: HashMap::new(),
             access_state,
             auto_promotion: AutoPromotionConfig::default(),
-        })
+            agent_governance: AgentGovernanceConfig::default(),
+        };
+        engine.rebuild_index()?;
+        engine.ensure_markdown_projection()?;
+        Ok(engine)
     }
 
     pub fn open_shared<P: AsRef<Path>>(data_root: P) -> MemoryResult<SharedMemoryEngine> {
@@ -177,6 +235,10 @@ impl MemoryEngine {
 
     pub fn set_auto_promotion_config(&mut self, config: AutoPromotionConfig) {
         self.auto_promotion = config;
+    }
+
+    pub fn set_agent_governance_config(&mut self, config: AgentGovernanceConfig) {
+        self.agent_governance = config;
     }
 
     pub fn create_node(
@@ -195,6 +257,7 @@ impl MemoryEngine {
             confidence,
             importance,
         )?;
+        self.sync_markdown_for_version(node_id, &version)?;
         self.rebuild_index()?;
         Ok(version)
     }
@@ -215,6 +278,7 @@ impl MemoryEngine {
             confidence,
             importance,
         )?;
+        self.sync_markdown_for_version(node_id, &version)?;
         self.rebuild_index()?;
         Ok(version)
     }
@@ -222,6 +286,7 @@ impl MemoryEngine {
     pub fn fork_node(&mut self, node_id: &str) -> MemoryResult<NodeVersion> {
         let version =
             VersionEngine::fork_node(&self.storage, &mut self.heads, &mut self.nodes, node_id)?;
+        self.sync_markdown_for_version(node_id, &version)?;
         self.rebuild_index()?;
         Ok(version)
     }
@@ -240,8 +305,139 @@ impl MemoryEngine {
             left_version,
             right_version,
         )?;
+        self.sync_markdown_for_version(node_id, &version)?;
         self.rebuild_index()?;
         Ok(version)
+    }
+
+    pub fn rollback_node(
+        &mut self,
+        node_id: &str,
+        target_version: &str,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        let version = VersionEngine::rollback_node(
+            &self.storage,
+            &mut self.heads,
+            &mut self.nodes,
+            node_id,
+            target_version,
+            confidence,
+            importance,
+        )?;
+        self.sync_markdown_for_version(node_id, &version)?;
+        self.rebuild_index()?;
+        Ok(version)
+    }
+
+    pub fn agent_upsert_markdown(
+        &mut self,
+        node_id: &str,
+        markdown: &str,
+        confidence: f32,
+        importance: f32,
+        agent_id: &str,
+        reason: &str,
+        source: &str,
+    ) -> MemoryResult<NodeVersion> {
+        self.validate_agent_markdown_request(markdown, confidence, agent_id, reason, source)?;
+
+        let mut content = parse_markdown(markdown);
+        let (linked_body, auto_links) = self.auto_wikilink_markdown_body(node_id, &content.body)?;
+        if linked_body != content.body {
+            content.body = linked_body;
+        }
+        let mut existing_targets: HashSet<String> =
+            content.links.iter().map(|link| link.target.clone()).collect();
+        for link in auto_links {
+            if existing_targets.insert(link.target.clone()) {
+                content.links.push(link);
+            }
+        }
+        let now = now_ts();
+        content
+            .structured_data
+            .insert("kb.last_agent_id".to_string(), agent_id.to_string());
+        content
+            .structured_data
+            .insert("kb.last_reason".to_string(), reason.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.last_source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.updated_at".to_string(), now.to_string());
+
+        let version = if self.head(node_id).is_some() {
+            let patch = NodePatch {
+                title: Some(content.title.clone()),
+                body: Some(content.body.clone()),
+                structured_upserts: content.structured_data.clone(),
+                add_links: content.links.clone(),
+                add_highlights: content.highlights.clone(),
+            };
+            self.update_node(node_id, patch, confidence, importance)?
+        } else {
+            self.create_node(node_id, content, confidence, importance)?
+        };
+
+        self.storage.append_agent_action_log(&AgentActionLog {
+            timestamp: now,
+            agent_id: agent_id.to_string(),
+            action: "agent_upsert_markdown".to_string(),
+            node_id: node_id.to_string(),
+            version: version.version.clone(),
+            reason: reason.trim().to_string(),
+            source: source.trim().to_string(),
+        })?;
+
+        Ok(version)
+    }
+
+    pub fn open_markdown_node(
+        &self,
+        node_id: &str,
+    ) -> MemoryResult<Option<(String, String, Option<String>)>> {
+        let (path, markdown) = match self.storage.read_markdown_node(node_id)? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+        let version = self.head(node_id).cloned();
+        Ok(Some((
+            path.to_string_lossy().to_string(),
+            markdown,
+            version,
+        )))
+    }
+
+    pub fn node_history(&self, node_id: &str, limit: usize) -> MemoryResult<Vec<NodeHistoryItem>> {
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?;
+        let mut items = Vec::new();
+        for version_id in &node.branches {
+            let version = self.storage.read_object(version_id)?;
+            items.push(NodeHistoryItem {
+                version: version.version,
+                timestamp: version.timestamp,
+                parents: version.parents,
+                confidence: version.confidence,
+                importance: version.importance,
+            });
+        }
+
+        items.sort_by(|a, b| {
+            b.timestamp
+                .cmp(&a.timestamp)
+                .then_with(|| a.version.cmp(&b.version))
+        });
+        if items.len() > limit {
+            items.truncate(limit);
+        }
+        Ok(items)
     }
 
     pub fn head(&self, node_id: &str) -> Option<&String> {
@@ -315,14 +511,24 @@ impl MemoryEngine {
             return Ok(Vec::new());
         }
 
+        let mut scores: HashMap<String, f32> = HashMap::new();
+        let mut matched_terms: HashMap<String, usize> = HashMap::new();
+        for token in &query_tokens {
+            if let Some(nodes) = self.keyword_index.get(token) {
+                for (node_id, weight) in nodes {
+                    *scores.entry(node_id.clone()).or_insert(0.0) += *weight;
+                    *matched_terms.entry(node_id.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
         let mut hits = Vec::new();
-        for (node_id, version_id) in &self.heads {
-            let version = self.storage.read_object(version_id)?;
-            let score = keyword_score(&version.content, &query_tokens);
+        for (node_id, score) in scores {
+            let coverage = matched_terms.get(&node_id).copied().unwrap_or(0) as f32;
             if score > 0.0 {
                 hits.push(SearchHit {
-                    node_id: node_id.clone(),
-                    score,
+                    node_id,
+                    score: score + coverage,
                 });
             }
         }
@@ -347,6 +553,14 @@ impl MemoryEngine {
             .head(node_id)
             .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?;
         let head = self.get_version(head_id)?;
+        let head_outbound: HashSet<String> =
+            self.graph_index.neighbors(node_id).into_iter().collect();
+        let head_inbound: HashSet<String> = self
+            .graph_index
+            .inbound_neighbors(node_id)
+            .into_iter()
+            .collect();
+        let head_structured_terms = extract_structured_terms(&head.content.structured_data);
 
         let mut candidates: HashMap<String, ExploreCandidate> = HashMap::new();
 
@@ -390,6 +604,66 @@ impl MemoryEngine {
             }
             let score = 40.0 + hit.score;
             upsert_candidate(&mut candidates, &hit.node_id, score, "keyword".to_string());
+        }
+
+        for (candidate_id, candidate_head_id) in &self.heads {
+            if candidate_id == node_id {
+                continue;
+            }
+            let candidate = self.get_version(candidate_head_id)?;
+
+            let candidate_outbound: HashSet<String> = self
+                .graph_index
+                .neighbors(candidate_id)
+                .into_iter()
+                .collect();
+            let candidate_inbound: HashSet<String> = self
+                .graph_index
+                .inbound_neighbors(candidate_id)
+                .into_iter()
+                .collect();
+            let candidate_terms = extract_structured_terms(&candidate.content.structured_data);
+
+            let shared_outbound = overlap_ratio(&head_outbound, &candidate_outbound);
+            if shared_outbound > 0.0 {
+                upsert_candidate(
+                    &mut candidates,
+                    candidate_id,
+                    12.0 + shared_outbound * 38.0,
+                    "shared_outbound".to_string(),
+                );
+            }
+
+            let shared_inbound = overlap_ratio(&head_inbound, &candidate_inbound);
+            if shared_inbound > 0.0 {
+                upsert_candidate(
+                    &mut candidates,
+                    candidate_id,
+                    10.0 + shared_inbound * 32.0,
+                    "shared_inbound".to_string(),
+                );
+            }
+
+            let structured_overlap = overlap_ratio(&head_structured_terms, &candidate_terms);
+            if structured_overlap > 0.0 {
+                upsert_candidate(
+                    &mut candidates,
+                    candidate_id,
+                    8.0 + structured_overlap * 44.0,
+                    "structured_overlap".to_string(),
+                );
+            }
+
+            let temporal = temporal_proximity_score(head.timestamp, candidate.timestamp);
+            if temporal > 0.70 {
+                let score = 6.0 + temporal * 12.0 + candidate.importance.max(0.0).min(5.0);
+                upsert_candidate(
+                    &mut candidates,
+                    candidate_id,
+                    score,
+                    "temporal_proximity".to_string(),
+                );
+            }
         }
 
         if candidates.is_empty() {
@@ -743,6 +1017,60 @@ impl MemoryEngine {
             } => self
                 .auto_link_related(&node_id, limit.unwrap_or(3), min_score.unwrap_or(45.0))
                 .map(|version| ToolResponse::Version { version }),
+            ToolAction::AgentUpsertMarkdown {
+                node_id,
+                markdown,
+                confidence,
+                importance,
+                agent_id,
+                reason,
+                source,
+            } => self
+                .agent_upsert_markdown(
+                    &node_id, &markdown, confidence, importance, &agent_id, &reason, &source,
+                )
+                .map(|version| ToolResponse::Version { version }),
+            ToolAction::RollbackNode {
+                node_id,
+                target_version,
+                confidence,
+                importance,
+                agent_id,
+                reason,
+            } => {
+                let result = self.rollback_node(&node_id, &target_version, confidence, importance);
+                if let (Ok(version), Some(agent)) = (&result, agent_id.as_deref()) {
+                    let _ = self.storage.append_agent_action_log(&AgentActionLog {
+                        timestamp: now_ts(),
+                        agent_id: agent.to_string(),
+                        action: "rollback_node".to_string(),
+                        node_id: node_id.clone(),
+                        version: version.version.clone(),
+                        reason: reason.trim().to_string(),
+                        source: "manual_rollback".to_string(),
+                    });
+                }
+                result.map(|version| ToolResponse::Version { version })
+            }
+            ToolAction::OpenMarkdownNode { node_id } => {
+                self.open_markdown_node(&node_id).map(|opt| match opt {
+                    Some((path, markdown, version)) => ToolResponse::Markdown {
+                        node_id,
+                        version,
+                        path: Some(path),
+                        markdown: Some(markdown),
+                    },
+                    None => ToolResponse::Markdown {
+                        node_id,
+                        version: None,
+                        path: None,
+                        markdown: None,
+                    },
+                })
+            }
+            ToolAction::NodeHistory { node_id, limit } => self
+                .node_history(&node_id, limit.unwrap_or(30))
+                .map(|items| ToolResponse::History { node_id, items }),
         };
 
         result.unwrap_or_else(|err| ToolResponse::Error {
@@ -777,54 +1105,200 @@ impl MemoryEngine {
 
     fn rebuild_index(&mut self) -> MemoryResult<()> {
         self.graph_index = GraphIndex::build(&self.storage, &self.heads)?;
+        self.keyword_index = build_keyword_index(&self.storage, &self.heads)?;
         Ok(())
     }
-}
 
-fn keyword_score(content: &NodeContent, query_tokens: &[String]) -> f32 {
-    let title = content.title.to_lowercase();
-    let body = content.body.to_lowercase();
-    let highlights = content.highlights.join(" ").to_lowercase();
-    let structured = content
-        .structured_data
-        .iter()
-        .map(|(k, v)| format!("{k} {v}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-
-    let mut score = 0.0;
-    for token in query_tokens {
-        if token.is_empty() {
-            continue;
-        }
-        if title.contains(token) {
-            score += 5.0;
-        }
-        if body.contains(token) {
-            score += 2.0;
-        }
-        if highlights.contains(token) {
-            score += 2.5;
-        }
-        if structured.contains(token) {
-            score += 1.5;
-        }
+    fn sync_markdown_for_version(&self, node_id: &str, version: &NodeVersion) -> MemoryResult<()> {
+        let markdown = render_node_markdown(node_id, version);
+        let _ = self.storage.write_markdown_node(node_id, &markdown)?;
+        Ok(())
     }
 
-    let covered = query_tokens
-        .iter()
-        .filter(|token| title.contains(token.as_str()) || body.contains(token.as_str()))
-        .count() as f32;
-    score + covered
+    fn ensure_markdown_projection(&self) -> MemoryResult<()> {
+        for (node_id, version_id) in &self.heads {
+            if self.storage.read_markdown_node(node_id)?.is_some() {
+                continue;
+            }
+            let version = self.storage.read_object(version_id)?;
+            self.sync_markdown_for_version(node_id, &version)?;
+        }
+        Ok(())
+    }
+
+    fn validate_agent_markdown_request(
+        &self,
+        markdown: &str,
+        confidence: f32,
+        agent_id: &str,
+        reason: &str,
+        source: &str,
+    ) -> MemoryResult<()> {
+        if markdown.is_empty() {
+            return Err(MemoryError::Invalid(
+                "markdown content cannot be empty".to_string(),
+            ));
+        }
+        if markdown.len() > self.agent_governance.max_markdown_bytes {
+            return Err(MemoryError::Invalid(format!(
+                "markdown exceeds max bytes limit ({})",
+                self.agent_governance.max_markdown_bytes
+            )));
+        }
+        if confidence < self.agent_governance.min_confidence {
+            return Err(MemoryError::Invalid(format!(
+                "confidence {} is below governance minimum {}",
+                confidence, self.agent_governance.min_confidence
+            )));
+        }
+        if agent_id.trim().is_empty() {
+            return Err(MemoryError::Invalid("agent_id is required".to_string()));
+        }
+        if reason.trim().chars().count() < self.agent_governance.min_reason_chars {
+            return Err(MemoryError::Invalid(format!(
+                "reason must be at least {} characters",
+                self.agent_governance.min_reason_chars
+            )));
+        }
+        if source.trim().is_empty() {
+            return Err(MemoryError::Invalid("source is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn auto_wikilink_markdown_body(
+        &self,
+        node_id: &str,
+        body: &str,
+    ) -> MemoryResult<(String, Vec<Link>)> {
+        let mut out = body.to_string();
+        let mut links = Vec::new();
+        let mut linked_targets: HashSet<String> = HashSet::new();
+
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for (target, version_id) in &self.heads {
+            if target == node_id {
+                continue;
+            }
+            candidates.push((target.clone(), target.clone()));
+            let version = self.storage.read_object(version_id)?;
+            let title = version.content.title.trim();
+            if title.chars().count() >= 2 {
+                candidates.push((target.clone(), title.to_string()));
+            }
+        }
+        candidates.sort_by(|a, b| {
+            b.1.chars()
+                .count()
+                .cmp(&a.1.chars().count())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        for (target, keyword) in candidates {
+            if linked_targets.contains(&target) {
+                continue;
+            }
+            if out.contains(&format!("[[{target}]]")) {
+                linked_targets.insert(target.clone());
+                continue;
+            }
+            if replace_keyword_with_wikilink_once(&mut out, &keyword, &target) {
+                linked_targets.insert(target.clone());
+                links.push(Link {
+                    target,
+                    label: Some("auto_keyword".to_string()),
+                    weight: 0.75,
+                });
+            }
+        }
+        Ok((out, links))
+    }
 }
 
 fn tokenize(input: &str) -> Vec<String> {
-    input
+    let mut tokens: Vec<String> = input
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|s| s.trim().to_lowercase())
         .filter(|s| s.len() >= 2)
-        .collect()
+        .collect();
+
+    let mut cjk_buf = String::new();
+    for ch in input.chars() {
+        if is_cjk(ch) {
+            cjk_buf.push(ch);
+            continue;
+        }
+        flush_cjk_tokens(&mut tokens, &mut cjk_buf);
+    }
+    flush_cjk_tokens(&mut tokens, &mut cjk_buf);
+
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+fn build_keyword_index(
+    storage: &FileStorage,
+    heads: &HashMap<String, String>,
+) -> MemoryResult<HashMap<String, HashMap<String, f32>>> {
+    let mut index: HashMap<String, HashMap<String, f32>> = HashMap::new();
+
+    for (node_id, version_id) in heads {
+        let version = storage.read_object(version_id)?;
+        index_content_tokens(&mut index, node_id, &version.content);
+    }
+    Ok(index)
+}
+
+fn index_content_tokens(
+    index: &mut HashMap<String, HashMap<String, f32>>,
+    node_id: &str,
+    content: &NodeContent,
+) {
+    add_text_tokens(index, node_id, &content.title, 5.0);
+    add_text_tokens(index, node_id, &content.body, 2.0);
+    add_text_tokens(index, node_id, &content.highlights.join(" "), 2.5);
+
+    for (k, v) in &content.structured_data {
+        add_text_tokens(index, node_id, k, 1.0);
+        add_text_tokens(index, node_id, v, 1.5);
+    }
+}
+
+fn add_text_tokens(
+    index: &mut HashMap<String, HashMap<String, f32>>,
+    node_id: &str,
+    text: &str,
+    weight: f32,
+) {
+    for token in tokenize(text) {
+        let entry = index.entry(token).or_default();
+        *entry.entry(node_id.to_string()).or_insert(0.0) += weight;
+    }
+}
+
+fn is_cjk(c: char) -> bool {
+    ('\u{4E00}'..='\u{9FFF}').contains(&c)
+        || ('\u{3400}'..='\u{4DBF}').contains(&c)
+        || ('\u{20000}'..='\u{2A6DF}').contains(&c)
+}
+
+fn flush_cjk_tokens(tokens: &mut Vec<String>, buf: &mut String) {
+    if buf.chars().count() < 2 {
+        buf.clear();
+        return;
+    }
+
+    tokens.push(buf.clone());
+    let chars: Vec<char> = buf.chars().collect();
+    for window in chars.windows(2) {
+        let mut gram = String::new();
+        for ch in window {
+            gram.push(*ch);
+        }
+        tokens.push(gram);
+    }
+    buf.clear();
 }
 
 fn build_exploration_query(content: &NodeContent) -> String {
@@ -877,6 +1351,89 @@ fn upsert_candidate(
             );
         }
     }
+}
+
+fn overlap_ratio(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let inter = left.intersection(right).count();
+    if inter == 0 {
+        return 0.0;
+    }
+    let union = left.len() + right.len() - inter;
+    inter as f32 / union as f32
+}
+
+fn extract_structured_terms(
+    structured_data: &std::collections::BTreeMap<String, String>,
+) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for (k, v) in structured_data {
+        let key_lc = k.to_lowercase();
+        if !(key_lc.contains("tag")
+            || key_lc.contains("topic")
+            || key_lc.contains("category")
+            || key_lc.contains("keyword")
+            || key_lc.contains("domain")
+            || key_lc.contains("parent")
+            || key_lc.contains("scope"))
+        {
+            continue;
+        }
+        for token in tokenize(v) {
+            terms.insert(token);
+        }
+    }
+    terms
+}
+
+fn temporal_proximity_score(left_ts: u64, right_ts: u64) -> f32 {
+    let delta = left_ts.abs_diff(right_ts) as f32;
+    let days = delta / 86_400.0;
+    1.0 / (1.0 + days)
+}
+
+fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: &str) -> bool {
+    let needle = keyword.trim();
+    if needle.chars().count() < 2 {
+        return false;
+    }
+
+    let mut cursor = 0usize;
+    while let Some(offset) = text[cursor..].find(needle) {
+        let start = cursor + offset;
+        let end = start + needle.len();
+        if is_inside_existing_wikilink(text, start) {
+            cursor = end;
+            continue;
+        }
+        if !is_token_boundary(text, start, end) {
+            cursor = end;
+            continue;
+        }
+        text.replace_range(start..end, &format!("[[{target}]]"));
+        return true;
+    }
+    false
+}
+
+fn is_inside_existing_wikilink(text: &str, start: usize) -> bool {
+    let left = text[..start].rfind("[[");
+    let right = text[..start].rfind("]]");
+    matches!((left, right), (Some(l), Some(r)) if l > r) || matches!((left, right), (Some(_), None))
+}
+
+fn is_token_boundary(text: &str, start: usize, end: usize) -> bool {
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    let left_ok = prev.map(|c| !is_word_char(c)).unwrap_or(true);
+    let right_ok = next.map(|c| !is_word_char(c)).unwrap_or(true);
+    left_ok && right_ok
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || is_cjk(c)
 }
 
 fn now_ts() -> u64 {
@@ -1224,6 +1781,96 @@ mod tests {
     }
 
     #[test]
+    fn suggest_exploration_uses_structured_and_graph_signals() {
+        let dir = temp_data_dir("suggest-multi-signals");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "memory_orchestration",
+                NodeContent {
+                    title: "Memory Orchestration".to_string(),
+                    body: "pipeline design and indexing".to_string(),
+                    structured_data: BTreeMap::from([
+                        ("meta.category".to_string(), "agent_memory".to_string()),
+                        ("meta.topic".to_string(), "knowledge_graph".to_string()),
+                    ]),
+                    links: vec![
+                        Link {
+                            target: "retrieval_pattern".to_string(),
+                            label: Some("related".to_string()),
+                            weight: 0.7,
+                        },
+                        Link {
+                            target: "ranking_strategy".to_string(),
+                            label: Some("related".to_string()),
+                            weight: 0.7,
+                        },
+                    ],
+                    highlights: vec!["memory".to_string()],
+                },
+                0.9,
+                2.6,
+            )
+            .expect("create source");
+
+        engine
+            .create_node(
+                "graph_memory_pipeline",
+                NodeContent {
+                    title: "Graph Memory Pipeline".to_string(),
+                    body: "execution planning for memory".to_string(),
+                    structured_data: BTreeMap::from([
+                        ("meta.category".to_string(), "agent_memory".to_string()),
+                        ("meta.topic".to_string(), "knowledge_graph".to_string()),
+                    ]),
+                    links: vec![
+                        Link {
+                            target: "retrieval_pattern".to_string(),
+                            label: Some("related".to_string()),
+                            weight: 0.8,
+                        },
+                        Link {
+                            target: "ranking_strategy".to_string(),
+                            label: Some("related".to_string()),
+                            weight: 0.8,
+                        },
+                    ],
+                    highlights: vec!["graph".to_string()],
+                },
+                0.88,
+                2.4,
+            )
+            .expect("create candidate");
+
+        engine
+            .create_node(
+                "retrieval_pattern",
+                sample_content("Retrieval Pattern", "ranking and filtering", "x"),
+                0.8,
+                1.4,
+            )
+            .expect("create helper");
+
+        engine
+            .create_node(
+                "ranking_strategy",
+                sample_content("Ranking Strategy", "score fusion", "x"),
+                0.8,
+                1.4,
+            )
+            .expect("create helper2");
+
+        let results = engine
+            .suggest_exploration("memory_orchestration", 5)
+            .expect("suggest");
+        assert!(
+            results.iter().any(|r| r.node_id == "graph_memory_pipeline"),
+            "structured + graph overlap should surface candidate"
+        );
+    }
+
+    #[test]
     fn auto_link_related_adds_links_for_lonely_node() {
         let dir = temp_data_dir("auto-link-related");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
@@ -1346,7 +1993,7 @@ mod tests {
         assert!(
             results
                 .iter()
-                .any(|i| i.node_id == "y_combinator_overview" && i.depth == 2)
+                .any(|i| i.node_id == "y_combinator_overview" && i.depth <= 2)
         );
 
         let resp = engine.execute_action(ToolAction::ExploreWithBudget {
@@ -1362,5 +2009,153 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_upsert_markdown_creates_audit_and_markdown_projection() {
+        let dir = temp_data_dir("agent-upsert-markdown");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        let markdown = r#"# 记忆规范
+
+这是一段用于测试的 markdown 原文。
+引用 [[policy_node]]。
+"#;
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "kb_policy".to_string(),
+            markdown: markdown.to_string(),
+            confidence: 0.9,
+            importance: 1.4,
+            agent_id: "agent-main".to_string(),
+            reason: "同步新的知识规范".to_string(),
+            source: "user_request".to_string(),
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(created.node_id, "kb_policy");
+
+        let md = engine
+            .open_markdown_node("kb_policy")
+            .expect("read markdown")
+            .expect("markdown exists");
+        assert!(md.1.contains("记忆规范"));
+
+        let audit_path = dir.join("index").join("agent_actions.log");
+        let audit = fs::read_to_string(audit_path).expect("read audit log");
+        assert!(audit.contains("agent_upsert_markdown"));
+        assert!(audit.contains("agent-main"));
+    }
+
+    #[test]
+    fn agent_upsert_markdown_auto_links_related_keywords() {
+        let dir = temp_data_dir("agent-upsert-auto-keyword-link");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "rust_memory_engine",
+                NodeContent {
+                    title: "Rust Memory Engine".to_string(),
+                    body: "append-only node versioning".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["rust".to_string()],
+                },
+                0.9,
+                2.0,
+            )
+            .expect("create related node");
+
+        let markdown = r#"# 知识草案
+
+这里记录 Rust Memory Engine 在项目中的作用。
+"#;
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "kb_draft".to_string(),
+            markdown: markdown.to_string(),
+            confidence: 0.9,
+            importance: 1.4,
+            agent_id: "agent-main".to_string(),
+            reason: "补充知识草案内容".to_string(),
+            source: "user_request".to_string(),
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(created.content.body.contains("[[rust_memory_engine]]"));
+        assert!(
+            created
+                .content
+                .links
+                .iter()
+                .any(|link| link.target == "rust_memory_engine")
+        );
+    }
+
+    #[test]
+    fn rollback_node_creates_new_head_from_old_version() {
+        let dir = temp_data_dir("rollback-node");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        let v1 = engine
+            .create_node(
+                "design_doc",
+                sample_content("Design Doc", "v1 baseline", "x"),
+                0.8,
+                1.0,
+            )
+            .expect("create");
+
+        let _v2 = engine
+            .update_node(
+                "design_doc",
+                NodePatch {
+                    body: Some("v2 changed".to_string()),
+                    ..NodePatch::default()
+                },
+                0.85,
+                1.1,
+            )
+            .expect("update");
+
+        let restored = engine
+            .rollback_node("design_doc", &v1.version, 0.88, 1.2)
+            .expect("rollback");
+        assert!(restored.parents.iter().any(|p| p == &v1.version));
+        assert_eq!(restored.content.body, "v1 baseline");
+
+        let history = engine.node_history("design_doc", 10).expect("history");
+        assert!(history.len() >= 3);
+    }
+
+    #[test]
+    fn keyword_search_supports_chinese_terms() {
+        let dir = temp_data_dir("keyword-cn");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "cn_node",
+                NodeContent {
+                    title: "知识库检索".to_string(),
+                    body: "支持中文关键词检索与版本回溯".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["检索".to_string()],
+                },
+                0.9,
+                1.8,
+            )
+            .expect("create");
+
+        let hits = engine
+            .search_by_keyword("中文 检索", 5)
+            .expect("search by keyword");
+        assert!(hits.iter().any(|h| h.node_id == "cn_node"));
     }
 }

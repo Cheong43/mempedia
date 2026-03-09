@@ -1,3 +1,13 @@
 {
-  "Fatigue_Model": "2fb95af0556cbd3761224f3f3e6739ebaf35f33a4ef85d5fbfbcd17f2af0e3f1"
+  "repo_growth_kinetics_diffmem": "44dd19e395024de02911c0cf9f4ba659f5c9fc3da341d8a7a27e811b155a0f34",
+  "repo_elizaos_agentmemory": "99a26a39e2799f9638fc2d2b8a1c887fc4a36d594c9fe792089deba164501ac1",
+  "repo_getzep_graphiti": "4159360878c1f6fd870fddb781041b9bd7b4d4e1b24f03122fce47f5228f8a28",
+  "agent_memory_top10_landscape_20260309": "310066927b54d8016afe3a05093e4987dee36c4b61c93bbfe0ba5d6858505351",
+  "repo_langchain_ai_langmem": "761d62848c5af741ba06f50d770662c9a2e17f74cdc270aa174de81e7e51d5d7",
+  "repo_nevamind_ai_memu": "24ae323d7010cefaee6da3964ec8edcc6245bec70fcebf55004145a4ec16dc36",
+  "repo_memmachine_memmachine": "0782e08c98cfbb52929fd263293592f84bd7eb787f4b6b2ded3f677d509405d9",
+  "repo_redis_agent_memory_server": "a99a616ded7e7f57bf50d44316b993e71c43a3ab56e26926dc3f5f7eebfe4740",
+  "repo_getzep_zep": "d383ab2288c1ea837414e0a7db056b69b2abe152428be8328ddc5e6cf4421e25",
+  "repo_letta_ai_letta": "9b2a81852e05a432c55b64ab48b3b29b30a2e4de21ebd492d746c70a8bf2623f",
+  "repo_mem0ai_mem0": "33daa72c42a1b09afb3614d3aa058563c9ddf2e1b5971f9698a4f53b7f6cda72"
 }

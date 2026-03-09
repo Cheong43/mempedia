@@ -3,8 +3,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use agent_memory::api::MemoryEngine;
-use agent_memory::runtime;
+use mempedia::api::MemoryEngine;
+use mempedia::runtime;
 
 fn main() {
     if let Err(err) = run() {
@@ -93,19 +93,19 @@ fn resolve_data_dir(
         Some(path) => path,
         None => env::current_dir()?,
     };
-    Ok(project.join(".M2W").join("memory"))
+    Ok(project.join(".mempedia").join("memory"))
 }
 
 fn print_help() {
     println!(
         "Usage:
-  agent_memory --action '<json>' [--project /path/to/project]
-  agent_memory --action-file action.json [--project /path/to/project]
-  cat action.json | agent_memory --stdin [--project /path/to/project]
-  agent_memory --serve [--project /path/to/project]
+  mempedia --action '<json>' [--project /path/to/project]
+  mempedia --action-file action.json [--project /path/to/project]
+  cat action.json | mempedia --stdin [--project /path/to/project]
+  mempedia --serve [--project /path/to/project]
 
 Options:
-  --project <dir>      Project root; data stored in <dir>/.M2W/memory
+  --project <dir>      Project root; data stored in <dir>/.mempedia/memory
   --data <dir>         Explicit data directory (overrides --project)
   --serve              Start runtime process (NDJSON over stdin/stdout)
   --print-data-dir     Print resolved storage path and exit"

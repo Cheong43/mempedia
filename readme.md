@@ -1,18 +1,20 @@
-# Agent Memory Engine (Rust)
+# Mempedia (Rust)
 
 A lightweight long-term memory engine for AI agents:
 - Append-only history
 - Immutable versions
 - Node/Version DAG
 - Filesystem storage (no external database)
+- Markdown projection for local KB files
+- Agent-governed markdown upsert with audit log
 
 Use cases: projects that need traceable, forkable, mergeable, and explainable structured memory, rather than plain-text RAG retrieval.
 
 Naming:
-- `M2W` = `Memory to Wiki`
+- `Mempedia` = memory knowledge graph encyclopedia for agents
 
 Default storage location (project-scoped):
-- `<project>/.M2W/memory`
+- `<project>/.mempedia/memory`
 
 ---
 
@@ -61,7 +63,7 @@ cargo run -- --project /path/to/project --action '{"action":"open_node","node_id
 cargo test
 
 # 5) Inspect generated data
-find /path/to/project/.M2W -maxdepth 4 -type f | sort
+find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 ```
 
 ### 2. Core Model in 5 Minutes
@@ -94,9 +96,13 @@ data/
     heads.json      # compatibility/readable copy
     nodes.json      # compatibility/readable copy
     access.log      # optional access log
+    agent_actions.log # autonomous agent update audit
   objects/
     <hash_prefix>/
       <version_hash>.json
+  knowledge/
+    nodes/
+      <sanitized_node_id>-<hash8>.md
 ```
 
 Notes:
@@ -109,8 +115,8 @@ Notes:
 Entry: `src/api/mod.rs`
 
 ```rust
-use agent_memory::api::MemoryEngine;
-use agent_memory::core::{NodeContent, NodePatch};
+use mempedia::api::MemoryEngine;
+use mempedia::core::{NodeContent, NodePatch};
 
 let mut engine = MemoryEngine::open("./data")?;
 
@@ -144,6 +150,10 @@ For agent-side direct calls:
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
+- `agent_upsert_markdown`
+- `open_markdown_node`
+- `rollback_node`
+- `node_history`
 
 Request example:
 
@@ -177,7 +187,7 @@ cargo run -- --project /path/to/project --serve
 
 ### 6. Web UI Localization
 
-`M2W-UI` now includes bilingual UI support:
+`mempedia-ui` now includes bilingual UI support:
 - Default language: **English**
 - Optional language: 简体中文
 - Language selector in top-right of the page
@@ -222,7 +232,7 @@ JSON
 cargo run -- --project /path/to/project --action-file action.json
 cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
 cargo test
-find /path/to/project/.M2W -maxdepth 4 -type f | sort
+find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 ```
 
 ### 2. 核心模型
@@ -242,9 +252,13 @@ data/
     heads.json
     nodes.json
     access.log
+    agent_actions.log
   objects/
     <hash_prefix>/
       <version_hash>.json
+  knowledge/
+    nodes/
+      <sanitized_node_id>-<hash8>.md
 ```
 
 ### 4. API 与 Action
@@ -265,10 +279,14 @@ Rust API 入口：`src/api/mod.rs`。
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
+- `agent_upsert_markdown`
+- `open_markdown_node`
+- `rollback_node`
+- `node_history`
 
 ### 5. UI 多语言
 
-`M2W-UI` 已支持双语：
+`mempedia-ui` 已支持双语：
 - 默认英文
 - 可切换简体中文
 - 右上角语言切换器

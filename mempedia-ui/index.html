@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>M2W Knowledge Wiki</title>
+    <title>Mempedia Knowledge Wiki</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
 
     <header class="topbar" aria-label="Page header">
       <div>
-        <p class="brand">M2W Knowledge Wiki</p>
+        <p class="brand">Mempedia Knowledge Wiki</p>
         <h1 data-i18n="pageTitle">Project Memory Graph Encyclopedia</h1>
         <p class="subtitle" data-i18n="pageSubtitle">
           Browse nodes like a wiki page and inspect relationships with version evolution.
@@ -41,7 +41,7 @@
           <button id="parse-btn" type="button" data-i18n="parseBtn">Parse</button>
         </div>
         <p class="hint" data-i18n="importHint">
-          Prefer selecting <code>.M2W/memory</code> directly (compatible with <code>data</code> layout).
+          Prefer selecting <code>.mempedia/memory</code> directly (compatible with <code>data</code> layout).
         </p>
         <p id="status" role="status" aria-live="polite" data-i18n="statusWaiting">
           Waiting for folder import...
@@ -67,6 +67,22 @@
         </article>
       </section>
 
+      <section class="panel search-workbench" aria-labelledby="keyword-title">
+        <h2 id="keyword-title" data-i18n="keywordSearchTitle">Knowledge Search</h2>
+        <div class="search-controls">
+          <label class="field search-field-wide">
+            <span data-i18n="keywordQuery">Keyword Query</span>
+            <input id="keyword-search" type="search" placeholder="Search across title/body/markdown" />
+          </label>
+          <button id="keyword-search-btn" type="button" data-i18n="keywordSearchBtn">Search</button>
+          <button id="keyword-clear-btn" type="button" data-i18n="keywordClearBtn">Clear</button>
+        </div>
+        <p id="keyword-summary" class="hint" data-i18n="keywordSummaryDefault">
+          Enter keywords to run ranked retrieval over current heads.
+        </p>
+        <div id="keyword-results" class="search-results" aria-live="polite"></div>
+      </section>
+
       <section class="wiki-layout" aria-label="Encyclopedia content">
         <article class="panel article" aria-labelledby="article-title">
           <header class="article-head">
@@ -78,7 +94,7 @@
 
           <section class="article-section" aria-labelledby="summary-title">
             <h3 id="summary-title" data-i18n="summary">Summary</h3>
-            <p id="article-body" class="article-body" data-i18n="noContent">No content yet.</p>
+            <div id="article-body" class="article-body" data-i18n="noContent">No content yet.</div>
           </section>
 
           <section class="article-section" aria-labelledby="structured-title">
@@ -95,7 +111,7 @@
           </section>
 
           <section class="article-section" aria-labelledby="highlights-title">
-            <h3 id="highlights-title">Highlights</h3>
+            <h3 id="highlights-title" data-i18n="highlightsTitle">Highlights</h3>
             <div id="highlights-list" class="chips"></div>
           </section>
 
@@ -117,6 +133,17 @@
             <h3 id="timeline-title" data-i18n="versionTimeline">Version Timeline</h3>
             <ol id="version-list" class="timeline"></ol>
           </section>
+
+          <section class="article-section" aria-labelledby="markdown-title">
+            <h3 id="markdown-title" data-i18n="markdownProjection">Markdown Projection</h3>
+            <p id="markdown-path" class="article-meta"></p>
+            <pre id="markdown-content" class="markdown-block"></pre>
+          </section>
+
+          <section class="article-section" aria-labelledby="audit-title">
+            <h3 id="audit-title" data-i18n="agentAudit">Agent Audit</h3>
+            <ul id="audit-list" class="audit-list"></ul>
+          </section>
         </article>
 
         <aside class="panel sidebar" aria-labelledby="sidebar-title">
@@ -136,6 +163,43 @@
           <section class="mini-section" aria-labelledby="version-dag-title">
             <h3 id="version-dag-title" data-i18n="versionDag">Version DAG (Current Node)</h3>
             <svg id="version-svg" viewBox="0 0 460 260" role="img" aria-label="Version graph"></svg>
+          </section>
+
+          <section class="mini-section action-builder" aria-labelledby="action-builder-title">
+            <h3 id="action-builder-title" data-i18n="actionBuilder">Action Builder</h3>
+            <label class="field">
+              <span data-i18n="agentId">Agent ID</span>
+              <input id="action-agent-id" type="text" value="agent-codex" />
+            </label>
+            <label class="field">
+              <span data-i18n="actionReason">Reason</span>
+              <input id="action-reason" type="text" />
+            </label>
+            <label class="field">
+              <span data-i18n="actionSource">Source</span>
+              <input id="action-source" type="text" value="local_ui" />
+            </label>
+            <div class="action-score-row">
+              <label class="field small-field">
+                <span data-i18n="actionConfidence">Confidence</span>
+                <input id="action-confidence" type="number" min="0" max="1" step="0.01" value="0.85" />
+              </label>
+              <label class="field small-field">
+                <span data-i18n="actionImportance">Importance</span>
+                <input id="action-importance" type="number" min="0" step="0.1" value="2.0" />
+              </label>
+            </div>
+            <label class="field">
+              <span data-i18n="actionMarkdown">Markdown Content</span>
+              <textarea id="action-markdown" rows="8"></textarea>
+            </label>
+            <div class="action-row">
+              <button id="generate-upsert-btn" type="button" data-i18n="generateUpsert">Generate Upsert JSON</button>
+              <button id="generate-rollback-btn" type="button" data-i18n="generateRollback">Generate Rollback JSON</button>
+              <button id="copy-action-btn" type="button" data-i18n="copyAction">Copy JSON</button>
+            </div>
+            <p id="action-target" class="hint" data-i18n="rollbackTargetNone">Rollback target: not selected</p>
+            <pre id="action-preview" class="action-preview"></pre>
           </section>
         </aside>
       </section>

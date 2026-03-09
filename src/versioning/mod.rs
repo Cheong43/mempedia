@@ -161,6 +161,52 @@ impl VersionEngine {
         persist_index(storage, heads, nodes)?;
         Ok(version)
     }
+
+    pub fn rollback_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+        target_version: &str,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        validate_scores(confidence, importance)?;
+
+        let current_head = heads
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+        let target = storage.read_object(target_version)?;
+        if target.node_id != node_id {
+            return Err(MemoryError::Invalid(format!(
+                "version {target_version} does not belong to node {node_id}"
+            )));
+        }
+
+        let mut parents = vec![current_head];
+        append_unique(&mut parents, target_version.to_string());
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents,
+            timestamp: now_ts(),
+            content: target.content,
+            confidence,
+            importance,
+        };
+        version.version = storage.write_object(&version)?;
+
+        heads.insert(node_id.to_string(), version.version.clone());
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.head = version.version.clone();
+            append_unique(&mut node.branches, version.version.clone());
+        }
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
 }
 
 fn apply_patch(content: &mut NodeContent, patch: NodePatch) {
@@ -174,8 +220,30 @@ fn apply_patch(content: &mut NodeContent, patch: NodePatch) {
     for (k, v) in patch.structured_upserts {
         content.structured_data.insert(k, v);
     }
-    content.links.extend(patch.add_links);
-    content.highlights.extend(patch.add_highlights);
+
+    for link in patch.add_links {
+        let exists = content
+            .links
+            .iter()
+            .any(|existing| existing.target == link.target && existing.label == link.label);
+        if !exists {
+            content.links.push(link);
+        }
+    }
+
+    for highlight in patch.add_highlights {
+        let normalized = highlight.trim().to_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        let exists = content
+            .highlights
+            .iter()
+            .any(|existing| existing.trim().to_lowercase() == normalized);
+        if !exists {
+            content.highlights.push(highlight);
+        }
+    }
 }
 
 fn persist_index(

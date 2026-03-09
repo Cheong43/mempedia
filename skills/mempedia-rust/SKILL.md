@@ -1,14 +1,14 @@
 ---
-name: agent-memory-rust
+name: mempedia-rust
 description: Build, evolve, and review the Rust append-only versioned knowledge graph memory engine used in this repo. Use for requests about Node/Version DAG, filesystem object storage, graph traversal, merge/promotion/decay, tool protocol actions, and performance constraints (<=100k nodes, deterministic single-writer runtime).
 ---
 
-# Agent Memory Rust
+# Mempedia Rust
 
 Use this skill when the request is about implementing or modifying the memory engine in this repository.
 
 Terminology:
-- `M2W` means `Memory to Wiki`.
+- `Mempedia` is the project name.
 
 ## Scope
 
@@ -33,7 +33,7 @@ This engine is not:
 5. Use atomic file replacement for index snapshot updates (`index/state.json`).
 6. Keep behavior deterministic and explicit.
 7. Prefer minimal dependencies and simple data structures.
-8. Default storage root must be project-local: `<project>/.M2W/memory`.
+8. Default storage root must be project-local: `<project>/.mempedia/memory`.
 
 ## Repository Anchors
 
@@ -49,10 +49,10 @@ Read these first before major changes:
 ## Storage Contract
 
 Data layout:
-- `<project>/.M2W/memory/index/state.json`
-- `<project>/.M2W/memory/index/heads.json` (compat mirror)
-- `<project>/.M2W/memory/index/nodes.json` (compat mirror)
-- `<project>/.M2W/memory/objects/<hash_prefix>/<version_hash>.json`
+- `<project>/.mempedia/memory/index/state.json`
+- `<project>/.mempedia/memory/index/heads.json` (compat mirror)
+- `<project>/.mempedia/memory/index/nodes.json` (compat mirror)
+- `<project>/.mempedia/memory/objects/<hash_prefix>/<version_hash>.json`
 
 Write path:
 1. Build new `NodeVersion` in memory.
@@ -65,10 +65,10 @@ Write path:
 
 Preferred execution modes:
 1. One-shot CLI:
-   - `agent_memory --project /path/to/project --action '<json>'`
-   - `agent_memory --project /path/to/project --action-file action.json`
+   - `mempedia --project /path/to/project --action '<json>'`
+   - `mempedia --project /path/to/project --action-file action.json`
 2. Runtime process mode:
-   - `agent_memory --project /path/to/project --serve`
+   - `mempedia --project /path/to/project --serve`
    - stdin/stdout protocol is NDJSON (one request line -> one response line)
 
 Rules:
