@@ -50,14 +50,14 @@ cargo run
 ```bash
 # 1) Create an action request
 cat > action.json <<'JSON'
-{"action":"create_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
+{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
 JSON
 
 # 2) Execute action (create node)
 cargo run -- --project /path/to/project --action-file action.json
 
 # 3) Open the node
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 
 # 4) Run tests
 cargo test
@@ -137,21 +137,18 @@ println!("{:?} {:?} {:?}", created.version, updated.version, bfs);
 ### 5. Tool Protocol (JSON Action)
 
 For agent-side direct calls:
-- `create_node`
-- `update_node`
+- `upsert_node`
 - `fork_node`
 - `merge_node`
-- `open_node`
+- `open_resource`
 - `access_node`
 - `compare_versions`
 - `traverse`
-- `search_by_highlight`
-- `search_by_keyword`
+- `search_nodes`
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
 - `agent_upsert_markdown`
-- `open_markdown_node`
 - `rollback_node`
 - `node_history`
 
@@ -170,7 +167,7 @@ Request example:
 CLI examples:
 
 ```bash
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","agent_id":"agent-main"}'
+cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
 ```
@@ -226,11 +223,11 @@ cargo run
 
 ```bash
 cat > action.json <<'JSON'
-{"action":"create_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
+{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
 JSON
 
 cargo run -- --project /path/to/project --action-file action.json
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model"}'
+cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 cargo test
 find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 ```
@@ -266,21 +263,18 @@ data/
 Rust API 入口：`src/api/mod.rs`。
 
 支持 action：
-- `create_node`
-- `update_node`
+- `upsert_node`
 - `fork_node`
 - `merge_node`
-- `open_node`
+- `open_resource`
 - `access_node`
 - `compare_versions`
 - `traverse`
-- `search_by_highlight`
-- `search_by_keyword`
+- `search_nodes`
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
 - `agent_upsert_markdown`
-- `open_markdown_node`
 - `rollback_node`
 - `node_history`
 

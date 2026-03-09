@@ -76,6 +76,77 @@ Rules:
 - Avoid `--data` unless a custom path is explicitly required.
 - In `--serve` mode, payloads must be line-delimited JSON.
 
+## Protocol-First Rule
+
+When tasks involve tool protocol actions:
+1. Use explicit action schemas from this section.
+2. Do not infer/guess missing fields.
+3. Prefer merged actions:
+   - `upsert_node`
+   - `search_nodes`
+   - `open_resource`
+4. Do not use legacy actions.
+
+### Canonical Action Schemas
+
+`upsert_node`
+```json
+{
+  "action": "upsert_node",
+  "node_id": "string",
+  "content": {
+    "title": "string",
+    "body": "string",
+    "structured_data": { "key": "value" },
+    "links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],
+    "highlights": ["string"]
+  },
+  "patch": {
+    "title": "string|null",
+    "body": "string|null",
+    "structured_upserts": { "key": "value" },
+    "add_links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],
+    "add_highlights": ["string"]
+  },
+  "confidence": 0.85,
+  "importance": 2.0
+}
+```
+
+`search_nodes`
+```json
+{
+  "action": "search_nodes",
+  "query": "string",
+  "limit": 10,
+  "include_highlight": true
+}
+```
+
+`open_resource`
+```json
+{
+  "action": "open_resource",
+  "node_id": "string",
+  "markdown": false,
+  "agent_id": "agent-main"
+}
+```
+
+`agent_upsert_markdown`
+```json
+{
+  "action": "agent_upsert_markdown",
+  "node_id": "string",
+  "markdown": "# Title\n\nBody",
+  "confidence": 0.86,
+  "importance": 2.4,
+  "agent_id": "agent-main",
+  "reason": "clear reason >= 8 chars",
+  "source": "task_or_channel"
+}
+```
+
 ## Agent Decision Policy (LLM-Driven, Not Hardcoded)
 
 This policy is for the calling AI agent to reason about whether to read, update, fork, or merge memory.
@@ -84,7 +155,7 @@ Do not require deterministic program-side hardcoded rules for this decision.
 ### Step 1: Default to Read-First
 
 Before writing, the agent should usually:
-1. `open_node` if node is known.
+1. `open_resource` with `markdown=false` if node is known.
 2. `traverse` for relevant neighborhood context.
 3. `compare_versions` if conflicting history is suspected.
 4. `explore_with_budget` to plan multi-hop exploration within bounded depth.
@@ -98,7 +169,7 @@ Use these heuristics:
 - Content is speculative, temporary, or not source-grounded.
 - Existing memory already answers with sufficient confidence.
 
-2. Update existing node (`update_node`):
+2. Update existing node (`upsert_node` with `patch`):
 - New information refines or extends existing concept.
 - No major contradiction with current head.
 - Agent can provide a clearer, more current, or better structured state.
@@ -137,10 +208,10 @@ For each non-trivial memory operation, the calling AI should internally justify:
 ## Execution Workflow
 
 1. Clarify operation type:
-- node lifecycle (`create`, `update`, `fork`, `merge`)
+- node lifecycle (`upsert`, `fork`, `merge`)
 - traversal (`BFS`, `DFS`, importance-first, confidence-filtered)
 - scoring (`promotion`, `decay`)
-- protocol/API actions (`open_node`, `access_node`, `compare_versions`, `search_by_keyword`, `suggest_exploration`, `explore_with_budget`, `auto_link_related`, etc.)
+- protocol/API actions (`open_resource`, `access_node`, `compare_versions`, `search_nodes`, `suggest_exploration`, `explore_with_budget`, `auto_link_related`, etc.)
 
 2. Implement in the correct layer:
 - schema: `core`
@@ -182,7 +253,7 @@ Recommended formula pattern:
 `importance = decay(log(in_degree+1) + access + highlights + cross_branch_presence)`
 
 Important runtime behavior:
-1. Every access should be recorded (`open_node` with `agent_id`, or explicit `access_node`/`log_access`).
+1. Every access should be recorded (`open_resource` with `agent_id`, or explicit `access_node`/`log_access`).
 2. Access increments persisted counters in `index/access_state.json`.
 3. Default auto-promotion is enabled: access can trigger `importance` update via appended versions.
 4. `confidence` does not auto-increase from access alone.
@@ -193,14 +264,14 @@ Important runtime behavior:
 Goal: help agents know what to explore next, especially when a node has sparse links.
 
 Recommended sequence:
-1. `open_node` current topic.
+1. `open_resource` current topic (`markdown=false`).
 2. `explore_with_budget` to get multi-hop candidates constrained by depth/branch budgets.
 3. `suggest_exploration` for focused next-step candidates with reasons:
    - `linked:*` (explicit graph edge, highest trust)
    - `referenced_by` (inbound edge)
    - `keyword` (fuzzy semantic candidate)
    - `high_importance_fallback` (last-resort discovery)
-4. Explore top candidates with `open_node`.
+4. Explore top candidates with `open_resource`.
 5. If current node has weak outgoing graph, use `auto_link_related` to append high-score links.
 
 Notes:

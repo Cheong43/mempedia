@@ -70,15 +70,12 @@ impl Default for AgentGovernanceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ToolAction {
-    CreateNode {
+    UpsertNode {
         node_id: String,
-        content: NodeContent,
-        confidence: f32,
-        importance: f32,
-    },
-    UpdateNode {
-        node_id: String,
-        patch: NodePatch,
+        #[serde(default)]
+        content: Option<NodeContent>,
+        #[serde(default)]
+        patch: Option<NodePatch>,
         confidence: f32,
         importance: f32,
     },
@@ -89,11 +86,6 @@ pub enum ToolAction {
         node_id: String,
         left_version: String,
         right_version: String,
-    },
-    OpenNode {
-        node_id: String,
-        #[serde(default)]
-        agent_id: Option<String>,
     },
     AccessNode {
         node_id: String,
@@ -110,12 +102,12 @@ pub enum ToolAction {
         depth_limit: Option<usize>,
         min_confidence: Option<f32>,
     },
-    SearchByHighlight {
+    SearchNodes {
         query: String,
-    },
-    SearchByKeyword {
-        query: String,
+        #[serde(default)]
         limit: Option<usize>,
+        #[serde(default)]
+        include_highlight: Option<bool>,
     },
     SuggestExploration {
         node_id: String,
@@ -151,8 +143,12 @@ pub enum ToolAction {
         agent_id: Option<String>,
         reason: String,
     },
-    OpenMarkdownNode {
+    OpenResource {
         node_id: String,
+        #[serde(default)]
+        markdown: Option<bool>,
+        #[serde(default)]
+        agent_id: Option<String>,
     },
     NodeHistory {
         node_id: String,
@@ -912,22 +908,46 @@ impl MemoryEngine {
 
     pub fn execute_action(&mut self, action: ToolAction) -> ToolResponse {
         let result = match action {
-            ToolAction::CreateNode {
+            ToolAction::UpsertNode {
                 node_id,
                 content,
-                confidence,
-                importance,
-            } => self
-                .create_node(&node_id, content, confidence, importance)
-                .map(|version| ToolResponse::Version { version }),
-            ToolAction::UpdateNode {
-                node_id,
                 patch,
                 confidence,
                 importance,
-            } => self
-                .update_node(&node_id, patch, confidence, importance)
-                .map(|version| ToolResponse::Version { version }),
+            } => {
+                if let Some(patch) = patch {
+                    if self.head(&node_id).is_some() {
+                        self.update_node(&node_id, patch, confidence, importance)
+                            .map(|version| ToolResponse::Version { version })
+                    } else if let Some(content) = content {
+                        self.create_node(&node_id, content, confidence, importance)
+                            .map(|version| ToolResponse::Version { version })
+                    } else {
+                        Err(MemoryError::NotFound(format!(
+                            "node {node_id} not found for patch upsert"
+                        )))
+                    }
+                } else if let Some(content) = content {
+                    if self.head(&node_id).is_some() {
+                        let patch = NodePatch {
+                            title: Some(content.title),
+                            body: Some(content.body),
+                            structured_upserts: content.structured_data,
+                            add_links: content.links,
+                            add_highlights: content.highlights,
+                        };
+                        self.update_node(&node_id, patch, confidence, importance)
+                            .map(|version| ToolResponse::Version { version })
+                    } else {
+                        self.create_node(&node_id, content, confidence, importance)
+                            .map(|version| ToolResponse::Version { version })
+                    }
+                } else {
+                    Err(MemoryError::Invalid(
+                        "upsert_node requires either content or patch".to_string(),
+                    ))
+                }
+            }
             ToolAction::ForkNode { node_id } => self
                 .fork_node(&node_id)
                 .map(|version| ToolResponse::Version { version }),
@@ -938,21 +958,6 @@ impl MemoryEngine {
             } => self
                 .merge_node(&node_id, &left_version, &right_version)
                 .map(|version| ToolResponse::Version { version }),
-            ToolAction::OpenNode { node_id, agent_id } => {
-                if self.head(&node_id).is_none() {
-                    Ok(ToolResponse::OptionalVersion { version: None })
-                } else {
-                    let agent = agent_id.unwrap_or_else(|| "agent-unknown".to_string());
-                    match self.log_access(&agent, &node_id) {
-                        Ok(_) => self
-                            .head(&node_id)
-                            .cloned()
-                            .map_or(Ok(None), |head| self.get_version(&head).map(Some))
-                            .map(|version| ToolResponse::OptionalVersion { version }),
-                        Err(err) => Err(err),
-                    }
-                }
-            }
             ToolAction::AccessNode { node_id, agent_id } => {
                 let agent = agent_id.unwrap_or_else(|| "agent-unknown".to_string());
                 self.log_access(&agent, &node_id)
@@ -986,12 +991,34 @@ impl MemoryEngine {
                 };
                 nodes_result.map(|nodes| ToolResponse::NodeList { nodes })
             }
-            ToolAction::SearchByHighlight { query } => self
-                .search_by_highlight(&query)
-                .map(|nodes| ToolResponse::NodeList { nodes }),
-            ToolAction::SearchByKeyword { query, limit } => self
+            ToolAction::SearchNodes {
+                query,
+                limit,
+                include_highlight,
+            } => self
                 .search_by_keyword(&query, limit.unwrap_or(10))
-                .map(|results| ToolResponse::SearchResults { results }),
+                .and_then(|mut hits| {
+                    if include_highlight.unwrap_or(true) {
+                        for node_id in self.search_by_highlight(&query)? {
+                            if hits.iter().any(|h| h.node_id == node_id) {
+                                continue;
+                            }
+                            hits.push(SearchHit {
+                                node_id,
+                                score: 5.0,
+                            });
+                        }
+                        hits.sort_by(|a, b| {
+                            b.score
+                                .total_cmp(&a.score)
+                                .then_with(|| a.node_id.cmp(&b.node_id))
+                        });
+                        if hits.len() > limit.unwrap_or(10) {
+                            hits.truncate(limit.unwrap_or(10));
+                        }
+                    }
+                    Ok(ToolResponse::SearchResults { results: hits })
+                }),
             ToolAction::SuggestExploration { node_id, limit } => self
                 .suggest_exploration(&node_id, limit.unwrap_or(8))
                 .map(|results| ToolResponse::ExploreResults { results }),
@@ -1052,21 +1079,39 @@ impl MemoryEngine {
                 }
                 result.map(|version| ToolResponse::Version { version })
             }
-            ToolAction::OpenMarkdownNode { node_id } => {
-                self.open_markdown_node(&node_id).map(|opt| match opt {
-                    Some((path, markdown, version)) => ToolResponse::Markdown {
-                        node_id,
-                        version,
-                        path: Some(path),
-                        markdown: Some(markdown),
-                    },
-                    None => ToolResponse::Markdown {
-                        node_id,
-                        version: None,
-                        path: None,
-                        markdown: None,
-                    },
-                })
+            ToolAction::OpenResource {
+                node_id,
+                markdown,
+                agent_id,
+            } => {
+                if markdown.unwrap_or(false) {
+                    self.open_markdown_node(&node_id).map(|opt| match opt {
+                        Some((path, markdown, version)) => ToolResponse::Markdown {
+                            node_id,
+                            version,
+                            path: Some(path),
+                            markdown: Some(markdown),
+                        },
+                        None => ToolResponse::Markdown {
+                            node_id,
+                            version: None,
+                            path: None,
+                            markdown: None,
+                        },
+                    })
+                } else if self.head(&node_id).is_none() {
+                    Ok(ToolResponse::OptionalVersion { version: None })
+                } else {
+                    let agent = agent_id.unwrap_or_else(|| "agent-unknown".to_string());
+                    match self.log_access(&agent, &node_id) {
+                        Ok(_) => self
+                            .head(&node_id)
+                            .cloned()
+                            .map_or(Ok(None), |head| self.get_version(&head).map(Some))
+                            .map(|version| ToolResponse::OptionalVersion { version }),
+                        Err(err) => Err(err),
+                    }
+                }
             }
             ToolAction::NodeHistory { node_id, limit } => self
                 .node_history(&node_id, limit.unwrap_or(30))
@@ -1570,9 +1615,10 @@ mod tests {
         let dir = temp_data_dir("tool-json");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
-        let action = ToolAction::CreateNode {
+        let action = ToolAction::UpsertNode {
             node_id: "ProtocolNode".to_string(),
-            content: sample_content("Protocol", "from tool", "Target"),
+            content: Some(sample_content("Protocol", "from tool", "Target")),
+            patch: None,
             confidence: 0.88,
             importance: 1.4,
         };
@@ -1600,6 +1646,93 @@ mod tests {
         match resp {
             ToolResponse::NodeList { nodes } => {
                 assert_eq!(nodes.first().map(String::as_str), Some("ProtocolNode"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merged_upsert_and_open_actions_work() {
+        let dir = temp_data_dir("merged-upsert-open");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        let resp = engine.execute_action(ToolAction::UpsertNode {
+            node_id: "MergedNode".to_string(),
+            content: Some(sample_content("Merged", "seed body", "RefNode")),
+            patch: None,
+            confidence: 0.86,
+            importance: 1.5,
+        });
+        match resp {
+            ToolResponse::Version { version } => assert_eq!(version.node_id, "MergedNode"),
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let resp = engine.execute_action(ToolAction::UpsertNode {
+            node_id: "MergedNode".to_string(),
+            content: None,
+            patch: Some(NodePatch {
+                body: Some("patched body".to_string()),
+                ..NodePatch::default()
+            }),
+            confidence: 0.9,
+            importance: 1.7,
+        });
+        match resp {
+            ToolResponse::Version { version } => assert_eq!(version.content.body, "patched body"),
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let open_resp = engine.execute_action(ToolAction::OpenResource {
+            node_id: "MergedNode".to_string(),
+            markdown: Some(false),
+            agent_id: Some("agent-main".to_string()),
+        });
+        match open_resp {
+            ToolResponse::OptionalVersion { version } => assert!(version.is_some()),
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let md_resp = engine.execute_action(ToolAction::OpenResource {
+            node_id: "MergedNode".to_string(),
+            markdown: Some(true),
+            agent_id: None,
+        });
+        match md_resp {
+            ToolResponse::Markdown { markdown, .. } => assert!(markdown.is_some()),
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merged_search_action_combines_keyword_and_highlight() {
+        let dir = temp_data_dir("merged-search");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "SearchNode",
+                NodeContent {
+                    title: "Search Node".to_string(),
+                    body: "contains graph memory topic".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["graph-memory".to_string()],
+                },
+                0.9,
+                1.6,
+            )
+            .expect("create node");
+
+        let resp = engine.execute_action(ToolAction::SearchNodes {
+            query: "graph memory".to_string(),
+            limit: Some(5),
+            include_highlight: Some(true),
+        });
+
+        match resp {
+            ToolResponse::SearchResults { results } => {
+                assert!(results.iter().any(|h| h.node_id == "SearchNode"));
             }
             other => panic!("unexpected response: {other:?}"),
         }
@@ -1652,9 +1785,10 @@ mod tests {
         );
         assert!(hits.iter().all(|h| h.score > 0.0));
 
-        let resp = engine.execute_action(ToolAction::SearchByKeyword {
+        let resp = engine.execute_action(ToolAction::SearchNodes {
             query: "fatigue telemetry".to_string(),
             limit: Some(3),
+            include_highlight: Some(true),
         });
         match resp {
             ToolResponse::SearchResults { results } => {
@@ -1688,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn open_node_action_auto_logs_access() {
+    fn open_resource_action_auto_logs_access() {
         let dir = temp_data_dir("open-access");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
@@ -1696,8 +1830,9 @@ mod tests {
             .create_node("OpenNode", sample_content("Open", "Body", "Ref"), 0.8, 1.0)
             .expect("create node");
 
-        let response = engine.execute_action(ToolAction::OpenNode {
+        let response = engine.execute_action(ToolAction::OpenResource {
             node_id: "OpenNode".to_string(),
+            markdown: Some(false),
             agent_id: None,
         });
         match response {
