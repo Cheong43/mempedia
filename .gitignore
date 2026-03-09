@@ -135,3 +135,4 @@ cache/
 
 # Claude Code files
 .claude/
+*.DS_Store

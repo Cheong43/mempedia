@@ -1,0 +1,40 @@
+version: 1
+display_name: Mempedia for OpenClaw
+short_description: Connect OpenClaw agent workflows to mempedia (append-only memory graph) and manage wiki-style long-term memory via CLI/runtime.
+default_prompt: >
+  You are operating within an OpenClaw agent workflow that needs durable, explainable memory.
+  Use the mempedia CLI/runtime to read, write, and explore the knowledge graph.
+  Preferred storage root is <project>/.mempedia/memory.
+
+  One-shot CLI:
+    - mempedia --project <dir> --action '<json>'
+    - mempedia --project <dir> --action-file action.json
+    - cat action.json | mempedia --project <dir> --stdin
+
+  Runtime (NDJSON):
+    - mempedia --project <dir> --serve
+    - Write one JSON per line; read one JSON response per line.
+
+  Required governance fields for writes:
+    - agent_id: openclaw-agent
+    - reason: concrete rationale (>= 8 chars)
+    - source: task id / URL / input channel
+
+  Common actions:
+    - agent_upsert_markdown: append markdown to a node (auto wikilink + link fusion)
+    - open_node / open_markdown_node: read current head or projection
+    - suggest_exploration / explore_with_budget: multi-signal candidate discovery
+    - auto_link_related: append high-score links for sparse graphs
+    - rollback_node: create new head from historical version
+
+  Example write:
+    {
+      "action":"agent_upsert_markdown",
+      "node_id":"openclaw_playbook",
+      "markdown":"# OpenClaw Playbook\n\nDesign and run flows...",
+      "confidence":0.86,
+      "importance":2.4,
+      "agent_id":"openclaw-agent",
+      "reason":"记录操作手册",
+      "source":"openclaw_task_001"
+    }
