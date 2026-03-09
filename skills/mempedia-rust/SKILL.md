@@ -81,11 +81,6 @@ Rules:
 When tasks involve tool protocol actions:
 1. Use explicit action schemas from this section.
 2. Do not infer/guess missing fields.
-3. Prefer merged actions:
-   - `upsert_node`
-   - `search_nodes`
-   - `open_resource`
-4. Do not use legacy actions.
 
 ### Canonical Action Schemas
 
@@ -123,10 +118,10 @@ When tasks involve tool protocol actions:
 }
 ```
 
-`open_resource`
+`open_node`
 ```json
 {
-  "action": "open_resource",
+  "action": "open_node",
   "node_id": "string",
   "markdown": false,
   "agent_id": "agent-main"
@@ -155,7 +150,7 @@ Do not require deterministic program-side hardcoded rules for this decision.
 ### Step 1: Default to Read-First
 
 Before writing, the agent should usually:
-1. `open_resource` with `markdown=false` if node is known.
+1. `open_node` with `markdown=false` if node is known.
 2. `traverse` for relevant neighborhood context.
 3. `compare_versions` if conflicting history is suspected.
 4. `explore_with_budget` to plan multi-hop exploration within bounded depth.
@@ -211,7 +206,7 @@ For each non-trivial memory operation, the calling AI should internally justify:
 - node lifecycle (`upsert`, `fork`, `merge`)
 - traversal (`BFS`, `DFS`, importance-first, confidence-filtered)
 - scoring (`promotion`, `decay`)
-- protocol/API actions (`open_resource`, `access_node`, `compare_versions`, `search_nodes`, `suggest_exploration`, `explore_with_budget`, `auto_link_related`, etc.)
+- protocol/API actions (`open_node`, `access_node`, `compare_versions`, `search_nodes`, `suggest_exploration`, `explore_with_budget`, `auto_link_related`, etc.)
 
 2. Implement in the correct layer:
 - schema: `core`
@@ -253,7 +248,7 @@ Recommended formula pattern:
 `importance = decay(log(in_degree+1) + access + highlights + cross_branch_presence)`
 
 Important runtime behavior:
-1. Every access should be recorded (`open_resource` with `agent_id`, or explicit `access_node`/`log_access`).
+1. Every access should be recorded (`open_node` with `agent_id`, or explicit `access_node`/`log_access`).
 2. Access increments persisted counters in `index/access_state.json`.
 3. Default auto-promotion is enabled: access can trigger `importance` update via appended versions.
 4. `confidence` does not auto-increase from access alone.
@@ -264,14 +259,14 @@ Important runtime behavior:
 Goal: help agents know what to explore next, especially when a node has sparse links.
 
 Recommended sequence:
-1. `open_resource` current topic (`markdown=false`).
+1. `open_node` current topic (`markdown=false`).
 2. `explore_with_budget` to get multi-hop candidates constrained by depth/branch budgets.
 3. `suggest_exploration` for focused next-step candidates with reasons:
    - `linked:*` (explicit graph edge, highest trust)
    - `referenced_by` (inbound edge)
    - `keyword` (fuzzy semantic candidate)
    - `high_importance_fallback` (last-resort discovery)
-4. Explore top candidates with `open_resource`.
+4. Explore top candidates with `open_node`.
 5. If current node has weak outgoing graph, use `auto_link_related` to append high-score links.
 
 Notes:

@@ -28,7 +28,7 @@ default_prompt: >
   Common actions:
     - upsert_node: merged create/update entrypoint
     - agent_upsert_markdown: append markdown to a node (auto wikilink + link fusion)
-    - open_resource: merged open_node/open_markdown_node
+    - open_node: merged version/markdown read entrypoint
     - search_nodes: merged search_by_keyword/search_by_highlight
     - suggest_exploration / explore_with_budget: multi-signal candidate discovery
     - auto_link_related: append high-score links for sparse graphs
@@ -36,7 +36,7 @@ default_prompt: >
 
   Preferred action whitelist:
     - upsert_node
-    - open_resource
+    - open_node
     - search_nodes
     - suggest_exploration
     - explore_with_budget

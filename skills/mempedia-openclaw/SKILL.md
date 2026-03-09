@@ -14,7 +14,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 
 ## What It Does
 - Provides standardized prompts and commands for OpenClaw agents to:
-  - Read nodes (`open_resource`)
+  - Read nodes (`open_node`)
   - Upsert nodes (`upsert_node`)
   - Write markdown updates (`agent_upsert_markdown`)
   - Explore graph (`suggest_exploration`, `explore_with_budget`)
@@ -65,7 +65,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 
 ## Action Whitelist (Preferred)
 - `upsert_node`
-- `open_resource`
+- `open_node`
 - `search_nodes`
 - `suggest_exploration`
 - `explore_with_budget`
@@ -98,10 +98,10 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 }
 ```
 
-### open_resource
+### open_node
 ```json
 {
-  "action": "open_resource",
+  "action": "open_node",
   "node_id": "string",
   "markdown": false,
   "agent_id": "openclaw-agent"
@@ -136,7 +136,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 ### Open Resource (version)
 ```json
 {
-  "action": "open_resource",
+  "action": "open_node",
   "node_id": "memory_orchestration",
   "markdown": false,
   "agent_id": "openclaw-agent"
@@ -146,7 +146,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 ### Open Resource (markdown)
 ```json
 {
-  "action": "open_resource",
+  "action": "open_node",
   "node_id": "memory_orchestration",
   "markdown": true
 }
@@ -196,8 +196,8 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 
 ### Read and Explore
 ```json
-{ "action": "open_resource", "node_id": "memory_orchestration", "agent_id": "openclaw-agent", "markdown": false }
-{ "action": "open_resource", "node_id": "memory_orchestration", "markdown": true }
+{ "action": "open_node", "node_id": "memory_orchestration", "agent_id": "openclaw-agent", "markdown": false }
+{ "action": "open_node", "node_id": "memory_orchestration", "markdown": true }
 { "action": "search_nodes", "query": "memory graph", "limit": 8, "include_highlight": true }
 { "action": "suggest_exploration", "node_id": "memory_orchestration", "limit": 8 }
 { "action": "explore_with_budget", "node_id": "memory_orchestration", "depth_budget": 2, "per_layer_limit": 4, "total_limit": 10, "min_score": 0.0 }

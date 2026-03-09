@@ -57,7 +57,7 @@ JSON
 cargo run -- --project /path/to/project --action-file action.json
 
 # 3) Open the node
-cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 
 # 4) Run tests
 cargo test
@@ -140,7 +140,7 @@ For agent-side direct calls:
 - `upsert_node`
 - `fork_node`
 - `merge_node`
-- `open_resource`
+- `open_node`
 - `access_node`
 - `compare_versions`
 - `traverse`
@@ -167,7 +167,7 @@ Request example:
 CLI examples:
 
 ```bash
-cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
 ```
@@ -227,7 +227,7 @@ cat > action.json <<'JSON'
 JSON
 
 cargo run -- --project /path/to/project --action-file action.json
-cargo run -- --project /path/to/project --action '{"action":"open_resource","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 cargo test
 find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 ```
@@ -266,7 +266,7 @@ Rust API 入口：`src/api/mod.rs`。
 - `upsert_node`
 - `fork_node`
 - `merge_node`
-- `open_resource`
+- `open_node`
 - `access_node`
 - `compare_versions`
 - `traverse`

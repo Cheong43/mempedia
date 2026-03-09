@@ -143,7 +143,7 @@ pub enum ToolAction {
         agent_id: Option<String>,
         reason: String,
     },
-    OpenResource {
+    OpenNode {
         node_id: String,
         #[serde(default)]
         markdown: Option<bool>,
@@ -1079,7 +1079,7 @@ impl MemoryEngine {
                 }
                 result.map(|version| ToolResponse::Version { version })
             }
-            ToolAction::OpenResource {
+            ToolAction::OpenNode {
                 node_id,
                 markdown,
                 agent_id,
@@ -1683,7 +1683,7 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
-        let open_resp = engine.execute_action(ToolAction::OpenResource {
+        let open_resp = engine.execute_action(ToolAction::OpenNode {
             node_id: "MergedNode".to_string(),
             markdown: Some(false),
             agent_id: Some("agent-main".to_string()),
@@ -1693,7 +1693,7 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
-        let md_resp = engine.execute_action(ToolAction::OpenResource {
+        let md_resp = engine.execute_action(ToolAction::OpenNode {
             node_id: "MergedNode".to_string(),
             markdown: Some(true),
             agent_id: None,
@@ -1822,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn open_resource_action_auto_logs_access() {
+    fn open_node_action_auto_logs_access() {
         let dir = temp_data_dir("open-access");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
@@ -1830,7 +1830,7 @@ mod tests {
             .create_node("OpenNode", sample_content("Open", "Body", "Ref"), 0.8, 1.0)
             .expect("create node");
 
-        let response = engine.execute_action(ToolAction::OpenResource {
+        let response = engine.execute_action(ToolAction::OpenNode {
             node_id: "OpenNode".to_string(),
             markdown: Some(false),
             agent_id: None,
