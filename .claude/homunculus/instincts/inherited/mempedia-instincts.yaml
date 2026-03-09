@@ -1,0 +1,441 @@
+# Instincts generated from https://github.com/Cheong43/mempedia
+# Generated: 2026-03-09T03:53:18.267Z
+# Version: 2.0
+
+---
+id: mempedia-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Commit Length
+
+## Action
+
+Write moderate-length commit messages (~50 characters)
+
+## Evidence
+
+- Average commit message length: 54 chars
+- Based on 11 commits
+
+---
+id: mempedia-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: mempedia-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Export Style
+
+## Action
+
+Prefer mixed exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: mixed
+
+---
+id: mempedia-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: mempedia-workflow-gitignore-maintenance
+trigger: "when doing gitignore maintenance"
+confidence: 0.75
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Gitignore Maintenance
+
+## Action
+
+Follow the gitignore-maintenance workflow:
+1. Identify files/directories to ignore
+2. Update .gitignore
+3. Clean up already tracked files if needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~5x per month
+- Files: .gitignore
+
+---
+id: mempedia-workflow-documentation-update
+trigger: "when doing documentation update"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Documentation Update
+
+## Action
+
+Follow the documentation-update workflow:
+1. Update readme.md with new information
+2. Update skill documentation in skills/ directory
+3. Sync agent configuration files
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: readme.md, skills/*/SKILL.md, skills/*/agents/openai.yaml
+
+---
+id: mempedia-workflow-rust-build-cleanup
+trigger: "when doing rust build cleanup"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Rust Build Cleanup
+
+## Action
+
+Follow the rust-build-cleanup workflow:
+1. Update .gitignore to exclude target/
+2. Remove target/ from git tracking
+3. Clean up incremental build files
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: .gitignore, target/**/*
+
+---
+id: mempedia-workflow-web-ui-development
+trigger: "when doing web ui development"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Web Ui Development
+
+## Action
+
+Follow the web-ui-development workflow:
+1. Create/update HTML structure
+2. Update JavaScript functionality
+3. Style with CSS
+4. Update project documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: *-UI/index.html, *-UI/script.js, *-UI/styles.css
+
+---
+id: mempedia-workflow-rust-module-enhancement
+trigger: "when doing rust module enhancement"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Rust Module Enhancement
+
+## Action
+
+Follow the rust-module-enhancement workflow:
+1. Update core module functionality
+2. Extend API module
+3. Update related modules
+4. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/core/mod.rs, src/api/mod.rs, src/*/mod.rs
+
+---
+id: mempedia-rust-snake-case-files
+trigger: "When creating new Rust source files"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Rust Snake Case Files
+
+## Action
+
+Use snake_case naming convention for file names
+
+## Evidence
+
+- Rust standard convention
+- src/ folder structure follows snake_case pattern
+
+---
+id: mempedia-rust-module-structure
+trigger: "When creating new functionality modules"
+confidence: 0.85
+domain: architecture
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Rust Module Structure
+
+## Action
+
+Create separate modules in src/ directory (api, core, decay, graph, etc.)
+
+## Evidence
+
+- src layout shows modular structure: api, core, decay, graph, markdown, merge, promotion, runtime, storage, versioning
+
+---
+id: mempedia-separate-test-location
+trigger: "When writing tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Separate Test Location
+
+## Action
+
+Place tests in separate test directory structure
+
+## Evidence
+
+- Architecture analysis shows testLocation: separate
+
+---
+id: mempedia-chore-prefix-commits
+trigger: "When making maintenance or housekeeping changes"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Chore Prefix Commits
+
+## Action
+
+Use 'chore:' prefix in commit messages
+
+## Evidence
+
+- Commit examples: 'chore: rename project to mempedia and refresh dataset'
+
+---
+id: mempedia-descriptive-commit-messages
+trigger: "When committing changes"
+confidence: 0.75
+domain: git
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Descriptive Commit Messages
+
+## Action
+
+Write descriptive commit messages averaging 54 characters
+
+## Evidence
+
+- Average commit length is 54 characters
+- Examples show clear, descriptive messages
+
+---
+id: mempedia-gitignore-build-artifacts
+trigger: "When build artifacts appear in git status"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Gitignore Build Artifacts
+
+## Action
+
+Update .gitignore to exclude target/ and build directories
+
+## Evidence
+
+- gitignore-maintenance workflow has frequency 5
+- Multiple commits about ignoring target/ directory
+
+---
+id: mempedia-clean-tracked-artifacts
+trigger: "When updating .gitignore for already-tracked files"
+confidence: 0.88
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Clean Tracked Artifacts
+
+## Action
+
+Remove tracked files from git and update .gitignore in same workflow
+
+## Evidence
+
+- rust-build-cleanup workflow shows pattern of gitignore update + cleanup
+- Commits: 'Remove generated files and update .gitignore'
+
+---
+id: mempedia-sync-docs-with-code
+trigger: "When adding new features or changing functionality"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Sync Docs With Code
+
+## Action
+
+Update both readme.md and skills documentation together
+
+## Evidence
+
+- documentation-update workflow frequency 4
+- Files involved: readme.md, skills/*/SKILL.md
+
+---
+id: mempedia-ui-component-structure
+trigger: "When developing web interface components"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Ui Component Structure
+
+## Action
+
+Create HTML, JavaScript, and CSS files in *-UI/ directory structure
+
+## Evidence
+
+- web-ui-development workflow shows pattern
+- Files: *-UI/index.html, *-UI/script.js, *-UI/styles.css
+
+---
+id: mempedia-rust-api-core-pattern
+trigger: "When enhancing Rust functionality"
+confidence: 0.82
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Rust Api Core Pattern
+
+## Action
+
+Update core module first, then extend API module, then update related modules
+
+## Evidence
+
+- rust-module-enhancement workflow shows this sequence
+- Files involved: src/core/mod.rs, src/api/mod.rs
+
+---
+id: mempedia-skill-agent-sync
+trigger: "When updating skill documentation"
+confidence: 0.8
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Skill Agent Sync
+
+## Action
+
+Update both SKILL.md and corresponding agents/openai.yaml files
+
+## Evidence
+
+- documentation-update workflow includes both skills/*/SKILL.md and skills/*/agents/openai.yaml
+
+---
+id: mempedia-project-rename-dataset-refresh
+trigger: "When renaming or restructuring project"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: Cheong43/mempedia
+---
+
+# Mempedia Project Rename Dataset Refresh
+
+## Action
+
+Combine project rename with dataset refresh in single commit
+
+## Evidence
+
+- Commit example: 'chore: rename project to mempedia and refresh dataset'
+
