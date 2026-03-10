@@ -368,6 +368,7 @@ impl MemoryEngine {
         let version = if self.head(node_id).is_some() {
             let patch = NodePatch {
                 title: Some(content.title.clone()),
+                summary: Some(content.summary.clone()),
                 body: Some(content.body.clone()),
                 structured_upserts: content.structured_data.clone(),
                 add_links: content.links.clone(),
@@ -931,6 +932,7 @@ impl MemoryEngine {
                     if self.head(&node_id).is_some() {
                         let patch = NodePatch {
                             title: Some(content.title),
+                            summary: Some(content.summary),
                             body: Some(content.body),
                             structured_upserts: content.structured_data,
                             add_links: content.links,
@@ -1301,6 +1303,7 @@ fn index_content_tokens(
     content: &NodeContent,
 ) {
     add_text_tokens(index, node_id, &content.title, 5.0);
+    add_text_tokens(index, node_id, &content.summary, 4.0);
     add_text_tokens(index, node_id, &content.body, 2.0);
     add_text_tokens(index, node_id, &content.highlights.join(" "), 2.5);
 
@@ -1347,7 +1350,7 @@ fn flush_cjk_tokens(tokens: &mut Vec<String>, buf: &mut String) {
 }
 
 fn build_exploration_query(content: &NodeContent) -> String {
-    let mut parts = vec![content.title.clone()];
+    let mut parts = vec![content.title.clone(), content.summary.clone()];
     parts.extend(content.highlights.clone());
 
     for (k, v) in &content.structured_data {
@@ -1514,6 +1517,7 @@ mod tests {
         structured.insert("state".to_string(), "draft".to_string());
         NodeContent {
             title: title.to_string(),
+            summary: format!("{title} concise summary"),
             body: body.to_string(),
             structured_data: structured,
             links: vec![Link {
@@ -1554,6 +1558,18 @@ mod tests {
         assert_eq!(old.content.body, "v0 body");
         assert_eq!(head.content.body, "v1 body");
         assert_ne!(v0.version, v1.version);
+    }
+
+    #[test]
+    fn create_node_requires_non_empty_summary() {
+        let dir = temp_data_dir("summary-required");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+        let mut content = sample_content("SummaryRule", "body", "Ref");
+        content.summary = "".to_string();
+        let err = engine
+            .create_node("SummaryRule", content, 0.8, 1.0)
+            .expect_err("should reject empty summary");
+        assert!(err.to_string().contains("summary is required"));
     }
 
     #[test]
@@ -1714,6 +1730,7 @@ mod tests {
                 "SearchNode",
                 NodeContent {
                     title: "Search Node".to_string(),
+                    summary: "Node used for merged keyword and highlight search.".to_string(),
                     body: "contains graph memory topic".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],
@@ -1748,6 +1765,7 @@ mod tests {
                 "Circadian_Model",
                 NodeContent {
                     title: "Circadian Fatigue Wiki".to_string(),
+                    summary: "Circadian fatigue signals and telemetry notes.".to_string(),
                     body: "# Summary\nWearable telemetry and circadian rhythm markers.".to_string(),
                     structured_data: BTreeMap::from([(
                         "keywords".to_string(),
@@ -1766,6 +1784,7 @@ mod tests {
                 "Nutrition",
                 NodeContent {
                     title: "Nutrition Notes".to_string(),
+                    summary: "Basic nutrition and hydration reminders.".to_string(),
                     body: "Protein planning and hydration.".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],
@@ -1857,6 +1876,7 @@ mod tests {
                 "swift_learning_resources",
                 NodeContent {
                     title: "Swift 学习资源与设计开发工具".to_string(),
+                    summary: "收集 Swift 学习资源与设计灵感来源。".to_string(),
                     body: "## Summary\n包含 y combinator 与 design inspiration".to_string(),
                     structured_data: BTreeMap::from([
                         ("category".to_string(), "resources_tools".to_string()),
@@ -1891,6 +1911,7 @@ mod tests {
                 "y_combinator_overview",
                 NodeContent {
                     title: "Y Combinator - 全球顶级创业加速器".to_string(),
+                    summary: "YC 创业加速器基础信息与项目线索。".to_string(),
                     body: "startup accelerator and demo day".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],
@@ -1925,6 +1946,7 @@ mod tests {
                 "memory_orchestration",
                 NodeContent {
                     title: "Memory Orchestration".to_string(),
+                    summary: "Core orchestration node for memory pipeline.".to_string(),
                     body: "pipeline design and indexing".to_string(),
                     structured_data: BTreeMap::from([
                         ("meta.category".to_string(), "agent_memory".to_string()),
@@ -1954,6 +1976,7 @@ mod tests {
                 "graph_memory_pipeline",
                 NodeContent {
                     title: "Graph Memory Pipeline".to_string(),
+                    summary: "Candidate pipeline node for graph memory workflows.".to_string(),
                     body: "execution planning for memory".to_string(),
                     structured_data: BTreeMap::from([
                         ("meta.category".to_string(), "agent_memory".to_string()),
@@ -2015,6 +2038,7 @@ mod tests {
                 "y_combinator_overview",
                 NodeContent {
                     title: "Y Combinator - 全球顶级创业加速器".to_string(),
+                    summary: "YC overview focused on accelerator operations.".to_string(),
                     body: "startup accelerator demo day alumni".to_string(),
                     structured_data: BTreeMap::from([(
                         "category".to_string(),
@@ -2066,6 +2090,7 @@ mod tests {
                 "swift_learning_resources",
                 NodeContent {
                     title: "Swift 学习资源与设计开发工具".to_string(),
+                    summary: "Swift learning hub entry with resource links.".to_string(),
                     body: "swift resource hub".to_string(),
                     structured_data: BTreeMap::from([(
                         "category".to_string(),
@@ -2088,6 +2113,7 @@ mod tests {
                 "swift_learning_path",
                 NodeContent {
                     title: "Swift Learning Path".to_string(),
+                    summary: "Learning path node connecting to inspiration resources.".to_string(),
                     body: "covers startup inspiration and yc".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![Link {
@@ -2107,6 +2133,7 @@ mod tests {
                 "y_combinator_overview",
                 NodeContent {
                     title: "Y Combinator".to_string(),
+                    summary: "Startup accelerator concept node.".to_string(),
                     body: "startup accelerator".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],
@@ -2194,6 +2221,7 @@ mod tests {
                 "rust_memory_engine",
                 NodeContent {
                     title: "Rust Memory Engine".to_string(),
+                    summary: "Rust implementation of append-only memory engine.".to_string(),
                     body: "append-only node versioning".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],
@@ -2278,6 +2306,7 @@ mod tests {
                 "cn_node",
                 NodeContent {
                     title: "知识库检索".to_string(),
+                    summary: "中文知识检索与回溯能力说明。".to_string(),
                     body: "支持中文关键词检索与版本回溯".to_string(),
                     structured_data: BTreeMap::new(),
                     links: vec![],

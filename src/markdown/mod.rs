@@ -6,6 +6,10 @@ pub fn parse_markdown(markdown: &str) -> NodeContent {
     let (frontmatter, body) = split_frontmatter(markdown);
     let body = body.trim().to_string();
     let title = extract_title(&body).unwrap_or_else(|| "Untitled".to_string());
+    let summary = frontmatter
+        .get("summary")
+        .cloned()
+        .unwrap_or_else(|| derive_summary(&title, &body));
     let highlights = extract_highlights(&body);
     let links = extract_wikilinks(&body)
         .into_iter()
@@ -24,6 +28,7 @@ pub fn parse_markdown(markdown: &str) -> NodeContent {
 
     NodeContent {
         title,
+        summary,
         body,
         structured_data,
         links,
@@ -40,6 +45,10 @@ pub fn render_node_markdown(node_id: &str, version: &NodeVersion) -> String {
     out.push_str(&format!("confidence: {:.4}\n", version.confidence));
     out.push_str(&format!("importance: {:.4}\n", version.importance));
     out.push_str(&format!("title: {}\n", yaml_escape(&version.content.title)));
+    out.push_str(&format!(
+        "summary: {}\n",
+        yaml_escape(&version.content.summary)
+    ));
 
     if version.parents.is_empty() {
         out.push_str("parents: []\n");
@@ -163,6 +172,25 @@ fn extract_wikilinks(body: &str) -> Vec<String> {
     out
 }
 
+fn derive_summary(title: &str, body: &str) -> String {
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        let compact: String = normalized.chars().take(140).collect();
+        if compact.chars().count() >= 8 {
+            return compact;
+        }
+    }
+    let title_trimmed = title.trim();
+    if title_trimmed.chars().count() >= 8 {
+        return title_trimmed.chars().take(140).collect();
+    }
+    format!("{title_trimmed} summary")
+}
+
 fn yaml_escape(input: &str) -> String {
     format!("\"{}\"", input.replace('\\', "\\\\").replace('\"', "\\\""))
 }
@@ -184,6 +212,7 @@ Link to [[Node_A]].
 "#;
         let parsed = parse_markdown(input);
         assert_eq!(parsed.title, "Memory Design");
+        assert!(!parsed.summary.trim().is_empty());
         assert!(parsed.body.contains("Link to [[Node_A]]"));
         assert_eq!(
             parsed
@@ -209,6 +238,7 @@ Link to [[Node_A]].
 
         let markdown = render_node_markdown("node-a", &version);
         assert!(markdown.contains("node_id: \"node-a\""));
+        assert!(markdown.contains("summary: "));
         assert!(markdown.contains("---"));
         assert!(markdown.contains("# Title"));
     }

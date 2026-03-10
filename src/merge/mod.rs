@@ -26,6 +26,11 @@ pub fn merge_content(left: &NodeVersion, right: &NodeVersion) -> (NodeContent, V
     } else {
         left.content.title.clone()
     };
+    let summary = if pick_right {
+        right.content.summary.clone()
+    } else {
+        left.content.summary.clone()
+    };
 
     let body = if pick_right {
         right.content.body.clone()
@@ -42,6 +47,7 @@ pub fn merge_content(left: &NodeVersion, right: &NodeVersion) -> (NodeContent, V
     (
         NodeContent {
             title,
+            summary,
             body,
             structured_data: structured,
             links,

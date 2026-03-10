@@ -50,7 +50,7 @@ cargo run
 ```bash
 # 1) Create an action request
 cat > action.json <<'JSON'
-{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
+{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","summary":"Core fatigue baseline assumptions.","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
 JSON
 
 # 2) Execute action (create node)
@@ -223,7 +223,7 @@ cargo run
 
 ```bash
 cat > action.json <<'JSON'
-{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
+{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","summary":"疲劳模型的核心基线假设。","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
 JSON
 
 cargo run -- --project /path/to/project --action-file action.json

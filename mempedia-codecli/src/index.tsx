@@ -19,6 +19,9 @@ const baseURL = useArkProvider
 const model = useArkProvider
   ? process.env.ARK_MODEL || 'Kimi-K2.5'
   : process.env.OPENAI_MODEL || 'gpt-4o';
+const memoryApiKey = process.env.MEMORY_API_KEY?.trim();
+const memoryBaseURL = process.env.MEMORY_BASE_URL || process.env.CODING_PLAN_BASE_URL;
+const memoryModel = process.env.MEMORY_MODEL || process.env.CODING_PLAN_MODEL;
 
 if (!apiKey) {
   console.error('Error: API KEY is not set. Please set OPENAI_API_KEY or ARK_API_KEY in .env file.');
@@ -32,4 +35,14 @@ if (!fs.existsSync(path.join(m2wRoot, 'Cargo.toml'))) {
     console.warn(`Warning: Could not find Cargo.toml in ${m2wRoot}. Using current directory as project root.`);
 }
 
-render(<App apiKey={apiKey} projectRoot={m2wRoot} baseURL={baseURL} model={model} />);
+render(
+  <App
+    apiKey={apiKey}
+    projectRoot={m2wRoot}
+    baseURL={baseURL}
+    model={model}
+    memoryApiKey={memoryApiKey}
+    memoryBaseURL={memoryBaseURL}
+    memoryModel={memoryModel}
+  />
+);

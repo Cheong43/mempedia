@@ -91,6 +91,7 @@ When tasks involve tool protocol actions:
   "node_id": "string",
   "content": {
     "title": "string",
+    "summary": "string (8-140 chars, concise and accurate)",
     "body": "string",
     "structured_data": { "key": "value" },
     "links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],

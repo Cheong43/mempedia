@@ -106,29 +106,64 @@ export interface AgentConfig {
   apiKey: string;
   baseURL?: string;
   model?: string;
+  memoryApiKey?: string;
+  memoryBaseURL?: string;
+  memoryModel?: string;
+}
+
+interface PerfEntry {
+  label: string;
+  ms: number;
+}
+
+interface ConversationTurn {
+  user: string;
+  assistant: string;
 }
 
 interface MemoryExtraction {
-  intent: string;
-  thoughts: string[];
-  facts: string[];
-  omit: string[];
+  user_habits_env: string[];
+  behavior_patterns: string[];
+  atomic_knowledge: Array<{ keyword: string; summary: string; details: string }>;
 }
 
 export class Agent {
   private openai: OpenAI;
+  private memoryOpenai: OpenAI;
   private mempedia: MempediaClient;
   private model: string;
+  private memoryModel: string;
   private interactionCounter: number;
+  private readonly maxConversationTurns: number;
+  private conversationTurns: ConversationTurn[];
+  private onBackgroundTaskCallback: ((task: string, status: 'started' | 'completed') => void) | null = null;
 
-  constructor(config: AgentConfig, projectRoot: string) {
+  constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.openai = new OpenAI({ 
       apiKey: config.apiKey,
       baseURL: config.baseURL 
     });
+    this.memoryOpenai = new OpenAI({
+      apiKey: config.memoryApiKey || config.apiKey,
+      baseURL: config.memoryBaseURL || config.baseURL
+    });
     this.model = config.model || 'gpt-4o';
-    this.mempedia = new MempediaClient(projectRoot);
+    this.memoryModel = config.memoryModel || this.model;
+    this.mempedia = new MempediaClient(projectRoot, binaryPath);
     this.interactionCounter = 0;
+    this.maxConversationTurns = 5;
+    this.conversationTurns = [];
+  }
+
+  onBackgroundTask(callback: (task: string, status: 'started' | 'completed') => void) {
+      this.onBackgroundTaskCallback = callback;
+      return () => { this.onBackgroundTaskCallback = null; };
+  }
+
+  private notifyBackgroundTask(task: string, status: 'started' | 'completed') {
+      if (this.onBackgroundTaskCallback) {
+          this.onBackgroundTaskCallback(task, status);
+      }
   }
 
   async start() {
@@ -182,83 +217,244 @@ export class Agent {
     return `${prefix}_${stamp}_${this.interactionCounter}`;
   }
 
+  private toSlug(value: string): string {
+    const normalized = value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 72);
+    return normalized || 'empty';
+  }
+
+  private stableNodeId(type: 'intent' | 'thought' | 'fact' | 'pattern' | 'atomic', text: string): string {
+    return `kg_${type}_${this.toSlug(text)}`;
+  }
+
+  private preferenceNodeId(text: string): string {
+    return `kg_preference_${this.toSlug(text)}`;
+  }
+
+  private isPreferenceLine(line: string): boolean {
+    const lc = line.toLowerCase();
+    return lc.includes('prefer')
+      || lc.includes('preference')
+      || lc.includes('习惯')
+      || lc.includes('偏好')
+      || lc.includes('默认')
+      || lc.includes('希望')
+      || lc.includes('请用')
+      || lc.includes('请保持');
+  }
+
+  private isValuableKnowledgeLine(line: string): boolean {
+    if (this.isNoiseLine(line)) {
+      return false;
+    }
+    const cleaned = line.trim();
+    if (cleaned.length < 12) {
+      return false;
+    }
+    const lc = cleaned.toLowerCase();
+    if (lc.includes('hello') || lc.includes('hi') || lc.includes('thanks') || lc.includes('你好')) {
+      return false;
+    }
+    return true;
+  }
+
+  private async measure<T>(
+    entries: PerfEntry[] | null,
+    label: string,
+    work: () => Promise<T>
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      return await work();
+    } finally {
+      if (entries) {
+        entries.push({ label, ms: Date.now() - start });
+      }
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    if (timeoutMs <= 0) {
+      return promise;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
   private async extractMemoryPayload(input: string, traces: TraceEvent[], answer: string): Promise<MemoryExtraction> {
     const traceLines = traces
       .slice(-30)
       .map((t) => `${t.type.toUpperCase()}: ${t.content}`)
       .join('\n');
-    const extractionPrompt = `请提取以下对话中应长期保存到知识库的信息。\n输出必须是 JSON（不要 markdown）并使用这个结构：\n{"intent":"...","thoughts":["..."],"facts":["..."],"omit":["..."]}\n规则：\n1) intent 必须概括用户真实目标。\n2) thoughts 只保留与任务策略有关的高价值想法，去掉寒暄和重复。\n3) facts 只保留可复用的重要事实，不要日志噪音。\n4) omit 列出你主动忽略的杂音类型。\n5) 所有字段必须存在。`;
+    const extractionPrompt = `请提取以下对话中应长期保存到知识库的信息。
+输出必须是 JSON（不要 markdown）并使用这个结构：
+{
+  "user_habits_env": ["..."],
+  "behavior_patterns": ["..."],
+  "atomic_knowledge": [
+     { "keyword": "关键词(唯一标识)", "summary": "准确简短的描述(必须)", "details": "详细解释、事实、历史变迁、引申等" }
+  ]
+}
+
+规则：
+1. **user_habits_env (用户习惯与环境)**: 记录目前的环境信息与用户偏好。
+2. **behavior_patterns (行为模式)**: 模型在尝试完成某种用户计划时减去无意义的尝试，只留下有用的行为总结而出的pattern，pattern需要持续更新。
+3. **atomic_knowledge (原子化知识)**: 
+    - 所有知识node都应该由一个独立的关键词确认。
+    - 关键词下可以有关联关系和更详细的描述，类似wikipedia一样。
+    - 每个核心关键词知识都有系统性的知识（解释、事实、历史变迁、引申）记录并不断维护。
+    - 如有重名的关键词知识，则在摘要中区分开。
+    - **必须**包含 summary 字段，且为准确简短的描述。
+
+严禁输出寒暄、执行日志、临时上下文、错误堆栈。只保留长期有价值的信息。`;
+
     const userPayload = `用户输入:\n${input}\n\n执行轨迹:\n${traceLines}\n\n最终回答:\n${answer}`;
     try {
-      const extraction = await this.openai.chat.completions.create({
-        model: this.model,
+      const extraction = await this.memoryOpenai.chat.completions.create({
+        model: this.memoryModel,
         messages: [
           { role: 'system', content: extractionPrompt },
           { role: 'user', content: userPayload }
-        ]
+        ],
+        response_format: { type: "json_object" }
       });
       const content = extraction.choices[0]?.message?.content || '{}';
       const parsed = JSON.parse(content);
-      const intent = typeof parsed.intent === 'string' ? parsed.intent.trim() : input.trim();
-      const thoughts = this.normalizeItems(parsed.thoughts, 8).filter((line) => !this.isNoiseLine(line));
-      const facts = this.normalizeItems(parsed.facts, 12).filter((line) => !this.isNoiseLine(line));
-      const omit = this.normalizeItems(parsed.omit, 8);
+      
       return {
-        intent: intent || input.trim(),
-        thoughts,
-        facts,
-        omit
+        user_habits_env: this.normalizeItems(parsed.user_habits_env, 10),
+        behavior_patterns: this.normalizeItems(parsed.behavior_patterns, 10),
+        atomic_knowledge: Array.isArray(parsed.atomic_knowledge) ? parsed.atomic_knowledge.filter((k: any) => k.keyword && k.summary) : []
       };
     } catch (_) {
-      const fallbackThoughts = this.normalizeItems(
-        traces.filter((t) => t.type === 'thought').map((t) => t.content),
-        8
-      ).filter((line) => !this.isNoiseLine(line));
-      const fallbackFacts = this.normalizeItems(
-        traces.filter((t) => t.type === 'observation').map((t) => t.content),
-        10
-      ).filter((line) => !this.isNoiseLine(line));
       return {
-        intent: input.trim(),
-        thoughts: fallbackThoughts,
-        facts: fallbackFacts,
-        omit: ['重复寒暄', '运行日志噪音', '无信息量输出']
+        user_habits_env: [],
+        behavior_patterns: [],
+        atomic_knowledge: []
       };
     }
   }
 
-  private async persistInteractionMemory(input: string, traces: TraceEvent[], answer: string): Promise<void> {
-    const payload = await this.extractMemoryPayload(input, traces, answer);
-    const intentNodeId = this.buildNodeId('intent');
-    const intentMarkdown = `# User Intent\n\n${payload.intent}\n\n## Original Input\n\n${input}`;
-    await this.mempedia.send({
-      action: 'agent_upsert_markdown',
-      node_id: intentNodeId,
-      markdown: intentMarkdown,
-      confidence: 0.95,
-      importance: 1.4,
-      agent_id: 'mempedia-codecli',
-      reason: 'Capture user intent for future retrieval',
-      source: 'interaction_intent'
-    });
-    const factLines = payload.facts.length > 0 ? payload.facts.map((f) => `- ${f}`).join('\n') : '- 无';
-    const thoughtLines = payload.thoughts.length > 0 ? payload.thoughts.map((f) => `- ${f}`).join('\n') : '- 无';
-    const omitLines = payload.omit.length > 0 ? payload.omit.map((f) => `- ${f}`).join('\n') : '- 无';
-    const knowledgeNodeId = this.buildNodeId('knowledge');
-    const knowledgeMarkdown = `# Interaction Memory\n\n## Intent\n\n${payload.intent}\n\n## Strategic Thoughts\n\n${thoughtLines}\n\n## Important Facts\n\n${factLines}\n\n## Omitted Noise\n\n${omitLines}\n\n## Final Answer Snapshot\n\n${answer}`;
-    await this.mempedia.send({
-      action: 'agent_upsert_markdown',
-      node_id: knowledgeNodeId,
-      markdown: knowledgeMarkdown,
-      confidence: 0.92,
-      importance: 1.6,
-      agent_id: 'mempedia-codecli',
-      reason: 'Persist high-value thoughts and facts with noise filtering',
-      source: 'interaction_memory'
-    });
+  private async persistInteractionMemory(
+    input: string,
+    traces: TraceEvent[],
+    answer: string,
+    perfEntries: PerfEntry[] | null
+  ): Promise<void> {
+    // Start background task
+    this.notifyBackgroundTask('Saving memory...', 'started');
+    
+    // We do NOT await this in the main flow to avoid blocking response
+    // But since we need to use 'this.openai' and 'this.mempedia' which might be stateful or busy,
+    // we should be careful. 
+    // However, user asked for "start a subagent thread". 
+    // Since we are in Node.js, we can't easily spawn a full thread with shared state without complexity.
+    // For now, we will run this asynchronously but without 'await' in the main return path, 
+    // essentially fire-and-forget from the perspective of the UI response.
+    
+    (async () => {
+        try {
+            const memoryTaskTimeoutMs = Number(process.env.MEMORY_TASK_TIMEOUT_MS || 0);
+            await this.withTimeout((async () => {
+              const payload = await this.measure(perfEntries, 'memory_extract', async () =>
+                this.extractMemoryPayload(input, traces, answer)
+              );
+
+              const nowIso = new Date().toISOString();
+              const memoryActionTimeoutMs = Number(process.env.MEMORY_SAVE_ACTION_TIMEOUT_MS || 0);
+              const sendWithTimeout = (action: ToolAction) =>
+                this.withTimeout(
+                  this.mempedia.send(action),
+                  memoryActionTimeoutMs,
+                  `memory action ${action.action}`
+                );
+
+              // 1. User Habits & Environment
+              if (payload.user_habits_env.length > 0) {
+                  for (const item of payload.user_habits_env) {
+                      const nodeId = this.preferenceNodeId(item); // Reuse preference ID logic for habits
+                      const markdown = `# User Habit/Env\n\n${item}\n\n## Summary\n\n${item.slice(0, 50)}...\n\n## Updated at\n\n${nowIso}\n\n## Type\n\nuser_habit_env`;
+                      await sendWithTimeout({
+                        action: 'agent_upsert_markdown',
+                        node_id: nodeId,
+                        markdown,
+                        confidence: 0.95,
+                        importance: 1.8,
+                        agent_id: 'mempedia-codecli',
+                        reason: 'User habit or environment info',
+                        source: 'kg_habit_env'
+                      });
+                  }
+                }
+
+              // 2. Behavior Patterns
+              if (payload.behavior_patterns.length > 0) {
+                  for (const item of payload.behavior_patterns) {
+                      const nodeId = this.stableNodeId('pattern', item);
+                      const markdown = `# Behavior Pattern\n\n${item}\n\n## Summary\n\n${item.slice(0, 50)}...\n\n## Updated at\n\n${nowIso}\n\n## Type\n\nbehavior_pattern`;
+                      await sendWithTimeout({
+                        action: 'agent_upsert_markdown',
+                        node_id: nodeId,
+                        markdown,
+                        confidence: 0.90,
+                        importance: 2.0,
+                        agent_id: 'mempedia-codecli',
+                        reason: 'Behavior pattern extraction',
+                        source: 'kg_pattern'
+                      });
+                  }
+                }
+
+              // 3. Atomic Knowledge
+              if (payload.atomic_knowledge.length > 0) {
+                  for (const item of payload.atomic_knowledge) {
+                      const nodeId = this.stableNodeId('atomic', item.keyword);
+                      const markdown = `# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Details\n\n${item.details}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
+                      await sendWithTimeout({
+                        action: 'agent_upsert_markdown',
+                        node_id: nodeId,
+                        markdown,
+                        confidence: 0.98,
+                        importance: 1.9,
+                        agent_id: 'mempedia-codecli',
+                        reason: 'Atomic knowledge update',
+                        source: 'kg_atomic'
+                      });
+                      
+                      await sendWithTimeout({
+                        action: 'auto_link_related',
+                        node_id: nodeId,
+                        limit: 5,
+                        min_score: 0.6
+                      });
+                  }
+                }
+            })(), memoryTaskTimeoutMs, 'memory background task');
+            this.notifyBackgroundTask('Memory saved', 'completed');
+        } catch (e: any) {
+            console.error('Background memory save failed:', e);
+            this.notifyBackgroundTask('Memory save failed', 'completed');
+        }
+    })();
   }
 
   async run(input: string, onTrace: (event: TraceEvent) => void): Promise<string> {
+    const perfEnabled = process.env.AGENT_PERF !== '0';
+    const perfEntries: PerfEntry[] | null = perfEnabled ? [] : null;
     const traceBuffer: TraceEvent[] = [];
     const emitTrace = (event: TraceEvent) => {
       traceBuffer.push(event);
@@ -268,33 +464,40 @@ export class Agent {
     
     let context = '';
     try {
-      const searchResults = await this.mempedia.send({
-        action: 'search_nodes',
-        query: input,
-        limit: 5,
-        include_highlight: true,
-      });
-
-      if (searchResults.kind === 'search_results') {
-        context = searchResults.results
-          .map((r: any) => `- Node: ${r.node_id} (Score: ${r.score.toFixed(2)})`)
-          .join('\n');
-        
-        for (const res of searchResults.results.slice(0, 2)) {
-          const node = await this.mempedia.send({
-            action: 'open_node',
-            node_id: res.node_id,
-            markdown: true,
-          });
-          if (node.kind === 'markdown' && node.markdown) {
-              context += `\n\n--- Content of ${res.node_id} ---\n${node.markdown}\n--- End of ${res.node_id} ---\n`;
+      context = await this.measure(perfEntries, 'context_retrieval', async () => {
+        let builtContext = '';
+        const searchResults = await this.mempedia.send({
+          action: 'search_nodes',
+          query: input,
+          limit: 5,
+          include_highlight: true,
+        });
+        if (searchResults.kind === 'search_results') {
+          builtContext = searchResults.results
+            .map((r: any) => `- Node: ${r.node_id} (Score: ${r.score.toFixed(2)})`)
+            .join('\n');
+          for (const res of searchResults.results.slice(0, 2)) {
+            const node = await this.mempedia.send({
+              action: 'open_node',
+              node_id: res.node_id,
+              markdown: true,
+            });
+            if (node.kind === 'markdown' && node.markdown) {
+              builtContext += `\n\n--- Content of ${res.node_id} ---\n${node.markdown}\n--- End of ${res.node_id} ---\n`;
+            }
           }
         }
-      }
+        return builtContext;
+      });
     } catch (e: any) {
       console.error('Context retrieval failed:', e);
       context = 'Failed to retrieve context from Mempedia.';
     }
+
+    const recentConversationMessages = this.conversationTurns.flatMap((turn) => [
+      { role: 'user', content: turn.user },
+      { role: 'assistant', content: turn.assistant }
+    ]);
 
     const messages: any[] = [
       {
@@ -314,15 +517,18 @@ ${context}
 When you complete a task, you MUST consider saving the result or important information back to Mempedia using 'mempedia_save' so you remember it next time.
 `,
       },
+      ...recentConversationMessages,
       { role: 'user', content: input },
     ];
 
     while (true) {
-      const completion = await this.openai.chat.completions.create({
-        model: this.model,
-        messages: messages as any,
-        tools: TOOLS as any,
-      });
+      const completion = await this.measure(perfEntries, 'llm_completion', async () =>
+        this.openai.chat.completions.create({
+          model: this.model,
+          messages: messages as any,
+          tools: TOOLS as any,
+        })
+      );
 
       const message = completion.choices[0].message;
       messages.push(message);
@@ -343,6 +549,7 @@ When you complete a task, you MUST consider saving the result or important infor
           });
           
           let result = '';
+          const toolStart = Date.now();
           try {
             if (fnName === 'mempedia_search') {
               const res = await this.mempedia.send({
@@ -397,6 +604,9 @@ When you complete a task, you MUST consider saving the result or important infor
           } catch (e: any) {
             result = `Error executing tool: ${e.message}`;
           }
+          if (perfEntries) {
+            perfEntries.push({ label: `tool_${fnName}`, ms: Date.now() - toolStart });
+          }
 
           emitTrace({ type: 'observation', content: String(result) });
 
@@ -408,11 +618,27 @@ When you complete a task, you MUST consider saving the result or important infor
         }
       } else {
         const finalAnswer = message.content || '';
+        this.conversationTurns.push({ user: input, assistant: finalAnswer });
+        if (this.conversationTurns.length > this.maxConversationTurns) {
+          this.conversationTurns = this.conversationTurns.slice(-this.maxConversationTurns);
+        }
         try {
-          await this.persistInteractionMemory(input, traceBuffer, finalAnswer);
-          emitTrace({ type: 'observation', content: 'Memory saved: intent, strategic thoughts, and important facts were persisted to Mempedia.' });
+          await this.persistInteractionMemory(input, traceBuffer, finalAnswer, perfEntries);
+          emitTrace({ type: 'observation', content: 'Memory saved: useful knowledge and user preferences were persisted to Mempedia.' });
         } catch (e: any) {
           emitTrace({ type: 'error', content: `Memory save failed: ${e?.message || 'unknown error'}` });
+        }
+        if (perfEntries && perfEntries.length > 0) {
+          const totalMs = perfEntries.reduce((sum, item) => sum + item.ms, 0);
+          const top = [...perfEntries]
+            .sort((a, b) => b.ms - a.ms)
+            .slice(0, 8)
+            .map((item) => `${item.label}:${item.ms}ms`)
+            .join(' | ');
+          emitTrace({
+            type: 'observation',
+            content: `Perf total=${totalMs}ms; top=${top}`
+          });
         }
         return finalAnswer;
       }

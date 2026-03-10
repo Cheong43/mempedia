@@ -8,6 +8,9 @@ interface AppProps {
   projectRoot: string;
   baseURL?: string;
   model?: string;
+  memoryApiKey?: string;
+  memoryBaseURL?: string;
+  memoryModel?: string;
 }
 
 interface HistoryItem {
@@ -16,19 +19,31 @@ interface HistoryItem {
   traceType?: 'thought' | 'action' | 'observation' | 'error';
 }
 
-export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model }) => {
+export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, memoryApiKey, memoryBaseURL, memoryModel }) => {
   const { exit } = useApp();
   const [input, setInput] = useState('');
   const [status, setStatus] = useState<string>('Ready');
   const [history, setHistory] = useState<Array<HistoryItem>>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [agent] = useState(() => new Agent({ apiKey, baseURL, model }, projectRoot));
+  const [agent] = useState(() => new Agent({ apiKey, baseURL, model, memoryApiKey, memoryBaseURL, memoryModel }, projectRoot));
+  const [backgroundTasks, setBackgroundTasks] = useState<string[]>([]);
 
   useEffect(() => {
     agent.start().catch((err: any) => {
       setHistory((prev: HistoryItem[]) => [...prev, { type: 'info', content: `Error starting agent: ${err.message}` }]);
     });
+    
+    // Subscribe to background task updates
+    const unsubscribe = agent.onBackgroundTask((task, status) => {
+        if (status === 'started') {
+            setBackgroundTasks(prev => (prev.includes(task) ? prev : [...prev, task]));
+        } else {
+            setBackgroundTasks(prev => prev.filter(t => t !== task));
+        }
+    });
+
     return () => {
+      unsubscribe();
       agent.stop();
     };
   }, [agent]);
@@ -111,6 +126,12 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model })
             onSubmit={handleSubmit}
             placeholder="Type your instruction..."
           />
+        </Box>
+      )}
+      
+      {backgroundTasks.length > 0 && (
+        <Box marginTop={1}>
+            <Text color="dim">⏳ Background tasks: {backgroundTasks.join(', ')}</Text>
         </Box>
       )}
     </Box>

@@ -23,6 +23,7 @@ pub struct Link {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeContent {
     pub title: String,
+    pub summary: String,
     pub body: String,
     pub structured_data: BTreeMap<String, String>,
     pub links: Vec<Link>,
@@ -43,6 +44,7 @@ pub struct NodeVersion {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodePatch {
     pub title: Option<String>,
+    pub summary: Option<String>,
     pub body: Option<String>,
     pub structured_upserts: BTreeMap<String, String>,
     pub add_links: Vec<Link>,

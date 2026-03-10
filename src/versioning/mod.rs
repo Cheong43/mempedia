@@ -18,6 +18,7 @@ impl VersionEngine {
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
         validate_scores(confidence, importance)?;
+        validate_content(&content)?;
 
         if heads.contains_key(node_id) {
             return Err(MemoryError::Invalid(format!(
@@ -70,6 +71,7 @@ impl VersionEngine {
 
         let mut content = head.content;
         apply_patch(&mut content, patch);
+        validate_content(&content)?;
 
         let mut version = NodeVersion {
             node_id: node_id.to_string(),
@@ -140,6 +142,7 @@ impl VersionEngine {
         }
 
         let (content, _) = merge_content(&left, &right);
+        validate_content(&content)?;
 
         let mut version = NodeVersion {
             node_id: node_id.to_string(),
@@ -196,6 +199,7 @@ impl VersionEngine {
             confidence,
             importance,
         };
+        validate_content(&version.content)?;
         version.version = storage.write_object(&version)?;
 
         heads.insert(node_id.to_string(), version.version.clone());
@@ -212,6 +216,9 @@ impl VersionEngine {
 fn apply_patch(content: &mut NodeContent, patch: NodePatch) {
     if let Some(title) = patch.title {
         content.title = title;
+    }
+    if let Some(summary) = patch.summary {
+        content.summary = summary;
     }
     if let Some(body) = patch.body {
         content.body = body;
@@ -266,6 +273,22 @@ fn validate_scores(confidence: f32, importance: f32) -> MemoryResult<()> {
     if !importance.is_finite() || importance < 0.0 {
         return Err(MemoryError::Invalid(
             "importance must be finite and >= 0.0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_content(content: &NodeContent) -> MemoryResult<()> {
+    let summary = content.summary.trim();
+    if summary.is_empty() {
+        return Err(MemoryError::Invalid(
+            "summary is required and cannot be empty".to_string(),
+        ));
+    }
+    let length = summary.chars().count();
+    if !(8..=140).contains(&length) {
+        return Err(MemoryError::Invalid(
+            "summary length must be within [8, 140] characters".to_string(),
         ));
     }
     Ok(())

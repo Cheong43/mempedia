@@ -81,6 +81,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   "node_id": "string",
   "content": {
     "title": "string",
+    "summary": "string (8-140 chars, concise and accurate)",
     "body": "string",
     "structured_data": { "key": "value" },
     "links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],
@@ -170,6 +171,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   "node_id": "memory_orchestration",
   "content": {
     "title": "Memory Orchestration",
+    "summary": "核心内存编排节点，描述流程与约束。",
     "body": "Design notes...",
     "structured_data": {},
     "links": [],
