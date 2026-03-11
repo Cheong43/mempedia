@@ -68,6 +68,9 @@
           <div class="mw-tab" id="tab-talk" onclick="app.switchTab('talk')">Talk</div>
           <div class="mw-tab" id="tab-source" onclick="app.switchTab('source')">View source</div>
           <div class="mw-tab" id="tab-history" onclick="app.switchTab('history')">View history</div>
+          <div class="mw-tab" id="tab-habits" onclick="app.switchTab('habits')">Habits</div>
+          <div class="mw-tab" id="tab-patterns" onclick="app.switchTab('patterns')">Patterns</div>
+          <div class="mw-tab" id="tab-conversations" onclick="app.switchTab('conversations')">Conversations</div>
         </div>
 
         <!-- Content Body -->
@@ -203,6 +206,37 @@
                 <div style="margin-top: 2em;">
                     <h3>Agent Audit</h3>
                     <ul id="audit-list"></ul>
+                </div>
+            </div>
+
+            <!-- Habits View -->
+            <div id="view-habits" class="hidden">
+                <h2>User Habits & Environment</h2>
+                <p class="mw-hint">These are stored separately from nodes.</p>
+                <div id="habits-list" class="mw-card-list"></div>
+            </div>
+
+            <!-- Patterns View -->
+            <div id="view-patterns" class="hidden">
+                <h2>Behavior Patterns</h2>
+                <p class="mw-hint">These are stored separately from nodes.</p>
+                <div id="patterns-list" class="mw-card-list"></div>
+            </div>
+
+            <!-- Conversations View -->
+            <div id="view-conversations" class="hidden">
+                <h2>Conversation Logs</h2>
+                <p class="mw-hint">Raw conversations are saved locally and mapped to atomic nodes.</p>
+                <div class="mw-conv-grid">
+                    <div>
+                        <h3>Mapped to Node</h3>
+                        <div id="conversation-node-label" class="mw-hint">No node selected.</div>
+                        <ul id="conversation-list" class="mw-conv-list"></ul>
+                    </div>
+                    <div>
+                        <h3>Conversation Detail</h3>
+                        <pre id="conversation-detail" class="mw-conv-detail">Select a conversation to view raw content.</pre>
+                    </div>
                 </div>
             </div>
 

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, AccessStats, AgentActionLog, MemoryError, MemoryResult, Node, NodeVersion,
+    AccessLog, AccessStats, AgentActionLog, BehaviorPatternRecord, MemoryError, MemoryResult,
+    Node, NodeVersion, UserHabitEnv,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -69,6 +70,22 @@ impl FileStorage {
 
     fn access_log_path(&self) -> PathBuf {
         self.index_dir().join("access.log")
+    }
+
+    fn habits_path(&self) -> PathBuf {
+        self.index_dir().join("user_habits.jsonl")
+    }
+
+    fn patterns_path(&self) -> PathBuf {
+        self.index_dir().join("behavior_patterns.jsonl")
+    }
+
+    fn habits_state_path(&self) -> PathBuf {
+        self.index_dir().join("user_habits_state.json")
+    }
+
+    fn patterns_state_path(&self) -> PathBuf {
+        self.index_dir().join("behavior_patterns_state.json")
     }
 
     fn access_state_path(&self) -> PathBuf {
@@ -218,6 +235,43 @@ impl FileStorage {
         Ok(())
     }
 
+    pub fn append_user_habit(&self, record: &UserHabitEnv) -> MemoryResult<()> {
+        let line = serde_json::to_string(record)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.habits_path())?;
+        writeln!(f, "{line}")?;
+        f.sync_all()?;
+        let mut state: HashMap<String, UserHabitEnv> = self.load_json(self.habits_state_path())?;
+        state.insert(record.topic.clone(), record.clone());
+        self.atomic_write_json(self.habits_state_path(), &state)?;
+        Ok(())
+    }
+
+    pub fn append_behavior_pattern(&self, record: &BehaviorPatternRecord) -> MemoryResult<()> {
+        let line = serde_json::to_string(record)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.patterns_path())?;
+        writeln!(f, "{line}")?;
+        f.sync_all()?;
+        let mut state: HashMap<String, BehaviorPatternRecord> =
+            self.load_json(self.patterns_state_path())?;
+        state.insert(record.pattern_key.clone(), record.clone());
+        self.atomic_write_json(self.patterns_state_path(), &state)?;
+        Ok(())
+    }
+
+    pub fn read_user_habits(&self, limit: usize) -> MemoryResult<Vec<UserHabitEnv>> {
+        read_json_lines(self.habits_path(), limit)
+    }
+
+    pub fn read_behavior_patterns(&self, limit: usize) -> MemoryResult<Vec<BehaviorPatternRecord>> {
+        read_json_lines(self.patterns_path(), limit)
+    }
+
     pub fn write_markdown_node(&self, node_id: &str, markdown: &str) -> MemoryResult<PathBuf> {
         let path = self.markdown_node_path(node_id);
         let tmp = path.with_extension("tmp");
@@ -241,6 +295,33 @@ fn sync_parent_dir(path: &Path) -> MemoryResult<()> {
         dir.sync_all()?;
     }
     Ok(())
+}
+
+fn read_json_lines<T: serde::de::DeserializeOwned>(
+    path: PathBuf,
+    limit: usize,
+) -> MemoryResult<Vec<T>> {
+    if !path.exists() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path)?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<T>(trimmed) {
+            Ok(row) => {
+                out.push(row);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Ok(out)
 }
 
 fn sanitize_node_id(node_id: &str) -> String {

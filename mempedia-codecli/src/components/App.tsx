@@ -425,6 +425,8 @@ ${query}`
     const trimmed = query.trim();
 
     if (trimmed === '/exit' || trimmed === '/quit') {
+      setStatus('Flushing memory queue...');
+      await agent.shutdown();
       exit();
       return;
     }

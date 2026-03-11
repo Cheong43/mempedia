@@ -65,6 +65,11 @@ const elements = {
   markdownPath: document.getElementById("markdown-path"),
   markdownContent: document.getElementById("markdown-content"),
   auditList: document.getElementById("audit-list"),
+  habitsList: document.getElementById("habits-list"),
+  patternsList: document.getElementById("patterns-list"),
+  conversationList: document.getElementById("conversation-list"),
+  conversationDetail: document.getElementById("conversation-detail"),
+  conversationNodeLabel: document.getElementById("conversation-node-label"),
   
   relationSvg: document.getElementById("relation-svg"),
   versionSvg: document.getElementById("version-svg"),
@@ -86,6 +91,9 @@ const elements = {
   viewTalk: document.getElementById("view-talk"),
   viewSource: document.getElementById("view-source"),
   viewHistory: document.getElementById("view-history"),
+  viewHabits: document.getElementById("view-habits"),
+  viewPatterns: document.getElementById("view-patterns"),
+  viewConversations: document.getElementById("view-conversations"),
   infoboxTitle: document.getElementById("infobox-title"),
   lastModified: document.getElementById("last-modified"),
 };
@@ -100,6 +108,11 @@ const app = {
   accessLogs: [],
   agentActions: [],
   markdownByNode: new Map(),
+  habits: [],
+  patterns: [],
+  nodeConversations: new Map(),
+  conversationFiles: new Map(),
+  conversations: new Map(),
   model: {
     nodes: [],
     nodeById: new Map(),
@@ -139,7 +152,16 @@ app.switchTab = (tabName) => {
   if (tabEl) tabEl.classList.add('active');
 
   // Update View Visibility
-  const views = ['view-special-main', 'view-article', 'view-talk', 'view-source', 'view-history'];
+  const views = [
+    'view-special-main',
+    'view-article',
+    'view-talk',
+    'view-source',
+    'view-history',
+    'view-habits',
+    'view-patterns',
+    'view-conversations'
+  ];
   views.forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.add('hidden');
@@ -157,6 +179,12 @@ app.switchTab = (tabName) => {
       elements.viewSource.classList.remove('hidden');
   } else if (tabName === 'history') {
       elements.viewHistory.classList.remove('hidden');
+  } else if (tabName === 'habits') {
+      elements.viewHabits.classList.remove('hidden');
+  } else if (tabName === 'patterns') {
+      elements.viewPatterns.classList.remove('hidden');
+  } else if (tabName === 'conversations') {
+      elements.viewConversations.classList.remove('hidden');
   }
 };
 
@@ -563,6 +591,8 @@ function renderNode(nodeId) {
 
     // Visualizations
     renderGraphs(nodeId);
+
+    renderConversationsForNode(nodeId);
 }
 
 function renderLinks(nodeId) {
@@ -622,6 +652,111 @@ function renderAudit(nodeId) {
         li.innerHTML = `<strong>${a.action}</strong>: ${escapeHtml(a.reason)} <span style="font-size:0.8em; color:#72777d">(${formatTimestamp(a.timestamp)})</span>`;
         elements.auditList.appendChild(li);
     });
+}
+
+function renderHabits() {
+    const container = elements.habitsList;
+    container.innerHTML = '';
+    if (!app.habits || app.habits.length === 0) {
+        container.innerHTML = '<p class="mw-hint">No habits recorded.</p>';
+        return;
+    }
+    app.habits
+      .slice()
+      .reverse()
+      .forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'mw-card';
+        div.innerHTML = `
+          <h4>${escapeHtml(item.topic || 'habit')}</h4>
+          <p><strong>Summary:</strong> ${escapeHtml(item.summary || '')}</p>
+          <p><strong>Details:</strong> ${escapeHtml(item.details || '')}</p>
+          <p class="mw-hint">Updated: ${escapeHtml(formatTimestamp(item.timestamp))} | Agent: ${escapeHtml(item.agent_id || '')}</p>
+        `;
+        container.appendChild(div);
+      });
+}
+
+function renderPatterns() {
+    const container = elements.patternsList;
+    container.innerHTML = '';
+    if (!app.patterns || app.patterns.length === 0) {
+        container.innerHTML = '<p class="mw-hint">No patterns recorded.</p>';
+        return;
+    }
+    app.patterns
+      .slice()
+      .reverse()
+      .forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'mw-card';
+        div.innerHTML = `
+          <h4>${escapeHtml(item.pattern_key || 'pattern')}</h4>
+          <p><strong>Summary:</strong> ${escapeHtml(item.summary || '')}</p>
+          <p><strong>Details:</strong> ${escapeHtml(item.details || '')}</p>
+          <p><strong>Plan:</strong> ${escapeHtml(item.applicable_plan || 'general')}</p>
+          <p class="mw-hint">Updated: ${escapeHtml(formatTimestamp(item.timestamp))} | Agent: ${escapeHtml(item.agent_id || '')}</p>
+        `;
+        container.appendChild(div);
+      });
+}
+
+function renderConversationsForNode(nodeId) {
+    const label = elements.conversationNodeLabel;
+    const list = elements.conversationList;
+    const detail = elements.conversationDetail;
+    list.innerHTML = '';
+    detail.textContent = 'Select a conversation to view raw content.';
+
+    if (!nodeId) {
+        label.textContent = 'No node selected.';
+        return;
+    }
+    label.textContent = `Node: ${nodeId}`;
+    const items = app.nodeConversations.get(nodeId) || [];
+    if (items.length === 0) {
+        list.innerHTML = '<li class="mw-hint">No conversations mapped.</li>';
+        return;
+    }
+    items.forEach(item => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.className = 'mw-conv-link';
+        a.textContent = `${item.conversation_id} (${item.reason || 'atomic_knowledge'})`;
+        a.href = '#';
+        a.onclick = (e) => {
+            e.preventDefault();
+            showConversation(item.conversation_id);
+        };
+        li.appendChild(a);
+        list.appendChild(li);
+    });
+}
+
+function showConversation(conversationId) {
+    const detail = elements.conversationDetail;
+    const cached = app.conversations.get(conversationId);
+    if (cached) {
+        detail.textContent = JSON.stringify(cached, null, 2);
+        return;
+    }
+    const path = app.conversationFiles.get(conversationId);
+    if (!path) {
+        detail.textContent = 'Conversation file not found.';
+        return;
+    }
+    readJsonOptional(path)
+      .then((data) => {
+        if (!data) {
+            detail.textContent = 'Conversation file unreadable.';
+            return;
+        }
+        app.conversations.set(conversationId, data);
+        detail.textContent = JSON.stringify(data, null, 2);
+      })
+      .catch(() => {
+        detail.textContent = 'Conversation file unreadable.';
+      });
 }
 
 function renderGraphs(nodeId) {
@@ -792,6 +927,9 @@ elements.parseBtn.addEventListener("click", async () => {
       const nodes = await readJsonOptional(`${root}index/nodes.json`);
       const accessLogs = await readJsonLines(`${root}index/access.log`);
       const agentActions = await readJsonLines(`${root}index/agent_actions.log`);
+      const habits = await readJsonLines(`${root}index/user_habits.jsonl`);
+      const patterns = await readJsonLines(`${root}index/behavior_patterns.jsonl`);
+      const nodeConversations = await readJsonLines(`${root}index/node_conversations.jsonl`);
       
       app.snapshot = { 
           heads: heads || {}, 
@@ -800,7 +938,20 @@ elements.parseBtn.addEventListener("click", async () => {
       };
       app.accessLogs = accessLogs;
       app.agentActions = agentActions;
-      
+      app.habits = habits;
+      app.patterns = patterns;
+      app.nodeConversations = new Map();
+      if (Array.isArray(nodeConversations)) {
+          nodeConversations.forEach((row) => {
+              if (!row || typeof row.node_id !== 'string') return;
+              const list = app.nodeConversations.get(row.node_id) || [];
+              list.push(row);
+              app.nodeConversations.set(row.node_id, list);
+          });
+      }
+      app.conversationFiles = new Map();
+      app.conversations = new Map();
+
       elements.status.textContent = "Loading objects...";
       const versionFiles = Array.from(app.fileMap.keys()).filter(p => p.startsWith(`${root}objects/`) && p.endsWith('.json'));
       app.versions.clear();
@@ -841,6 +992,17 @@ elements.parseBtn.addEventListener("click", async () => {
       elements.metricAccess.textContent = accessLogs.length;
       
       renderNodeList();
+      renderHabits();
+      renderPatterns();
+      renderConversationsForNode(app.selectedNodeId);
+
+      const conversationFiles = Array.from(app.fileMap.keys()).filter(p => p.startsWith(`${root}index/conversations/`) && p.endsWith('.json'));
+      conversationFiles.forEach((p) => {
+          const id = p.split('/').pop()?.replace(/\\.json$/i, '');
+          if (id) {
+              app.conversationFiles.set(id, p);
+          }
+      });
       
       elements.status.textContent = `Loaded ${model.nodes.length} nodes, ${app.versions.size} versions, ${app.markdownByNode.size} markdown files.`;
       

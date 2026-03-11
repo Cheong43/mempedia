@@ -40,6 +40,21 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'mempedia_conversation_lookup',
+      description: 'Lookup local raw conversation records mapped to a mempedia node.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'The node ID to lookup mapped conversations for' },
+          limit: { type: 'number', description: 'Max number of mapped conversation records' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'mempedia_save',
       description: 'Save or update knowledge/interaction in mempedia.',
       parameters: {
@@ -234,6 +249,7 @@ export class Agent {
   private onBackgroundTaskCallback: ((task: string, status: 'started' | 'completed') => void) | null = null;
   private saveQueue: Array<{ input: string; traces: TraceEvent[]; answer: string }> = [];
   private saveInProgress = false;
+  private saveCurrentPromise: Promise<void> | null = null;
   private saveDebounceTimer: NodeJS.Timeout | null = null;
   private savePendingDrain = false;
   private readonly saveDebounceMs: number;
@@ -246,6 +262,8 @@ export class Agent {
   private readonly memoryExtractTimeoutMs: number;
   private readonly memoryActionTimeoutMs: number;
   private readonly memoryLogPath: string;
+  private readonly conversationLogDir: string;
+  private readonly nodeConversationMapPath: string;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.openai = config.hmacAccessKey && config.hmacSecretKey
@@ -293,6 +311,8 @@ export class Agent {
     const rawMemoryActionTimeoutMs = Number(process.env.MEMORY_SAVE_ACTION_TIMEOUT_MS ?? 20000);
     this.memoryActionTimeoutMs = Number.isFinite(rawMemoryActionTimeoutMs) ? Math.max(1000, Math.floor(rawMemoryActionTimeoutMs)) : 20000;
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
+    this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
+    this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
   }
 
   onBackgroundTask(callback: (task: string, status: 'started' | 'completed') => void) {
@@ -312,6 +332,21 @@ export class Agent {
 
   stop() {
     this.mempedia.stop();
+  }
+
+  async shutdown(timeoutMs = 12000): Promise<void> {
+    if (this.saveDebounceTimer) {
+      clearTimeout(this.saveDebounceTimer);
+      this.saveDebounceTimer = null;
+    }
+    if (this.saveQueue.length > 0 && !this.saveInProgress) {
+      this.drainSaveQueue();
+    }
+    const startedAt = Date.now();
+    while ((this.saveInProgress || this.saveCurrentPromise) && Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    this.stop();
   }
 
   private normalizeItems(items: unknown, limit: number): string[] {
@@ -477,6 +512,101 @@ export class Agent {
     } catch {}
   }
 
+  private appendConversationLog(runId: string, input: string, traces: TraceEvent[], answer: string): string {
+    const conversationId = `conv_${runId}`;
+    try {
+      fs.mkdirSync(this.conversationLogDir, { recursive: true });
+      const payload = {
+        id: conversationId,
+        timestamp: new Date().toISOString(),
+        input,
+        answer,
+        traces
+      };
+      const filePath = path.join(this.conversationLogDir, `${conversationId}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+    } catch {}
+    return conversationId;
+  }
+
+  private appendNodeConversationMap(nodeId: string, conversationId: string, reason: string) {
+    try {
+      fs.mkdirSync(path.dirname(this.nodeConversationMapPath), { recursive: true });
+      const row = {
+        ts: new Date().toISOString(),
+        node_id: nodeId,
+        conversation_id: conversationId,
+        reason
+      };
+      fs.appendFileSync(this.nodeConversationMapPath, `${JSON.stringify(row)}\n`, 'utf-8');
+    } catch {}
+  }
+
+  private readNodeConversationRows(limit = 200): Array<{ node_id: string; conversation_id: string; reason?: string; ts?: string }> {
+    try {
+      if (!fs.existsSync(this.nodeConversationMapPath)) {
+        return [];
+      }
+      const text = fs.readFileSync(this.nodeConversationMapPath, 'utf-8');
+      const rows = text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter((row) => row && typeof row.node_id === 'string' && typeof row.conversation_id === 'string');
+      return rows.slice(-Math.max(1, limit));
+    } catch {
+      return [];
+    }
+  }
+
+  private lookupMappedConversations(nodeId: string, limit = 3): Array<{
+    node_id: string;
+    conversation_id: string;
+    ts?: string;
+    reason?: string;
+    input?: string;
+    answer?: string;
+  }> {
+    const rows = this.readNodeConversationRows(400)
+      .filter((row) => row.node_id === nodeId)
+      .reverse();
+    const seen = new Set<string>();
+    const picked: Array<{ node_id: string; conversation_id: string; ts?: string; reason?: string }> = [];
+    for (const row of rows) {
+      if (seen.has(row.conversation_id)) {
+        continue;
+      }
+      seen.add(row.conversation_id);
+      picked.push(row);
+      if (picked.length >= Math.max(1, limit)) {
+        break;
+      }
+    }
+    return picked.map((row) => {
+      const filePath = path.join(this.conversationLogDir, `${row.conversation_id}.json`);
+      if (!fs.existsSync(filePath)) {
+        return row;
+      }
+      try {
+        const payload = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        return {
+          ...row,
+          input: this.clipText(String(payload?.input || ''), 500),
+          answer: this.clipText(String(payload?.answer || ''), 500),
+        };
+      } catch {
+        return row;
+      }
+    });
+  }
+
   private async extractMemoryPayload(input: string, traces: TraceEvent[], answer: string): Promise<MemoryExtraction> {
     const traceLines = traces
       .slice(-30)
@@ -508,6 +638,10 @@ export class Agent {
     - 每个核心关键词知识都有系统性的知识（解释、事实、历史变迁、引申）记录并不断维护。
     - 如有重名的关键词知识，则在摘要中区分开。
     - **必须**包含 summary 字段，且为准确简短描述（8-140字）。
+
+约束：
+- 只有 atomic_knowledge 会被写入知识图谱节点；user_habits_env 与 behavior_patterns 会写入专用结构。
+- 不要把原始对话逐字写入任何字段；只保留抽象、可复用的长期知识。
 
 严禁输出寒暄、执行日志、临时上下文、错误堆栈。只保留长期有价值的信息。`;
 
@@ -599,185 +733,148 @@ export class Agent {
     answer: string,
     perfEntries: PerfEntry[] | null
   ): Promise<void> {
-    // Start background task
     this.notifyBackgroundTask('Saving memory...', 'started');
-    
-    // We do NOT await this in the main flow to avoid blocking response
-    // But since we need to use 'this.openai' and 'this.mempedia' which might be stateful or busy,
-    // we should be careful. 
-    // However, user asked for "start a subagent thread". 
-    // Since we are in Node.js, we can't easily spawn a full thread with shared state without complexity.
-    // For now, we will run this asynchronously but without 'await' in the main return path, 
-    // essentially fire-and-forget from the perspective of the UI response.
-    
-    (async () => {
-        const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const startedAt = Date.now();
-        this.appendMemoryLog(runId, 'memory_save_started', {
-          input_chars: input.length,
-          traces_count: traces.length,
-          answer_chars: answer.length
+    const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = Date.now();
+    const conversationId = this.appendConversationLog(runId, input, traces, answer);
+    this.appendMemoryLog(runId, 'memory_save_started', {
+      input_chars: input.length,
+      traces_count: traces.length,
+      answer_chars: answer.length
+    });
+    try {
+      await this.withTimeout((async () => {
+        const extractionStartedAt = Date.now();
+        const payload = await this.measure(perfEntries, 'memory_extract', async () =>
+          this.withTimeout(
+            this.extractMemoryPayload(input, traces, answer),
+            this.memoryExtractTimeoutMs,
+            'memory extraction'
+          )
+        );
+        this.appendMemoryLog(runId, 'memory_extract_done', {
+          elapsed_ms: Date.now() - extractionStartedAt,
+          habits: payload.user_habits_env.length,
+          patterns: payload.behavior_patterns.length,
+          atomic: payload.atomic_knowledge.length
         });
-        try {
-            await this.withTimeout((async () => {
-              const extractionStartedAt = Date.now();
-              const payload = await this.measure(perfEntries, 'memory_extract', async () =>
-                this.withTimeout(
-                  this.extractMemoryPayload(input, traces, answer),
-                  this.memoryExtractTimeoutMs,
-                  'memory extraction'
-                )
-              );
-              this.appendMemoryLog(runId, 'memory_extract_done', {
-                elapsed_ms: Date.now() - extractionStartedAt,
-                habits: payload.user_habits_env.length,
-                patterns: payload.behavior_patterns.length,
-                atomic: payload.atomic_knowledge.length
-              });
 
-              const nowIso = new Date().toISOString();
-              const sendWithTimeout = (action: ToolAction) =>
-                this.withTimeout(
-                  this.mempedia.send(action),
-                  this.memoryActionTimeoutMs,
-                  `memory action ${action.action}`
-                );
-              const runAction = async (stage: string, action: ToolAction) => {
-                const stageStartedAt = Date.now();
-                const nodeId = (action as any).node_id;
-                this.appendMemoryLog(runId, `${stage}_started`, {
-                  action: action.action,
-                  node_id: typeof nodeId === 'string' ? nodeId : null
-                });
-                await sendWithTimeout(action);
-                this.appendMemoryLog(runId, `${stage}_done`, {
-                  action: action.action,
-                  node_id: typeof nodeId === 'string' ? nodeId : null,
-                  elapsed_ms: Date.now() - stageStartedAt
-                });
-              };
-              const linkedNodes = new Set<string>();
+        const nowIso = new Date().toISOString();
+        const sendWithTimeout = (action: ToolAction) =>
+          this.withTimeout(
+            this.mempedia.send(action),
+            this.memoryActionTimeoutMs,
+            `memory action ${action.action}`
+          );
+        const runAction = async (stage: string, action: ToolAction) => {
+          const stageStartedAt = Date.now();
+          const nodeId = (action as any).node_id;
+          this.appendMemoryLog(runId, `${stage}_started`, {
+            action: action.action,
+            node_id: typeof nodeId === 'string' ? nodeId : null
+          });
+          await sendWithTimeout(action);
+          this.appendMemoryLog(runId, `${stage}_done`, {
+            action: action.action,
+            node_id: typeof nodeId === 'string' ? nodeId : null,
+            elapsed_ms: Date.now() - stageStartedAt
+          });
+        };
+        const linkedNodes = new Set<string>();
 
-              if (payload.user_habits_env.length > 0) {
-                  const habitMap = new Map<string, { topic: string; summary: string; details: string }>();
-                  for (const item of payload.user_habits_env) {
-                    habitMap.set(this.preferenceNodeId(item.topic), item);
-                  }
-                  for (const [nodeId, item] of habitMap) {
-                    const markdown = `# 用户习惯与环境：${item.topic}
-
-## Summary
-${item.summary}
-
-## 观测与细节
-${item.details}
-
-## Updated at
-${nowIso}
-
-## Type
-user_habit_env`;
-                    await runAction('habit_upsert', {
-                      action: 'agent_upsert_markdown',
-                      node_id: nodeId,
-                      markdown,
-                      confidence: 0.95,
-                      importance: 1.8,
-                      agent_id: 'mempedia-codecli',
-                      reason: 'User habit or environment info',
-                      source: 'kg_habit_env'
-                    });
-                    linkedNodes.add(nodeId);
-                  }
-                }
-
-              if (payload.behavior_patterns.length > 0) {
-                  const patternMap = new Map<string, { pattern_key: string; summary: string; details: string; applicable_plan?: string }>();
-                  for (const item of payload.behavior_patterns) {
-                    patternMap.set(this.stableNodeId('pattern', item.pattern_key), item);
-                  }
-                  for (const [nodeId, item] of patternMap) {
-                    const markdown = `# 行为模式：${item.pattern_key}
-
-## Summary
-${item.summary}
-
-## 适用计划
-${item.applicable_plan || 'general'}
-
-## 可复用模式
-${item.details}
-
-## Updated at
-${nowIso}
-
-## Type
-behavior_pattern`;
-                    await runAction('pattern_upsert', {
-                      action: 'agent_upsert_markdown',
-                      node_id: nodeId,
-                      markdown,
-                      confidence: 0.90,
-                      importance: 2.0,
-                      agent_id: 'mempedia-codecli',
-                      reason: 'Behavior pattern extraction',
-                      source: 'kg_pattern'
-                    });
-                    linkedNodes.add(nodeId);
-                  }
-                }
-
-              if (payload.atomic_knowledge.length > 0) {
-                  const atomicMap = new Map<string, { keyword: string; summary: string; details: string }>();
-                  for (const item of payload.atomic_knowledge) {
-                    atomicMap.set(this.stableNodeId('atomic', item.keyword), item);
-                  }
-                  for (const [nodeId, item] of atomicMap) {
-                    const markdown = `# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Details\n\n${item.details}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
-                    await runAction('atomic_upsert', {
-                      action: 'agent_upsert_markdown',
-                      node_id: nodeId,
-                      markdown,
-                      confidence: 0.98,
-                      importance: 1.9,
-                      agent_id: 'mempedia-codecli',
-                      reason: 'Atomic knowledge update',
-                      source: 'kg_atomic'
-                    });
-                    linkedNodes.add(nodeId);
-                  }
-                }
-
-              if (this.autoLinkEnabled && this.autoLinkMaxNodes > 0 && linkedNodes.size > 0) {
-                  const nodeIds = Array.from(linkedNodes).slice(0, this.autoLinkMaxNodes);
-                  this.appendMemoryLog(runId, 'auto_link_batch_started', {
-                    node_count: nodeIds.length,
-                    limit: this.autoLinkLimit
-                  });
-                  for (const nodeId of nodeIds) {
-                    await runAction('auto_link', {
-                      action: 'auto_link_related',
-                      node_id: nodeId,
-                      limit: this.autoLinkLimit,
-                      min_score: 0.6
-                    });
-                  }
-                  this.appendMemoryLog(runId, 'auto_link_batch_done', { node_count: nodeIds.length });
-                }
-            })(), this.memoryTaskTimeoutMs, 'memory background task');
-            this.appendMemoryLog(runId, 'memory_save_done', {
-              elapsed_ms: Date.now() - startedAt
+        if (payload.user_habits_env.length > 0) {
+          const habitMap = new Map<string, { topic: string; summary: string; details: string }>();
+          for (const item of payload.user_habits_env) {
+            habitMap.set(this.toSlug(item.topic), item);
+          }
+          for (const item of habitMap.values()) {
+            await runAction('habit_record', {
+              action: 'record_user_habit',
+              topic: item.topic,
+              summary: item.summary,
+              details: item.details,
+              agent_id: 'mempedia-codecli',
+              source: 'kg_habit_env'
             });
-            this.notifyBackgroundTask('Memory saved', 'completed');
-        } catch (e: any) {
-            this.appendMemoryLog(runId, 'memory_save_failed', {
-              elapsed_ms: Date.now() - startedAt,
-              error: String(e?.message || e || 'unknown error')
-            });
-            console.error('Background memory save failed:', e);
-            this.notifyBackgroundTask('Memory save failed', 'completed');
+          }
         }
-    })();
+
+        if (payload.behavior_patterns.length > 0) {
+          const patternMap = new Map<string, { pattern_key: string; summary: string; details: string; applicable_plan?: string }>();
+          for (const item of payload.behavior_patterns) {
+            patternMap.set(this.toSlug(item.pattern_key), {
+              ...item,
+              pattern_key: this.toSlug(item.pattern_key)
+            });
+          }
+          for (const item of patternMap.values()) {
+            await runAction('pattern_record', {
+              action: 'record_behavior_pattern',
+              pattern_key: item.pattern_key,
+              summary: item.summary,
+              details: item.details,
+              applicable_plan: item.applicable_plan || '',
+              agent_id: 'mempedia-codecli',
+              source: 'kg_pattern_success'
+            });
+          }
+        }
+
+        if (payload.atomic_knowledge.length > 0) {
+          const atomicMap = new Map<string, { keyword: string; summary: string; details: string }>();
+          for (const item of payload.atomic_knowledge) {
+            atomicMap.set(this.stableNodeId('atomic', item.keyword), item);
+          }
+          for (const [nodeId, item] of atomicMap) {
+            const markdown = `# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Details\n\n${item.details}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
+            await runAction('atomic_upsert', {
+              action: 'agent_upsert_markdown',
+              node_id: nodeId,
+              markdown,
+              confidence: 0.98,
+              importance: 1.9,
+              agent_id: 'mempedia-codecli',
+              reason: 'Atomic knowledge update',
+              source: 'kg_atomic'
+            });
+            linkedNodes.add(nodeId);
+            this.appendNodeConversationMap(nodeId, conversationId, 'atomic_knowledge');
+          }
+        }
+
+        if (linkedNodes.size === 0) {
+          this.appendMemoryLog(runId, 'memory_payload_empty', { note: 'no atomic nodes generated' });
+        }
+
+        if (this.autoLinkEnabled && this.autoLinkMaxNodes > 0 && linkedNodes.size > 0) {
+          const nodeIds = Array.from(linkedNodes).slice(0, this.autoLinkMaxNodes);
+          this.appendMemoryLog(runId, 'auto_link_batch_started', {
+            node_count: nodeIds.length,
+            limit: this.autoLinkLimit
+          });
+          for (const nodeId of nodeIds) {
+            await runAction('auto_link', {
+              action: 'auto_link_related',
+              node_id: nodeId,
+              limit: this.autoLinkLimit,
+              min_score: 0.6
+            });
+          }
+          this.appendMemoryLog(runId, 'auto_link_batch_done', { node_count: nodeIds.length });
+        }
+      })(), this.memoryTaskTimeoutMs, 'memory background task');
+      this.appendMemoryLog(runId, 'memory_save_done', {
+        elapsed_ms: Date.now() - startedAt
+      });
+      this.notifyBackgroundTask('Memory saved', 'completed');
+    } catch (e: any) {
+      this.appendMemoryLog(runId, 'memory_save_failed', {
+        elapsed_ms: Date.now() - startedAt,
+        error: String(e?.message || e || 'unknown error')
+      });
+      console.error('Background memory save failed:', e);
+      this.notifyBackgroundTask('Memory save failed', 'completed');
+    }
   }
 
   private startSaveDebounce() {
@@ -815,11 +912,13 @@ behavior_pattern`;
     const combinedAnswer = effectiveBatch[effectiveBatch.length - 1]?.answer || '';
     const combinedTraces = effectiveBatch.flatMap((item) => item.traces);
 
-    this.persistInteractionMemory(combinedInput, combinedTraces, combinedAnswer, null)
+    this.saveCurrentPromise = this.persistInteractionMemory(combinedInput, combinedTraces, combinedAnswer, null);
+    this.saveCurrentPromise
       .catch(() => {
         // errors are already logged inside persistInteractionMemory
       })
       .finally(() => {
+        this.saveCurrentPromise = null;
         this.saveInProgress = false;
         if (this.savePendingDrain) {
           this.savePendingDrain = false;
@@ -905,6 +1004,9 @@ Context from Mempedia based on query:
 ${context}
 
 When you complete a task, you MUST consider saving the result or important information back to Mempedia using 'mempedia_save' so you remember it next time.
+Save only atomic, reusable knowledge as nodes. Do not store raw conversation logs or transient context in nodes.
+User habits and behavior patterns are stored by the system in separate structures; do not save them as nodes.
+If needed, use 'mempedia_conversation_lookup' to inspect raw local conversation records mapped to a node.
 `,
       },
       ...recentConversationMessages,
@@ -955,6 +1057,9 @@ When you complete a task, you MUST consider saving the result or important infor
                 markdown: true,
               });
               result = JSON.stringify(res);
+            } else if (fnName === 'mempedia_conversation_lookup') {
+              const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
+              result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
             } else if (fnName === 'mempedia_save') {
                const res = await this.mempedia.send({
                  action: 'agent_upsert_markdown',

@@ -61,6 +61,27 @@ pub struct AccessLog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserHabitEnv {
+    pub topic: String,
+    pub summary: String,
+    pub details: String,
+    pub timestamp: u64,
+    pub agent_id: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorPatternRecord {
+    pub pattern_key: String,
+    pub summary: String,
+    pub details: String,
+    pub applicable_plan: Option<String>,
+    pub timestamp: u64,
+    pub agent_id: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {
     pub node_id: NodeId,
     pub score: f32,
