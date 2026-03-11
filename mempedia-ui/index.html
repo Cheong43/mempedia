@@ -1,210 +1,232 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mempedia Knowledge Wiki</title>
+    <title>Mempedia - The Free Project Memory</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <a class="skip-link" href="#main-content" data-i18n="skipToMain">Skip to main content</a>
+    <div class="wiki-container">
+      <!-- Sidebar -->
+      <div class="mw-sidebar">
+        <a href="#" class="mw-logo" onclick="location.reload()">
+          Mempedia
+        </a>
 
-    <header class="topbar" aria-label="Page header">
-      <div>
-        <p class="brand">Mempedia Knowledge Wiki</p>
-        <h1 data-i18n="pageTitle">Project Memory Graph Encyclopedia</h1>
-        <p class="subtitle" data-i18n="pageSubtitle">
-          Browse nodes like a wiki page and inspect relationships with version evolution.
-        </p>
+        <div class="mw-portlet">
+          <h3 data-i18n="navigation">Navigation</h3>
+          <ul>
+            <li><a href="#" id="nav-main-page">Main page</a></li>
+            <li><a href="#" id="nav-contents">Contents</a></li>
+          </ul>
+        </div>
+
+        <div class="mw-portlet">
+          <h3 data-i18n="nodeIndex">Node Index</h3>
+          <input
+            id="node-search"
+            type="search"
+            placeholder="Search nodes..."
+            style="width: 90%; margin-bottom: 0.5em"
+          />
+          <p id="node-count-label" style="font-size: 0.75em; margin: 0 0 0.5em 0; color: #54595d">0 nodes</p>
+          <div id="node-list" class="node-index-list"></div>
+        </div>
+
       </div>
-      <label class="lang-switch" for="lang-select">
-        <span data-i18n="languageLabel">Language</span>
-        <select id="lang-select" aria-label="Language selector">
-          <option value="en">English</option>
-          <option value="zh-CN">简体中文</option>
-        </select>
-      </label>
-    </header>
 
-    <main id="main-content" class="layout">
-      <section class="panel controls" aria-labelledby="controls-title">
-        <h2 id="controls-title" data-i18n="importData">Import Data</h2>
-        <div class="controls-row">
-          <label class="field">
-            <span data-i18n="chooseFolder">Choose Folder</span>
-            <input id="folder-input" type="file" webkitdirectory directory multiple />
-          </label>
-          <label class="field">
-            <span data-i18n="storageRoot">Storage Root</span>
-            <select id="root-select" aria-label="Choose storage root"></select>
-          </label>
-          <button id="parse-btn" type="button" data-i18n="parseBtn">Parse</button>
+      <!-- Main Content Container -->
+      <div class="mw-content-container">
+        <!-- Header (Top Right) -->
+        <div class="mw-header">
+          <ul class="mw-personal-tools">
+            <li><span id="cli-bridge-status">CLI Disconnected</span></li>
+            <li>
+                <select id="lang-select" style="font-size: 0.8em; padding: 0;">
+                    <option value="en">English</option>
+                    <option value="zh-CN">中文</option>
+                </select>
+            </li>
+            <li><a href="#">Log in</a></li>
+          </ul>
+          <div class="mw-search-box">
+            <input
+              id="keyword-search"
+              class="mw-search-input"
+              type="search"
+              placeholder="Search Mempedia"
+              accesskey="f"
+            />
+            <button id="keyword-search-btn" class="mw-search-btn">Search</button>
+          </div>
         </div>
-        <p class="hint" data-i18n="importHint">
-          Prefer selecting <code>.mempedia/memory</code> directly (compatible with <code>data</code> layout).
-        </p>
-        <p id="status" role="status" aria-live="polite" data-i18n="statusWaiting">
-          Waiting for folder import...
-        </p>
-      </section>
 
-      <section class="metrics" aria-label="Metrics">
-        <article class="panel metric">
-          <h2 data-i18n="metricNodes">Nodes</h2>
-          <p id="metric-nodes">0</p>
-        </article>
-        <article class="panel metric">
-          <h2 data-i18n="metricEdges">Edges</h2>
-          <p id="metric-edges">0</p>
-        </article>
-        <article class="panel metric">
-          <h2 data-i18n="metricVersions">Versions</h2>
-          <p id="metric-versions">0</p>
-        </article>
-        <article class="panel metric">
-          <h2 data-i18n="metricAccess">Access Logs</h2>
-          <p id="metric-access">0</p>
-        </article>
-      </section>
-
-      <section class="panel search-workbench" aria-labelledby="keyword-title">
-        <h2 id="keyword-title" data-i18n="keywordSearchTitle">Knowledge Search</h2>
-        <div class="search-controls">
-          <label class="field search-field-wide">
-            <span data-i18n="keywordQuery">Keyword Query</span>
-            <input id="keyword-search" type="search" placeholder="Search across title/body/markdown" />
-          </label>
-          <button id="keyword-search-btn" type="button" data-i18n="keywordSearchBtn">Search</button>
-          <button id="keyword-clear-btn" type="button" data-i18n="keywordClearBtn">Clear</button>
+        <!-- Tabs -->
+        <div class="mw-tabs">
+          <div class="mw-tab active" id="tab-read" onclick="app.switchTab('read')">Article</div>
+          <div class="mw-tab" id="tab-talk" onclick="app.switchTab('talk')">Talk</div>
+          <div class="mw-tab" id="tab-source" onclick="app.switchTab('source')">View source</div>
+          <div class="mw-tab" id="tab-history" onclick="app.switchTab('history')">View history</div>
         </div>
-        <p id="keyword-summary" class="hint" data-i18n="keywordSummaryDefault">
-          Enter keywords to run ranked retrieval over current heads.
-        </p>
-        <div id="keyword-results" class="search-results" aria-live="polite"></div>
-      </section>
 
-      <section class="wiki-layout" aria-label="Encyclopedia content">
-        <article class="panel article" aria-labelledby="article-title">
-          <header class="article-head">
-            <h2 id="article-title" data-i18n="articleNone">No node selected</h2>
-            <p id="article-meta" class="article-meta" data-i18n="articleGuide">
-              Import data, then choose a node from the index on the right.
-            </p>
-          </header>
+        <!-- Content Body -->
+        <div id="content" class="mw-body">
+          <h1 id="article-title" class="firstHeading">Main Page</h1>
+          <div id="siteSub">From Mempedia, the free project memory</div>
+          <div id="contentSub"></div>
+          
+          <div id="bodyContent" class="mw-parser-output">
+            <!-- Special Page: Import & Metrics (Visible by default) -->
+            <div id="view-special-main">
+                <div class="import-panel">
+                    <h2 style="border:none; margin-top:0;">Welcome to Mempedia</h2>
+                    <p>Mempedia is a project memory graph encyclopedia that anyone can edit (via CLI).</p>
+                    
+                    <div style="background: #f8f9fa; padding: 1em; border: 1px solid #c8ccd1; margin: 1em 0;">
+                        <strong>Data Import:</strong>
+                        <input id="folder-input" type="file" webkitdirectory directory multiple />
+                        <select id="root-select"></select>
+                        <button id="parse-btn">Load Data</button>
+                        <div id="status" style="margin-top: 0.5em; font-style: italic;">Waiting for import...</div>
+                    </div>
 
-          <section class="article-section" aria-labelledby="summary-title">
-            <h3 id="summary-title" data-i18n="summary">Summary</h3>
-            <div id="article-body" class="article-body" data-i18n="noContent">No content yet.</div>
-          </section>
-
-          <section class="article-section" aria-labelledby="structured-title">
-            <h3 id="structured-title" data-i18n="structuredFields">Structured Fields</h3>
-            <table class="structured-table">
-              <thead>
-                <tr>
-                  <th scope="col" data-i18n="field">Field</th>
-                  <th scope="col" data-i18n="value">Value</th>
-                </tr>
-              </thead>
-              <tbody id="structured-table-body"></tbody>
-            </table>
-          </section>
-
-          <section class="article-section" aria-labelledby="highlights-title">
-            <h3 id="highlights-title" data-i18n="highlightsTitle">Highlights</h3>
-            <div id="highlights-list" class="chips"></div>
-          </section>
-
-          <section class="article-section" aria-labelledby="links-title">
-            <h3 id="links-title" data-i18n="relatedLinks">Related Links</h3>
-            <div class="relation-columns">
-              <div>
-                <h4 data-i18n="outgoingNodes">Outgoing</h4>
-                <div id="outgoing-links" class="wiki-links"></div>
-              </div>
-              <div>
-                <h4 data-i18n="incomingNodes">Incoming</h4>
-                <div id="incoming-links" class="wiki-links"></div>
-              </div>
+                    <div class="metrics" style="display: flex; gap: 2em; text-align: center; margin-top: 2em;">
+                        <div>
+                            <div id="metric-nodes" style="font-size: 2em; font-weight: bold;">0</div>
+                            <div style="color: #54595d;">Nodes</div>
+                        </div>
+                        <div>
+                            <div id="metric-edges" style="font-size: 2em; font-weight: bold;">0</div>
+                            <div style="color: #54595d;">Edges</div>
+                        </div>
+                        <div>
+                            <div id="metric-versions" style="font-size: 2em; font-weight: bold;">0</div>
+                            <div style="color: #54595d;">Versions</div>
+                        </div>
+                        <div>
+                            <div id="metric-access" style="font-size: 2em; font-weight: bold;">0</div>
+                            <div style="color: #54595d;">Access Logs</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="keyword-results"></div>
             </div>
-          </section>
 
-          <section class="article-section" aria-labelledby="timeline-title">
-            <h3 id="timeline-title" data-i18n="versionTimeline">Version Timeline</h3>
-            <ol id="version-list" class="timeline"></ol>
-          </section>
+            <!-- Article View (Hidden by default) -->
+            <div id="view-article" class="hidden">
+                <div class="infobox">
+                    <div class="infobox-title" id="infobox-title">Node Info</div>
+                    <table style="width: 100%;">
+                        <tbody id="structured-table-body">
+                            <!-- Structured fields injected here -->
+                        </tbody>
+                    </table>
+                </div>
 
-          <section class="article-section" aria-labelledby="markdown-title">
-            <h3 id="markdown-title" data-i18n="markdownProjection">Markdown Projection</h3>
-            <p id="markdown-path" class="article-meta"></p>
-            <pre id="markdown-content" class="markdown-block"></pre>
-          </section>
+                <div id="article-meta" style="font-size: 0.85em; color: #54595d; margin-bottom: 1em;"></div>
+                
+                <div id="article-body"></div>
 
-          <section class="article-section" aria-labelledby="audit-title">
-            <h3 id="audit-title" data-i18n="agentAudit">Agent Audit</h3>
-            <ul id="audit-list" class="audit-list"></ul>
-          </section>
-        </article>
+                <div id="highlights-list" class="catlinks">
+                    <!-- Categories/Chips -->
+                </div>
 
-        <aside class="panel sidebar" aria-labelledby="sidebar-title">
-          <h2 id="sidebar-title" data-i18n="nodeIndex">Node Index</h2>
-          <label class="field search-field">
-            <span data-i18n="searchNodes">Search Nodes</span>
-            <input id="node-search" type="search" placeholder="Filter by ID or title" />
-          </label>
-          <p id="node-count-label" class="hint">0 nodes</p>
-          <nav id="node-list" class="node-list" aria-label="Node list"></nav>
-
-          <section class="mini-section" aria-labelledby="relation-title">
-            <h3 id="relation-title" data-i18n="relationView">Relation View (Current Node)</h3>
-            <svg id="relation-svg" viewBox="0 0 460 280" role="img" aria-label="Relation graph"></svg>
-          </section>
-
-          <section class="mini-section" aria-labelledby="version-dag-title">
-            <h3 id="version-dag-title" data-i18n="versionDag">Version DAG (Current Node)</h3>
-            <svg id="version-svg" viewBox="0 0 460 260" role="img" aria-label="Version graph"></svg>
-          </section>
-
-          <section class="mini-section action-builder" aria-labelledby="action-builder-title">
-            <h3 id="action-builder-title" data-i18n="actionBuilder">Action Builder</h3>
-            <label class="field">
-              <span data-i18n="agentId">Agent ID</span>
-              <input id="action-agent-id" type="text" value="agent-codex" />
-            </label>
-            <label class="field">
-              <span data-i18n="actionReason">Reason</span>
-              <input id="action-reason" type="text" />
-            </label>
-            <label class="field">
-              <span data-i18n="actionSource">Source</span>
-              <input id="action-source" type="text" value="local_ui" />
-            </label>
-            <div class="action-score-row">
-              <label class="field small-field">
-                <span data-i18n="actionConfidence">Confidence</span>
-                <input id="action-confidence" type="number" min="0" max="1" step="0.01" value="0.85" />
-              </label>
-              <label class="field small-field">
-                <span data-i18n="actionImportance">Importance</span>
-                <input id="action-importance" type="number" min="0" step="0.1" value="2.0" />
-              </label>
+                <div style="margin-top: 2em;">
+                    <h3>Related Links</h3>
+                    <div style="display: flex; gap: 2em;">
+                        <div style="flex: 1;">
+                            <h4>Outgoing</h4>
+                            <div id="outgoing-links"></div>
+                        </div>
+                        <div style="flex: 1;">
+                            <h4>Incoming</h4>
+                            <div id="incoming-links"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 2em;">
+                   <h3>Visualization</h3>
+                   <div style="display: flex; gap: 1em;">
+                      <div style="flex:1">
+                        <h4>Relation Graph</h4>
+                        <svg id="relation-svg" viewBox="0 0 460 280" style="width:100%; border:1px solid #c8ccd1; background:#fff;"></svg>
+                      </div>
+                      <div style="flex:1">
+                        <h4>Version DAG</h4>
+                        <svg id="version-svg" viewBox="0 0 460 260" style="width:100%; border:1px solid #c8ccd1; background:#fff;"></svg>
+                      </div>
+                   </div>
+                </div>
             </div>
-            <label class="field">
-              <span data-i18n="actionMarkdown">Markdown Content</span>
-              <textarea id="action-markdown" rows="8"></textarea>
-            </label>
-            <div class="action-row">
-              <button id="generate-upsert-btn" type="button" data-i18n="generateUpsert">Generate Upsert JSON</button>
-              <button id="generate-rollback-btn" type="button" data-i18n="generateRollback">Generate Rollback JSON</button>
-              <button id="copy-action-btn" type="button" data-i18n="copyAction">Copy JSON</button>
-            </div>
-            <p id="action-target" class="hint" data-i18n="rollbackTargetNone">Rollback target: not selected</p>
-            <pre id="action-preview" class="action-preview"></pre>
-          </section>
-        </aside>
-      </section>
-    </main>
 
+            <!-- Talk View (CLI Studio) -->
+            <div id="view-talk" class="hidden">
+                <div class="cli-studio-container">
+                    <div class="cli-toolbar" style="margin-bottom: 1em;">
+                        <button id="cli-connect-btn">Connect CLI</button>
+                        <button id="cli-refresh-memory-btn">Refresh Mempedia</button>
+                    </div>
+                    
+                    <div class="cli-chat-box" id="cli-dialogue-list">
+                        <!-- Chat messages -->
+                    </div>
+                    
+                    <div class="cli-input-area">
+                        <input id="cli-query-input" type="text" placeholder="Start a discussion with codecli..." />
+                        <button id="cli-send-btn">Send</button>
+                    </div>
+
+                    <div style="margin-top: 1em;">
+                        <h3>Trace Visualization</h3>
+                        <div id="cli-trace-list" style="border:1px solid #c8ccd1; padding:0.5em; max-height:200px; overflow:auto;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Source View (Markdown) -->
+            <div id="view-source" class="hidden">
+                <p>You can view the source code of this page below.</p>
+                <div id="markdown-path" style="font-family: monospace; color: #54595d; margin-bottom: 0.5em;"></div>
+                <textarea id="markdown-content" readonly style="width: 100%; height: 500px; font-family: monospace; padding: 0.5em; border: 1px solid #c8ccd1;"></textarea>
+            </div>
+
+            <!-- History View -->
+            <div id="view-history" class="hidden">
+                <p>View the revision history of this page.</p>
+                <ol id="version-list" class="history-list"></ol>
+                
+
+                
+                <div style="margin-top: 2em;">
+                    <h3>Agent Audit</h3>
+                    <ul id="audit-list"></ul>
+                </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="mw-footer">
+          <ul>
+            <li>This page was last edited on <span id="last-modified">Today</span>.</li>
+            <li>Text is available under the Creative Commons Attribution-ShareAlike License; additional terms may apply.</li>
+          </ul>
+          <ul>
+            <li><a href="#">Privacy policy</a></li>
+            <li><a href="#">About Mempedia</a></li>
+            <li><a href="#">Disclaimers</a></li>
+            <li><a href="#">Mobile view</a></li>
+            <li><a href="#">Developers</a></li>
+            <li><a href="#">Statistics</a></li>
+            <li><a href="#">Cookie statement</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
     <script src="./script.js"></script>
   </body>
 </html>

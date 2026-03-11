@@ -73,6 +73,25 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
 npm start
 ```
 
+## Claude Code Skills Compatibility
+
+- `codecli` can load local skills from `../skills/*/SKILL.md` (Claude-style frontmatter + markdown body).
+- Runtime commands:
+  - `/skills` list local skills
+  - `/skill <name>` activate a skill for subsequent turns
+  - `/skill off` disable active skill
+  - `/skill <name> <task>` run one task with a skill (one-shot)
+  - `/ui start [port]` launch integrated mempedia-ui with CLI bridge
+  - `/ui stop` stop integrated mempedia-ui server
+  - `/ui status` show ui server status
+  - `/help` show command list
+  - `/clear` clear current screen history
+- When a skill is active, its description and body are injected into the request prompt so the agent follows that skill behavior.
+- Integrated UI features:
+  - Embedded CLI dialogue window inside `mempedia-ui`
+  - Trace visualization for thought/action/observation flow
+  - Memory snapshot endpoint so UI parses the same `.mempedia/memory` used by CLI
+
 ## Architecture
 
 - **React/Ink**: UI rendering.

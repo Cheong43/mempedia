@@ -17,6 +17,12 @@ const outFile = args[1];
 const model = process.env.ARK_MODEL || process.env.OPENAI_MODEL || args[2] || 'gpt-4o';
 const apiKey = process.env.ARK_API_KEY || process.env.OPENAI_API_KEY || '';
 const baseURL = process.env.ARK_BASE_URL || process.env.OPENAI_BASE_URL;
+const hmacAccessKey = process.env.HMAC_ACCESS_KEY?.trim();
+const hmacSecretKey = process.env.HMAC_SECRET_KEY?.trim();
+const memoryHmacAccessKey = process.env.MEMORY_HMAC_ACCESS_KEY?.trim();
+const memoryHmacSecretKey = process.env.MEMORY_HMAC_SECRET_KEY?.trim();
+const gatewayApiKey = process.env.GATEWAY_API_KEY?.trim();
+const memoryGatewayApiKey = process.env.MEMORY_GATEWAY_API_KEY?.trim();
 
 const binaryPath = path.resolve(process.cwd(), '../target/release/mempedia');
 
@@ -63,6 +69,12 @@ async function processSample(sample: any) {
     apiKey: apiKey,
     baseURL: baseURL,
     model: model,
+    hmacAccessKey,
+    hmacSecretKey,
+    memoryHmacAccessKey,
+    memoryHmacSecretKey,
+    gatewayApiKey,
+    memoryGatewayApiKey
   }, tempDir, binaryPath);
 
   try {

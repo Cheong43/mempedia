@@ -23,6 +23,7 @@ pub struct Link {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeContent {
     pub title: String,
+    #[serde(default)]
     pub summary: String,
     pub body: String,
     pub structured_data: BTreeMap<String, String>,

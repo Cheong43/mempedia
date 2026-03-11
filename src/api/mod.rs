@@ -1221,35 +1221,99 @@ impl MemoryEngine {
         let mut out = body.to_string();
         let mut links = Vec::new();
         let mut linked_targets: HashSet<String> = HashSet::new();
-
-        let mut candidates: Vec<(String, String)> = Vec::new();
+        let mut token_to_targets: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut candidates: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
         for (target, version_id) in &self.heads {
             if target == node_id {
                 continue;
             }
-            candidates.push((target.clone(), target.clone()));
+            let mut replace_keywords = vec![target.clone()];
+            let mut alias_keywords = Vec::new();
             let version = self.storage.read_object(version_id)?;
             let title = version.content.title.trim();
             if title.chars().count() >= 2 {
-                candidates.push((target.clone(), title.to_string()));
+                replace_keywords.push(title.to_string());
             }
+            for alias in extract_node_id_alias_tokens(target) {
+                token_to_targets
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(target.clone());
+                alias_keywords.push(alias);
+            }
+            for alias in extract_structured_alias_keywords(&version.content.structured_data) {
+                token_to_targets
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(target.clone());
+                alias_keywords.push(alias);
+            }
+            candidates.push((target.clone(), replace_keywords, alias_keywords));
         }
-        candidates.sort_by(|a, b| {
-            b.1.chars()
-                .count()
-                .cmp(&a.1.chars().count())
-                .then_with(|| a.0.cmp(&b.0))
-        });
 
-        for (target, keyword) in candidates {
+        for (target, replace_keywords, mut alias_keywords) in candidates {
             if linked_targets.contains(&target) {
                 continue;
             }
             if out.contains(&format!("[[{target}]]")) {
                 linked_targets.insert(target.clone());
+                links.push(Link {
+                    target: target.clone(),
+                    label: Some("wikilink_present".to_string()),
+                    weight: 0.8,
+                });
                 continue;
             }
-            if replace_keyword_with_wikilink_once(&mut out, &keyword, &target) {
+            alias_keywords.retain(|k| {
+                token_to_targets
+                    .get(&k.to_lowercase())
+                    .map(|set| set.len() == 1)
+                    .unwrap_or(false)
+            });
+            alias_keywords.sort_by(|a, b| {
+                b.chars()
+                    .count()
+                    .cmp(&a.chars().count())
+                    .then_with(|| a.cmp(b))
+            });
+
+            let mut linked = false;
+            for keyword in &replace_keywords {
+                if replace_keyword_with_wikilink_once(&mut out, keyword, &target) {
+                    linked = true;
+                    break;
+                }
+            }
+            if !linked {
+                for keyword in &alias_keywords {
+                    let precise =
+                        keyword.contains('/') || keyword.contains('-') || keyword.contains('.') || keyword.contains('_');
+                    if !precise {
+                        continue;
+                    }
+                    if replace_keyword_with_wikilink_once(&mut out, keyword, &target) {
+                        linked = true;
+                        break;
+                    }
+                }
+            }
+            if !linked {
+                for keyword in &replace_keywords {
+                    if contains_keyword_with_boundary(&out, keyword) {
+                        linked = true;
+                        break;
+                    }
+                }
+            }
+            if !linked {
+                for keyword in &alias_keywords {
+                    if contains_keyword_with_boundary(&out, keyword) {
+                        linked = true;
+                        break;
+                    }
+                }
+            }
+            if linked {
                 linked_targets.insert(target.clone());
                 links.push(Link {
                     target,
@@ -1449,9 +1513,7 @@ fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: 
     }
 
     let mut cursor = 0usize;
-    while let Some(offset) = text[cursor..].find(needle) {
-        let start = cursor + offset;
-        let end = start + needle.len();
+    while let Some((start, end)) = find_keyword_span(text, needle, cursor) {
         if is_inside_existing_wikilink(text, start) {
             cursor = end;
             continue;
@@ -1464,6 +1526,165 @@ fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: 
         return true;
     }
     false
+}
+
+fn contains_keyword_with_boundary(text: &str, keyword: &str) -> bool {
+    let needle = keyword.trim();
+    if needle.chars().count() < 2 {
+        return false;
+    }
+    let mut cursor = 0usize;
+    while let Some((start, end)) = find_keyword_span(text, needle, cursor) {
+        if is_inside_existing_wikilink(text, start) {
+            cursor = end;
+            continue;
+        }
+        if !is_token_boundary(text, start, end) {
+            cursor = end;
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn find_keyword_span(text: &str, needle: &str, from: usize) -> Option<(usize, usize)> {
+    if from >= text.len() {
+        return None;
+    }
+    if let Some(offset) = text[from..].find(needle) {
+        let start = from + offset;
+        return Some((start, start + needle.len()));
+    }
+    if !needle.is_ascii() {
+        return None;
+    }
+    let start = find_ascii_case_insensitive(text, needle, from)?;
+    Some((start, start + needle.len()))
+}
+
+fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<usize> {
+    let hay = text.as_bytes();
+    let ned = needle.as_bytes();
+    if ned.is_empty() || hay.len() < ned.len() || from >= hay.len() {
+        return None;
+    }
+    let last = hay.len() - ned.len();
+    for i in from..=last {
+        if hay[i..i + ned.len()].eq_ignore_ascii_case(ned) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn extract_node_id_alias_tokens(node_id: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "github", "repo", "repos", "node", "nodes", "memory", "draft", "notes",
+    ];
+    let mut out = Vec::new();
+    for token in node_id
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 4)
+    {
+        if STOPWORDS.contains(&token.as_str()) {
+            continue;
+        }
+        if token.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if !out.iter().any(|x| x == &token) {
+            out.push(token);
+        }
+    }
+    out
+}
+
+fn extract_structured_alias_keywords(
+    structured: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (k, v) in structured {
+        let key = k.to_lowercase();
+        if !(key.contains("name")
+            || key.contains("title")
+            || key.contains("id")
+            || key.contains("slug")
+            || key.contains("handle")
+            || key.contains("url")
+            || key.contains("repo")
+            || key.contains("project")
+            || key.contains("topic")
+            || key.contains("keyword")
+            || key.contains("tag")
+            || key.contains("entity"))
+        {
+            continue;
+        }
+        let value = v.trim().trim_matches('"');
+        if value.is_empty() {
+            continue;
+        }
+
+        let mut add_alias = |alias: &str| {
+            let candidate = alias.trim().trim_matches('/');
+            if candidate.chars().count() < 4 {
+                return;
+            }
+            if !out.iter().any(|x| x == candidate) {
+                out.push(candidate.to_string());
+            }
+        };
+
+        if value.contains("://") {
+            for alias in extract_url_aliases(value) {
+                add_alias(&alias);
+            }
+        }
+
+        if value.contains('/') || value.contains('-') || value.contains('_') || value.contains('.') {
+            add_alias(value);
+        }
+    }
+    out
+}
+
+fn extract_url_aliases(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = text.to_lowercase();
+    let start = match lower.find("://") {
+        Some(idx) => idx + 3,
+        None => return out,
+    };
+    let mut rest = &text[start..];
+    if let Some(q) = rest.find('?') {
+        rest = &rest[..q];
+    }
+    if let Some(h) = rest.find('#') {
+        rest = &rest[..h];
+    }
+    let rest = rest.trim_matches('/');
+    let mut parts = rest.split('/').filter(|p| !p.trim().is_empty());
+    let host = parts.next().unwrap_or("").trim();
+    let mut path_parts: Vec<String> = parts.map(|p| p.trim().trim_matches('/').to_string()).collect();
+    if !host.is_empty() {
+        out.push(host.to_string());
+    }
+    if !path_parts.is_empty() {
+        let last = path_parts.last().cloned().unwrap_or_default();
+        if !last.is_empty() {
+            out.push(last);
+        }
+        if path_parts.len() >= 2 {
+            let right = path_parts.pop().unwrap();
+            let left = path_parts.pop().unwrap();
+            if !left.is_empty() && !right.is_empty() {
+                out.push(format!("{left}/{right}"));
+            }
+        }
+    }
+    out
 }
 
 fn is_inside_existing_wikilink(text: &str, start: usize) -> bool {
@@ -2257,6 +2478,55 @@ mod tests {
                 .links
                 .iter()
                 .any(|link| link.target == "rust_memory_engine")
+        );
+    }
+
+    #[test]
+    fn agent_upsert_markdown_auto_links_github_repo_alias_to_existing_node() {
+        let dir = temp_data_dir("agent-upsert-github-alias-link");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "github-kortix-suna",
+                NodeContent {
+                    title: "Suna by Kortix".to_string(),
+                    summary: "Kortix AI agent platform".to_string(),
+                    body: "repo overview".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["suna".to_string()],
+                },
+                0.9,
+                2.0,
+            )
+            .expect("create related github node");
+
+        let markdown = r#"# Top 100 GitHub Repositories
+
+Notable repos include `kortix-ai/suna`.
+"#;
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "github-top-100-repos".to_string(),
+            markdown: markdown.to_string(),
+            confidence: 0.9,
+            importance: 1.4,
+            agent_id: "agent-main".to_string(),
+            reason: "补充 top100 仓库引用信息".to_string(),
+            source: "user_request".to_string(),
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(created.content.body.contains("kortix-ai/suna"));
+        assert!(
+            created
+                .content
+                .links
+                .iter()
+                .any(|link| link.target == "github-kortix-suna")
         );
     }
 

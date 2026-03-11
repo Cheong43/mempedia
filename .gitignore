@@ -138,3 +138,4 @@ cache/
 .DS_Store
 
 data/
+.mempedia/
