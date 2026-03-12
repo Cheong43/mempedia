@@ -25,6 +25,21 @@ default_prompt: >
     - reason: concrete rationale (>= 8 chars)
     - source: task id / URL / input channel
 
+  Knowledge graph formation (required):
+    - Always add explicit links on write (content.links or patch.add_links).
+    - If a node would have <2 outgoing links, call auto_link_related.
+    - Anchor to profile nodes: user/<user_id>/profile or agent/<agent_id>/profile.
+
+  User preferences & habits (required modeling):
+    - Nodes: user/<user_id>/preference/<topic>, user/<user_id>/habit/<topic>
+    - structured_data: kind, user_id, topic, evidence, time_window, confidence_source
+    - Link from user/<user_id>/profile to each node, and to related domain nodes.
+
+  Agent behavior patterns (required modeling):
+    - Nodes: agent/<agent_id>/behavior/<pattern_key>
+    - structured_data: kind, agent_id, pattern_key, summary, details, applicable_plan, evidence
+    - Link from agent/<agent_id>/profile to each behavior node.
+
   Common actions:
     - upsert_node: merged create/update entrypoint
     - agent_upsert_markdown: append markdown to a node (auto wikilink + link fusion)

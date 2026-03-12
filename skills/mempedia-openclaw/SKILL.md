@@ -22,6 +22,8 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   - Auto-relate nodes (`auto_link_related`)
   - Rollback (`rollback_node`)
 - Guides storage layout and governance (audit fields: `agent_id`, `reason`, `source`).
+- Ensures updates form explicit knowledge edges and graph structure.
+- Captures user preferences/habits and agent behavior patterns as first-class nodes and links.
 
 ## When To Invoke
 - Setting up OpenClaw tasks that need durable, explainable long-term memory.
@@ -63,6 +65,47 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   - `source`: input channel (e.g., task id, URL)
 - Confidence must meet minimum; markdown size is bounded.
 
+## Knowledge Graph Formation (Required)
+- Each write should add or maintain explicit edges:
+  - Use `content.links` (create) or `patch.add_links` (update) with clear labels.
+  - If a node would have fewer than 2 outgoing links after the change, call `auto_link_related`.
+- Always connect to an anchor node:
+  - `user/<user_id>/profile` for user-related memory
+  - `agent/<agent_id>/profile` for agent behavior memory
+  - `project/<project_id>/context` for project-specific memory
+
+## User Preferences & Habits (Required Modeling)
+Represent preferences and habits as nodes + links (do not invent new actions).
+- Node id patterns:
+  - `user/<user_id>/preference/<topic>`
+  - `user/<user_id>/habit/<topic>`
+- Recommended `structured_data` keys:
+  - `kind`: `user_preference` | `user_habit`
+  - `user_id`
+  - `topic`
+  - `evidence`
+  - `time_window`
+  - `confidence_source`
+- Required links:
+  - From `user/<user_id>/profile` → preference/habit node
+  - From preference/habit node → related domain node (tool, product, concept)
+
+## Agent Behavior Patterns (Required Modeling)
+Represent agent behavior patterns as nodes + links (do not invent new actions).
+- Node id pattern:
+  - `agent/<agent_id>/behavior/<pattern_key>`
+- Recommended `structured_data` keys:
+  - `kind`: `agent_behavior_pattern`
+  - `agent_id`
+  - `pattern_key`
+  - `summary`
+  - `details`
+  - `applicable_plan`
+  - `evidence`
+- Required links:
+  - From `agent/<agent_id>/profile` → behavior node
+  - From behavior node → related workflow/tool nodes
+
 ## Action Whitelist (Preferred)
 - `upsert_node`
 - `open_node`
@@ -75,13 +118,16 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
 
 ## Canonical Input Schemas
 ### upsert_node
+Notes:
+- `content` and `patch` are optional, but at least one must be provided.
+- Use `content` for create/replace, `patch` for incremental updates.
 ```json
 {
   "action": "upsert_node",
   "node_id": "string",
   "content": {
     "title": "string",
-    "summary": "string (8-140 chars, concise and accurate)",
+    "summary": "string (can be empty, 0-140 chars)",
     "body": "string",
     "structured_data": { "key": "value" },
     "links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],
@@ -89,6 +135,7 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   },
   "patch": {
     "title": "string|null",
+    "summary": "string|null",
     "body": "string|null",
     "structured_upserts": { "key": "value" },
     "add_links": [{ "target": "string", "label": "string|null", "weight": 0.8 }],
@@ -116,6 +163,37 @@ This skill connects OpenClaw agent workflows to the mempedia memory graph (appen
   "query": "string",
   "limit": 8,
   "include_highlight": true
+}
+```
+
+### suggest_exploration
+```json
+{
+  "action": "suggest_exploration",
+  "node_id": "string",
+  "limit": 8
+}
+```
+
+### explore_with_budget
+```json
+{
+  "action": "explore_with_budget",
+  "node_id": "string",
+  "depth_budget": 2,
+  "per_layer_limit": 4,
+  "total_limit": 10,
+  "min_score": 0.0
+}
+```
+
+### auto_link_related
+```json
+{
+  "action": "auto_link_related",
+  "node_id": "string",
+  "limit": 8,
+  "min_score": 0.4
 }
 ```
 

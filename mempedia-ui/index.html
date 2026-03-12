@@ -1,266 +1,143 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mempedia - The Free Project Memory</title>
+    <title>Mempedia Graph Explorer</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="wiki-container">
-      <!-- Sidebar -->
-      <div class="mw-sidebar">
-        <a href="#" class="mw-logo" onclick="location.reload()">
-          Mempedia
-        </a>
-
-        <div class="mw-portlet">
-          <h3 data-i18n="navigation">Navigation</h3>
-          <ul>
-            <li><a href="#" id="nav-main-page">Main page</a></li>
-            <li><a href="#" id="nav-contents">Contents</a></li>
-          </ul>
-        </div>
-
-        <div class="mw-portlet">
-          <h3 data-i18n="nodeIndex">Node Index</h3>
-          <input
-            id="node-search"
-            type="search"
-            placeholder="Search nodes..."
-            style="width: 90%; margin-bottom: 0.5em"
-          />
-          <p id="node-count-label" style="font-size: 0.75em; margin: 0 0 0.5em 0; color: #54595d">0 nodes</p>
-          <div id="node-list" class="node-index-list"></div>
-        </div>
-
+    <header class="topbar">
+      <div class="brand">Mempedia</div>
+      <div class="title">
+        <h1>知识图谱可视化与浏览</h1>
+        <p>全量数据概览 + 关系图 + 结构化视图</p>
       </div>
+      <div class="controls">
+        <label class="file">
+          <span>选择目录</span>
+          <input id="folder-input" type="file" webkitdirectory directory multiple />
+        </label>
+        <select id="root-select" aria-label="存储根"></select>
+        <button id="load-btn">加载</button>
+      </div>
+    </header>
 
-      <!-- Main Content Container -->
-      <div class="mw-content-container">
-        <!-- Header (Top Right) -->
-        <div class="mw-header">
-          <ul class="mw-personal-tools">
-            <li><span id="cli-bridge-status">CLI Disconnected</span></li>
-            <li>
-                <select id="lang-select" style="font-size: 0.8em; padding: 0;">
-                    <option value="en">English</option>
-                    <option value="zh-CN">中文</option>
-                </select>
-            </li>
-            <li><a href="#">Log in</a></li>
-          </ul>
-          <div class="mw-search-box">
-            <input
-              id="keyword-search"
-              class="mw-search-input"
-              type="search"
-              placeholder="Search Mempedia"
-              accesskey="f"
-            />
-            <button id="keyword-search-btn" class="mw-search-btn">Search</button>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="panel">
+          <h2>数据状态</h2>
+          <p id="status">等待导入目录…</p>
+          <div class="stats">
+            <div><strong id="metric-nodes">0</strong><span>Nodes</span></div>
+            <div><strong id="metric-edges">0</strong><span>Edges</span></div>
+            <div><strong id="metric-versions">0</strong><span>Versions</span></div>
+            <div><strong id="metric-access">0</strong><span>Access Logs</span></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>节点检索</h2>
+          <input id="node-search" type="search" placeholder="搜索 node id / title" />
+          <p id="node-count">0 nodes</p>
+          <div id="node-list" class="node-list"></div>
+        </div>
+        <div class="panel">
+          <h2>关系列表</h2>
+          <div id="edge-list" class="edge-list"></div>
+        </div>
+      </aside>
+
+      <section class="content">
+        <div class="tabs">
+          <button class="tab active" data-tab="graph">Graph</button>
+          <button class="tab" data-tab="node">Node</button>
+          <button class="tab" data-tab="habits">Habits</button>
+          <button class="tab" data-tab="patterns">Patterns</button>
+          <button class="tab" data-tab="conversations">Conversations</button>
+        </div>
+
+        <div id="tab-graph" class="tab-panel active">
+          <div class="graph-toolbar">
+            <label>布局
+              <select id="layout-select">
+                <option value="force">Force</option>
+                <option value="radial">Radial</option>
+              </select>
+            </label>
+            <label>显示
+              <select id="graph-scope">
+                <option value="all">全部节点</option>
+                <option value="selected">选中节点一跳</option>
+              </select>
+            </label>
+            <button id="reheat-btn">重新布局</button>
+          </div>
+          <canvas id="graph-canvas" width="1200" height="720"></canvas>
+          <div class="legend">
+            <span class="dot tracked"></span> 主节点
+            <span class="dot referenced"></span> 引用节点
+            <span class="line"></span> 关系边
           </div>
         </div>
 
-        <!-- Tabs -->
-        <div class="mw-tabs">
-          <div class="mw-tab active" id="tab-read" onclick="app.switchTab('read')">Article</div>
-          <div class="mw-tab" id="tab-talk" onclick="app.switchTab('talk')">Talk</div>
-          <div class="mw-tab" id="tab-source" onclick="app.switchTab('source')">View source</div>
-          <div class="mw-tab" id="tab-history" onclick="app.switchTab('history')">View history</div>
-          <div class="mw-tab" id="tab-habits" onclick="app.switchTab('habits')">Habits</div>
-          <div class="mw-tab" id="tab-patterns" onclick="app.switchTab('patterns')">Patterns</div>
-          <div class="mw-tab" id="tab-conversations" onclick="app.switchTab('conversations')">Conversations</div>
-        </div>
-
-        <!-- Content Body -->
-        <div id="content" class="mw-body">
-          <h1 id="article-title" class="firstHeading">Main Page</h1>
-          <div id="siteSub">From Mempedia, the free project memory</div>
-          <div id="contentSub"></div>
-          
-          <div id="bodyContent" class="mw-parser-output">
-            <!-- Special Page: Import & Metrics (Visible by default) -->
-            <div id="view-special-main">
-                <div class="import-panel">
-                    <h2 style="border:none; margin-top:0;">Welcome to Mempedia</h2>
-                    <p>Mempedia is a project memory graph encyclopedia that anyone can edit (via CLI).</p>
-                    
-                    <div style="background: #f8f9fa; padding: 1em; border: 1px solid #c8ccd1; margin: 1em 0;">
-                        <strong>Data Import:</strong>
-                        <input id="folder-input" type="file" webkitdirectory directory multiple />
-                        <select id="root-select"></select>
-                        <button id="parse-btn">Load Data</button>
-                        <div id="status" style="margin-top: 0.5em; font-style: italic;">Waiting for import...</div>
-                    </div>
-
-                    <div class="metrics" style="display: flex; gap: 2em; text-align: center; margin-top: 2em;">
-                        <div>
-                            <div id="metric-nodes" style="font-size: 2em; font-weight: bold;">0</div>
-                            <div style="color: #54595d;">Nodes</div>
-                        </div>
-                        <div>
-                            <div id="metric-edges" style="font-size: 2em; font-weight: bold;">0</div>
-                            <div style="color: #54595d;">Edges</div>
-                        </div>
-                        <div>
-                            <div id="metric-versions" style="font-size: 2em; font-weight: bold;">0</div>
-                            <div style="color: #54595d;">Versions</div>
-                        </div>
-                        <div>
-                            <div id="metric-access" style="font-size: 2em; font-weight: bold;">0</div>
-                            <div style="color: #54595d;">Access Logs</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div id="keyword-results"></div>
+        <div id="tab-node" class="tab-panel">
+          <div class="node-header">
+            <h2 id="node-title">未选择节点</h2>
+            <p id="node-meta"></p>
+          </div>
+          <div class="node-body">
+            <div>
+              <h3>正文</h3>
+              <div id="node-body" class="markdown"></div>
             </div>
-
-            <!-- Article View (Hidden by default) -->
-            <div id="view-article" class="hidden">
-                <div class="infobox">
-                    <div class="infobox-title" id="infobox-title">Node Info</div>
-                    <table style="width: 100%;">
-                        <tbody id="structured-table-body">
-                            <!-- Structured fields injected here -->
-                        </tbody>
-                    </table>
-                </div>
-
-                <div id="article-meta" style="font-size: 0.85em; color: #54595d; margin-bottom: 1em;"></div>
-                
-                <div id="article-body"></div>
-
-                <div id="highlights-list" class="catlinks">
-                    <!-- Categories/Chips -->
-                </div>
-
-                <div style="margin-top: 2em;">
-                    <h3>Related Links</h3>
-                    <div style="display: flex; gap: 2em;">
-                        <div style="flex: 1;">
-                            <h4>Outgoing</h4>
-                            <div id="outgoing-links"></div>
-                        </div>
-                        <div style="flex: 1;">
-                            <h4>Incoming</h4>
-                            <div id="incoming-links"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div style="margin-top: 2em;">
-                   <h3>Visualization</h3>
-                   <div style="display: flex; gap: 1em;">
-                      <div style="flex:1">
-                        <h4>Relation Graph</h4>
-                        <svg id="relation-svg" viewBox="0 0 460 280" style="width:100%; border:1px solid #c8ccd1; background:#fff;"></svg>
-                      </div>
-                      <div style="flex:1">
-                        <h4>Version DAG</h4>
-                        <svg id="version-svg" viewBox="0 0 460 260" style="width:100%; border:1px solid #c8ccd1; background:#fff;"></svg>
-                      </div>
-                   </div>
-                </div>
+            <div>
+              <h3>结构化字段</h3>
+              <table class="kv" id="node-structured"></table>
             </div>
-
-            <!-- Talk View (CLI Studio) -->
-            <div id="view-talk" class="hidden">
-                <div class="cli-studio-container">
-                    <div class="cli-toolbar" style="margin-bottom: 1em;">
-                        <button id="cli-connect-btn">Connect CLI</button>
-                        <button id="cli-refresh-memory-btn">Refresh Mempedia</button>
-                    </div>
-                    
-                    <div class="cli-chat-box" id="cli-dialogue-list">
-                        <!-- Chat messages -->
-                    </div>
-                    
-                    <div class="cli-input-area">
-                        <input id="cli-query-input" type="text" placeholder="Start a discussion with codecli..." />
-                        <button id="cli-send-btn">Send</button>
-                    </div>
-
-                    <div style="margin-top: 1em;">
-                        <h3>Trace Visualization</h3>
-                        <div id="cli-trace-list" style="border:1px solid #c8ccd1; padding:0.5em; max-height:200px; overflow:auto;"></div>
-                    </div>
-                </div>
+          </div>
+          <div class="node-relations">
+            <div>
+              <h3>Outgoing</h3>
+              <div id="node-outgoing" class="chips"></div>
             </div>
-
-            <!-- Source View (Markdown) -->
-            <div id="view-source" class="hidden">
-                <p>You can view the source code of this page below.</p>
-                <div id="markdown-path" style="font-family: monospace; color: #54595d; margin-bottom: 0.5em;"></div>
-                <textarea id="markdown-content" readonly style="width: 100%; height: 500px; font-family: monospace; padding: 0.5em; border: 1px solid #c8ccd1;"></textarea>
+            <div>
+              <h3>Incoming</h3>
+              <div id="node-incoming" class="chips"></div>
             </div>
-
-            <!-- History View -->
-            <div id="view-history" class="hidden">
-                <p>View the revision history of this page.</p>
-                <ol id="version-list" class="history-list"></ol>
-                
-
-                
-                <div style="margin-top: 2em;">
-                    <h3>Agent Audit</h3>
-                    <ul id="audit-list"></ul>
-                </div>
-            </div>
-
-            <!-- Habits View -->
-            <div id="view-habits" class="hidden">
-                <h2>User Habits & Environment</h2>
-                <p class="mw-hint">These are stored separately from nodes.</p>
-                <div id="habits-list" class="mw-card-list"></div>
-            </div>
-
-            <!-- Patterns View -->
-            <div id="view-patterns" class="hidden">
-                <h2>Behavior Patterns</h2>
-                <p class="mw-hint">These are stored separately from nodes.</p>
-                <div id="patterns-list" class="mw-card-list"></div>
-            </div>
-
-            <!-- Conversations View -->
-            <div id="view-conversations" class="hidden">
-                <h2>Conversation Logs</h2>
-                <p class="mw-hint">Raw conversations are saved locally and mapped to atomic nodes.</p>
-                <div class="mw-conv-grid">
-                    <div>
-                        <h3>Mapped to Node</h3>
-                        <div id="conversation-node-label" class="mw-hint">No node selected.</div>
-                        <ul id="conversation-list" class="mw-conv-list"></ul>
-                    </div>
-                    <div>
-                        <h3>Conversation Detail</h3>
-                        <pre id="conversation-detail" class="mw-conv-detail">Select a conversation to view raw content.</pre>
-                    </div>
-                </div>
-            </div>
-
+          </div>
+          <div class="node-versions">
+            <h3>Versions</h3>
+            <ol id="version-list"></ol>
           </div>
         </div>
 
-        <!-- Footer -->
-        <div class="mw-footer">
-          <ul>
-            <li>This page was last edited on <span id="last-modified">Today</span>.</li>
-            <li>Text is available under the Creative Commons Attribution-ShareAlike License; additional terms may apply.</li>
-          </ul>
-          <ul>
-            <li><a href="#">Privacy policy</a></li>
-            <li><a href="#">About Mempedia</a></li>
-            <li><a href="#">Disclaimers</a></li>
-            <li><a href="#">Mobile view</a></li>
-            <li><a href="#">Developers</a></li>
-            <li><a href="#">Statistics</a></li>
-            <li><a href="#">Cookie statement</a></li>
-          </ul>
+        <div id="tab-habits" class="tab-panel">
+          <h2>用户偏好与习惯</h2>
+          <div id="habits-list" class="card-list"></div>
         </div>
-      </div>
-    </div>
+
+        <div id="tab-patterns" class="tab-panel">
+          <h2>行为模式</h2>
+          <div id="patterns-list" class="card-list"></div>
+        </div>
+
+        <div id="tab-conversations" class="tab-panel">
+          <h2>对话原始记录</h2>
+          <div class="conv-grid">
+            <div>
+              <h3>与节点映射</h3>
+              <div id="conversation-node-label">未选择节点</div>
+              <ul id="conversation-list"></ul>
+            </div>
+            <div>
+              <h3>内容</h3>
+              <pre id="conversation-detail"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
     <script src="./script.js"></script>
   </body>
 </html>

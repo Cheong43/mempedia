@@ -6,9 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, AccessStats, AgentActionLog, BehaviorPatternRecord, ExploreBudgetItem,
-    ExploreCandidate, Link, MemoryError, MemoryResult, Node, NodeContent, NodeHistoryItem,
-    NodePatch, NodeVersion, SearchHit, UserHabitEnv,
+    AccessLog, AccessStats, AgentActionLog, ExploreBudgetItem, ExploreCandidate, Link, MemoryError,
+    MemoryResult, Node, NodeContent, NodeHistoryItem, NodePatch, NodeVersion, SearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
@@ -155,22 +154,6 @@ pub enum ToolAction {
         node_id: String,
         limit: Option<usize>,
     },
-    RecordUserHabit {
-        topic: String,
-        summary: String,
-        details: String,
-        agent_id: String,
-        source: String,
-    },
-    RecordBehaviorPattern {
-        pattern_key: String,
-        summary: String,
-        details: String,
-        #[serde(default)]
-        applicable_plan: Option<String>,
-        agent_id: String,
-        source: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,9 +199,6 @@ pub enum ToolResponse {
     History {
         node_id: String,
         items: Vec<NodeHistoryItem>,
-    },
-    Ack {
-        message: String,
     },
     Error {
         message: String,
@@ -1100,50 +1080,6 @@ impl MemoryEngine {
                     });
                 }
                 result.map(|version| ToolResponse::Version { version })
-            }
-            ToolAction::RecordUserHabit {
-                topic,
-                summary,
-                details,
-                agent_id,
-                source,
-            } => {
-                let record = UserHabitEnv {
-                    topic,
-                    summary,
-                    details,
-                    timestamp: now_ts(),
-                    agent_id,
-                    source,
-                };
-                self.storage
-                    .append_user_habit(&record)
-                    .map(|_| ToolResponse::Ack {
-                        message: "user_habit_recorded".to_string(),
-                    })
-            }
-            ToolAction::RecordBehaviorPattern {
-                pattern_key,
-                summary,
-                details,
-                applicable_plan,
-                agent_id,
-                source,
-            } => {
-                let record = BehaviorPatternRecord {
-                    pattern_key,
-                    summary,
-                    details,
-                    applicable_plan,
-                    timestamp: now_ts(),
-                    agent_id,
-                    source,
-                };
-                self.storage
-                    .append_behavior_pattern(&record)
-                    .map(|_| ToolResponse::Ack {
-                        message: "behavior_pattern_recorded".to_string(),
-                    })
             }
             ToolAction::OpenNode {
                 node_id,

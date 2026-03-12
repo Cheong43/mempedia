@@ -226,7 +226,7 @@ interface ConversationTurn {
 interface MemoryExtraction {
   user_habits_env: Array<{ topic: string; summary: string; details: string }>;
   behavior_patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }>;
-  atomic_knowledge: Array<{ keyword: string; summary: string; details: string }>;
+  atomic_knowledge: Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>;
 }
 
 type ChatClient = {
@@ -264,6 +264,9 @@ export class Agent {
   private readonly memoryLogPath: string;
   private readonly conversationLogDir: string;
   private readonly nodeConversationMapPath: string;
+  private readonly relationSearchMinScore: number;
+  private readonly relationSearchLimit: number;
+  private readonly relationMax: number;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.openai = config.hmacAccessKey && config.hmacSecretKey
@@ -310,6 +313,12 @@ export class Agent {
     this.memoryExtractTimeoutMs = Number.isFinite(rawMemoryExtractTimeoutMs) ? Math.max(1000, Math.floor(rawMemoryExtractTimeoutMs)) : 90000;
     const rawMemoryActionTimeoutMs = Number(process.env.MEMORY_SAVE_ACTION_TIMEOUT_MS ?? 20000);
     this.memoryActionTimeoutMs = Number.isFinite(rawMemoryActionTimeoutMs) ? Math.max(1000, Math.floor(rawMemoryActionTimeoutMs)) : 20000;
+    const rawRelationMinScore = Number(process.env.MEMORY_RELATION_MIN_SCORE ?? 1.2);
+    this.relationSearchMinScore = Number.isFinite(rawRelationMinScore) ? Math.max(0, rawRelationMinScore) : 1.2;
+    const rawRelationSearchLimit = Number(process.env.MEMORY_RELATION_SEARCH_LIMIT ?? 3);
+    this.relationSearchLimit = Number.isFinite(rawRelationSearchLimit) ? Math.max(1, Math.min(10, Math.floor(rawRelationSearchLimit))) : 3;
+    const rawRelationMax = Number(process.env.MEMORY_RELATION_MAX ?? 6);
+    this.relationMax = Number.isFinite(rawRelationMax) ? Math.max(0, Math.min(20, Math.floor(rawRelationMax))) : 6;
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
     this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
     this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
@@ -492,6 +501,194 @@ export class Agent {
     return fallback;
   }
 
+  private normalizeOptional(details: unknown): string {
+    const raw = typeof details === 'string' ? details : '';
+    return raw.trim();
+  }
+
+  private yamlEscape(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, ' ').trim();
+  }
+
+  private normalizeRelations(relations: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const rel of relations) {
+      const cleaned = rel.replace(/\s+/g, ' ').trim();
+      if (!cleaned) {
+        continue;
+      }
+      const slug = this.toSlug(cleaned);
+      if (seen.has(slug)) {
+        continue;
+      }
+      seen.add(slug);
+      out.push(cleaned);
+      if (out.length >= this.relationMax) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  private async resolveRelationTargets(
+    relations: string[]
+  ): Promise<Array<{ label: string; target?: string }>> {
+    const normalized = this.normalizeRelations(relations);
+    const resolved: Array<{ label: string; target?: string }> = [];
+    for (const rel of normalized) {
+      let target: string | undefined;
+      const directId = rel.trim();
+      const maybeIds = [directId, `kg_atomic_${this.toSlug(rel)}`];
+      for (const candidate of maybeIds) {
+        if (!candidate || candidate.length < 2) {
+          continue;
+        }
+        try {
+          const open = await this.withTimeout(
+            this.mempedia.send({ action: 'open_node', node_id: candidate, markdown: false }),
+            this.memoryActionTimeoutMs,
+            'relation open'
+          );
+          if (open && (open as any).kind !== 'error') {
+            target = candidate;
+            break;
+          }
+        } catch {}
+      }
+      if (!target) {
+        try {
+          const search = await this.withTimeout(
+            this.mempedia.send({
+              action: 'search_nodes',
+              query: rel,
+              limit: this.relationSearchLimit,
+              include_highlight: false
+            }),
+            this.memoryActionTimeoutMs,
+            'relation search'
+          );
+          if (search && (search as any).kind === 'search_results') {
+            const results = (search as any).results || [];
+            if (results.length > 0) {
+              const top = results[0];
+              const score = typeof top?.score === 'number' ? top.score : null;
+              if (score === null || score >= this.relationSearchMinScore) {
+                target = top.node_id;
+              }
+            }
+          }
+        } catch {}
+      }
+      resolved.push({ label: rel, target });
+    }
+    return resolved;
+  }
+
+  private firstSentence(text: string): string {
+    const trimmed = text.replace(/\s+/g, ' ').trim();
+    if (!trimmed) {
+      return '';
+    }
+    const match = trimmed.match(/^[^。.!?\n]{12,200}[。.!?\n]/u);
+    if (match) {
+      return match[0].replace(/[\n\r]+/g, ' ').trim();
+    }
+    return trimmed.slice(0, 200);
+  }
+
+  private collectAtomicCandidates(input: string, answer: string): string[] {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const push = (value: string) => {
+      const cleaned = value.replace(/\s+/g, ' ').trim();
+      if (cleaned.length < 2 || cleaned.length > 80) {
+        return;
+      }
+      if (this.isPreferenceLine(cleaned)) {
+        return;
+      }
+      const slug = this.toSlug(cleaned);
+      if (seen.has(slug)) {
+        return;
+      }
+      seen.add(slug);
+      candidates.push(cleaned);
+    };
+
+    const backtickRegex = /`([^`]{2,80})`/g;
+    const quotedRegex = /"([^"]{2,80})"/g;
+    const pathRegex = /\b[\w.-]+\/[\w./-]+\b/g;
+
+    const textPool = `${answer}\n${input}`;
+    let match: RegExpExecArray | null = null;
+    while ((match = backtickRegex.exec(textPool))) {
+      push(match[1]);
+    }
+    while ((match = quotedRegex.exec(textPool))) {
+      push(match[1]);
+    }
+    while ((match = pathRegex.exec(textPool))) {
+      push(match[0]);
+    }
+
+    const answerLines = answer.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const line of answerLines) {
+      if (line.startsWith('#')) {
+        push(line.replace(/^#+\s*/, ''));
+        continue;
+      }
+      const colonIndex = line.indexOf(':') >= 0 ? line.indexOf(':') : line.indexOf('：');
+      if (colonIndex > 1 && colonIndex < 60) {
+        push(line.slice(0, colonIndex));
+        continue;
+      }
+      if (line.includes(' - ')) {
+        const [left] = line.split(' - ');
+        push(left);
+      }
+    }
+
+    const inputLine = input.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length >= 8);
+    if (inputLine) {
+      const trimmed = inputLine.replace(/[\p{P}\p{S}]+/gu, ' ').trim();
+      push(trimmed.slice(0, 60));
+    }
+
+    return candidates.slice(0, 8);
+  }
+
+  private fallbackExtractAtomic(input: string, answer: string): Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }> {
+    const candidates = this.collectAtomicCandidates(input, answer);
+    if (candidates.length === 0) {
+      return [];
+    }
+    const answerLines = answer
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && this.isValuableKnowledgeLine(line));
+    const summarySeed = this.firstSentence(answer) || this.firstSentence(input) || '';
+    const candidateSet = new Set(candidates.map((c) => c.toLowerCase()));
+
+    return candidates.map((candidate) => {
+      const candidateLower = candidate.toLowerCase();
+      const matchingLines = answerLines.filter((line) => line.toLowerCase().includes(candidateLower));
+      const detailsSource = matchingLines.slice(0, 3).join('\n') || answerLines.slice(0, 3).join('\n') || summarySeed || candidate;
+      const summarySource = matchingLines[0] || summarySeed || candidate;
+      const evolutionSource = detailsSource === summarySource ? '' : detailsSource;
+      const relations = candidates
+        .filter((other) => other.toLowerCase() !== candidateLower && candidateSet.has(other.toLowerCase()))
+        .slice(0, 4);
+      return {
+        keyword: candidate,
+        summary: this.normalizeSummary(summarySource, candidate),
+        description: this.normalizeDetails(detailsSource, candidate),
+        evolution: this.normalizeOptional(evolutionSource),
+        relations
+      };
+    }).filter((item) => item.keyword && item.summary);
+  }
+
   private clipText(value: string, maxChars: number): string {
     if (maxChars <= 0 || value.length <= maxChars) {
       return value;
@@ -625,7 +822,7 @@ export class Agent {
     { "pattern_key": "稳定模式键(唯一)", "summary": "准确简短描述(必须)", "details": "可复用步骤与触发条件", "applicable_plan": "适用计划类型" }
   ],
   "atomic_knowledge": [
-     { "keyword": "关键词(唯一标识)", "summary": "准确简短的描述(必须)", "details": "详细解释、事实、历史变迁、引申等" }
+     { "keyword": "关键词(唯一标识)", "summary": "准确简短的摘要(必须)", "description": "较完整的描述", "evolution": "历史变迁/版本沿革/发展", "relations": ["相关关键词1", "相关关键词2"] }
   ]
 }
 
@@ -634,7 +831,7 @@ export class Agent {
 2. **behavior_patterns (行为模式)**: 模型在尝试完成某种用户计划时减去无意义尝试，只留下有用行为总结形成pattern；pattern_key必须稳定，后续持续更新同一node。
 3. **atomic_knowledge (原子化知识)**: 
     - 所有知识node都应该由一个独立的关键词确认。
-    - 关键词下可以有关联关系和更详细的描述，类似wikipedia一样。
+    - 关键词下包含摘要、描述、变迁、关联关系，类似wikipedia一样。
     - 每个核心关键词知识都有系统性的知识（解释、事实、历史变迁、引申）记录并不断维护。
     - 如有重名的关键词知识，则在摘要中区分开。
     - **必须**包含 summary 字段，且为准确简短描述（8-140字）。
@@ -657,7 +854,7 @@ export class Agent {
       });
       const content = extraction.choices[0]?.message?.content || '{}';
       const parsed = JSON.parse(content);
-      const habits = Array.isArray(parsed.user_habits_env)
+    const habits = Array.isArray(parsed.user_habits_env)
         ? parsed.user_habits_env.map((item: any) => {
             if (typeof item === 'string') {
               const topic = item.replace(/\s+/g, ' ').trim().slice(0, 64) || 'habit_env';
@@ -699,16 +896,27 @@ export class Agent {
             };
           }).filter((x: any) => x.pattern_key && x.summary)
         : [];
-      const atomic = Array.isArray(parsed.atomic_knowledge)
+    const atomic = Array.isArray(parsed.atomic_knowledge)
         ? parsed.atomic_knowledge.map((item: any) => {
             const keyword = typeof item?.keyword === 'string' ? item.keyword.replace(/\s+/g, ' ').trim() : '';
             if (!keyword) {
               return null;
             }
+            const rawRelations = Array.isArray(item?.relations)
+              ? item.relations
+              : Array.isArray(item?.related_keywords)
+                ? item.related_keywords
+                : [];
+            const relations = rawRelations
+              .map((rel: any) => typeof rel === 'string' ? rel.replace(/\s+/g, ' ').trim() : '')
+              .filter((rel: string) => rel.length > 0 && rel.toLowerCase() !== keyword.toLowerCase())
+              .slice(0, 8);
             return {
               keyword,
-              summary: this.normalizeSummary(item?.summary, keyword),
-              details: this.normalizeDetails(item?.details, keyword)
+              summary: this.normalizeSummary(item?.summary || item?.description, keyword),
+              description: this.normalizeDetails(item?.description || item?.summary, keyword),
+              evolution: this.normalizeOptional(item?.evolution || item?.details),
+              relations
             };
           }).filter((x: any) => Boolean(x))
         : [];
@@ -716,15 +924,46 @@ export class Agent {
       return {
         user_habits_env: habits.slice(0, 10),
         behavior_patterns: patterns.slice(0, 10),
-        atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; details: string }>
-      };
-    } catch (_) {
-      return {
-        user_habits_env: [],
-        behavior_patterns: [],
-        atomic_knowledge: []
-      };
+      atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>
+    };
+  } catch (_) {
+    return this.fallbackExtractMemory(input, answer);
+  }
+  }
+
+  private fallbackExtractMemory(input: string, answer: string): MemoryExtraction {
+    const text = `${input}\n${answer}`;
+    const habits: Array<{ topic: string; summary: string; details: string }> = [];
+    const patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }> = [];
+
+    const habitRegex = /(偏好|喜欢|习惯|不喜欢|讨厌|避免)[^。\\n]{0,120}/;
+    const habitMatch = text.match(habitRegex);
+    if (habitMatch) {
+      const phrase = habitMatch[0].trim();
+      const topic = phrase.slice(0, 32);
+      habits.push({
+        topic,
+        summary: this.normalizeSummary(phrase, topic),
+        details: this.normalizeDetails(phrase, topic)
+      });
     }
+
+    const hasSteps = /步骤|流程|最佳实践|注意事项|操作方法|建议/.test(text) || /\\n\\s*\\d+\\./.test(text);
+    if (hasSteps) {
+      const key = this.toSlug(answer.slice(0, 64) || 'behavior_pattern').slice(0, 64) || 'behavior_pattern';
+      patterns.push({
+        pattern_key: key,
+        summary: this.normalizeSummary(answer.slice(0, 200), key),
+        details: this.normalizeDetails(answer.slice(0, 600), key),
+        applicable_plan: ''
+      });
+    }
+
+    return {
+      user_habits_env: habits.slice(0, 5),
+      behavior_patterns: patterns.slice(0, 5),
+      atomic_knowledge: this.fallbackExtractAtomic(input, answer)
+    };
   }
 
   private async persistInteractionMemory(
@@ -745,13 +984,32 @@ export class Agent {
     try {
       await this.withTimeout((async () => {
         const extractionStartedAt = Date.now();
-        const payload = await this.measure(perfEntries, 'memory_extract', async () =>
+        let payload = await this.measure(perfEntries, 'memory_extract', async () =>
           this.withTimeout(
             this.extractMemoryPayload(input, traces, answer),
             this.memoryExtractTimeoutMs,
             'memory extraction'
           )
         );
+        if (
+          payload.user_habits_env.length === 0 &&
+          payload.behavior_patterns.length === 0 &&
+          payload.atomic_knowledge.length === 0
+        ) {
+          const fallbackPayload = this.fallbackExtractMemory(input, answer);
+          if (
+            fallbackPayload.user_habits_env.length > 0 ||
+            fallbackPayload.behavior_patterns.length > 0 ||
+            fallbackPayload.atomic_knowledge.length > 0
+          ) {
+            payload = fallbackPayload;
+            this.appendMemoryLog(runId, 'memory_extract_fallback_used', {
+              habits: payload.user_habits_env.length,
+              patterns: payload.behavior_patterns.length,
+              atomic: payload.atomic_knowledge.length
+            });
+          }
+        }
         this.appendMemoryLog(runId, 'memory_extract_done', {
           elapsed_ms: Date.now() - extractionStartedAt,
           habits: payload.user_habits_env.length,
@@ -766,20 +1024,27 @@ export class Agent {
             this.memoryActionTimeoutMs,
             `memory action ${action.action}`
           );
-        const runAction = async (stage: string, action: ToolAction) => {
-          const stageStartedAt = Date.now();
-          const nodeId = (action as any).node_id;
-          this.appendMemoryLog(runId, `${stage}_started`, {
-            action: action.action,
-            node_id: typeof nodeId === 'string' ? nodeId : null
-          });
-          await sendWithTimeout(action);
-          this.appendMemoryLog(runId, `${stage}_done`, {
-            action: action.action,
-            node_id: typeof nodeId === 'string' ? nodeId : null,
-            elapsed_ms: Date.now() - stageStartedAt
-          });
-        };
+          const runAction = async (stage: string, action: ToolAction) => {
+            const stageStartedAt = Date.now();
+            const nodeId = (action as any).node_id;
+            this.appendMemoryLog(runId, `${stage}_started`, {
+              action: action.action,
+              node_id: typeof nodeId === 'string' ? nodeId : null
+            });
+            const result = await sendWithTimeout(action);
+            if (result && (result as any).kind === 'error') {
+              this.appendMemoryLog(runId, `${stage}_error`, {
+                action: action.action,
+                node_id: typeof nodeId === 'string' ? nodeId : null,
+                message: (result as any).message || 'unknown error'
+              });
+            }
+            this.appendMemoryLog(runId, `${stage}_done`, {
+              action: action.action,
+              node_id: typeof nodeId === 'string' ? nodeId : null,
+              elapsed_ms: Date.now() - stageStartedAt
+            });
+          };
         const linkedNodes = new Set<string>();
 
         if (payload.user_habits_env.length > 0) {
@@ -821,12 +1086,25 @@ export class Agent {
         }
 
         if (payload.atomic_knowledge.length > 0) {
-          const atomicMap = new Map<string, { keyword: string; summary: string; details: string }>();
+          const atomicMap = new Map<string, { keyword: string; summary: string; description: string; evolution: string; relations: string[] }>();
           for (const item of payload.atomic_knowledge) {
             atomicMap.set(this.stableNodeId('atomic', item.keyword), item);
           }
           for (const [nodeId, item] of atomicMap) {
-            const markdown = `# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Details\n\n${item.details}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
+            const resolvedRelations = await this.resolveRelationTargets(item.relations || []);
+            const relatedMarkdown = resolvedRelations.length > 0
+              ? resolvedRelations
+                  .map((rel) => rel.target ? `- [[${rel.target}]]` : `- ${rel.label}`)
+                  .join('\n')
+              : '- None';
+            const evolutionSection = item.evolution && item.evolution.trim().length > 0
+              ? item.evolution
+              : '暂无';
+            const descriptionSection = item.description && item.description.trim().length > 0
+              ? item.description
+              : item.summary;
+            const frontmatter = `---\nsummary: \"${this.yamlEscape(item.summary)}\"\n---\n\n`;
+            const markdown = `${frontmatter}# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Description\n\n${descriptionSection}\n\n## Evolution\n\n${evolutionSection}\n\n## Related\n\n${relatedMarkdown}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
             await runAction('atomic_upsert', {
               action: 'agent_upsert_markdown',
               node_id: nodeId,
