@@ -1,38 +1,54 @@
 use std::collections::BTreeMap;
 
-use crate::core::{Link, NodeContent, NodeVersion};
+use crate::core::{NodeContent, NodeVersion};
+
+pub struct ParsedMarkdown {
+    pub content: NodeContent,
+    pub frontmatter: BTreeMap<String, String>,
+}
 
 pub fn parse_markdown(markdown: &str) -> NodeContent {
+    parse_markdown_with_meta(markdown).content
+}
+
+pub fn parse_markdown_with_meta(markdown: &str) -> ParsedMarkdown {
     let (frontmatter, body) = split_frontmatter(markdown);
     let body = body.trim().to_string();
-    let title = extract_title(&body).unwrap_or_else(|| "Untitled".to_string());
-    let summary = frontmatter
+
+    let title = extract_title(&body)
+        .or_else(|| frontmatter.get("title").cloned())
+        .unwrap_or_else(|| "Untitled".to_string());
+    let summary_raw = frontmatter
         .get("summary")
         .cloned()
         .unwrap_or_else(|| derive_summary(&title, &body));
+    let summary = normalize_summary(&summary_raw, &title, &body);
     let highlights = extract_highlights(&body);
-    let links = extract_wikilinks(&body)
-        .into_iter()
-        .map(|target| Link {
-            target,
-            label: Some("wikilink".to_string()),
-            weight: 0.8,
-        })
-        .collect();
 
     let mut structured_data = BTreeMap::new();
     structured_data.insert("content_type".to_string(), "markdown".to_string());
-    for (k, v) in frontmatter {
-        structured_data.insert(format!("meta.{k}"), v);
+    for (k, v) in &frontmatter {
+        structured_data.insert(format!("meta.{k}"), v.clone());
     }
 
-    NodeContent {
-        title,
-        summary,
-        body,
-        structured_data,
-        links,
-        highlights,
+    let sections = extract_structured_sections(&body);
+    for (key, value) in sections.facts {
+        insert_fact(&mut structured_data, &key, &value);
+    }
+    for evidence in sections.evidence {
+        insert_evidence(&mut structured_data, &evidence);
+    }
+
+    ParsedMarkdown {
+        content: NodeContent {
+            title,
+            summary,
+            body,
+            structured_data,
+            links: vec![],
+            highlights,
+        },
+        frontmatter,
     }
 }
 
@@ -49,6 +65,24 @@ pub fn render_node_markdown(node_id: &str, version: &NodeVersion) -> String {
         "summary: {}\n",
         yaml_escape(&version.content.summary)
     ));
+    if let Some(source) = version
+        .content
+        .structured_data
+        .get("meta.source")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        out.push_str(&format!("source: {}\n", yaml_escape(source)));
+    }
+    if let Some(origin) = version
+        .content
+        .structured_data
+        .get("meta.origin")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        out.push_str(&format!("origin: {}\n", yaml_escape(origin)));
+    }
 
     if version.parents.is_empty() {
         out.push_str("parents: []\n");
@@ -142,7 +176,13 @@ fn extract_highlights(body: &str) -> Vec<String> {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
             let value = trimmed.trim_start_matches('#').trim();
-            if !value.is_empty() && !out.iter().any(|x| x == value) {
+            if value.is_empty() {
+                continue;
+            }
+            if is_structure_heading(value) {
+                continue;
+            }
+            if !out.iter().any(|x| x == value) {
                 out.push(value.to_string());
             }
         }
@@ -153,23 +193,144 @@ fn extract_highlights(body: &str) -> Vec<String> {
     out
 }
 
-fn extract_wikilinks(body: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    while let Some(start_rel) = body[cursor..].find("[[") {
-        let start = cursor + start_rel + 2;
-        if let Some(end_rel) = body[start..].find("]]") {
-            let end = start + end_rel;
-            let target = body[start..end].trim();
-            if !target.is_empty() && !out.iter().any(|x| x == target) {
-                out.push(target.to_string());
+#[derive(Default)]
+struct StructuredSections {
+    facts: Vec<(String, String)>,
+    evidence: Vec<String>,
+}
+
+fn extract_structured_sections(body: &str) -> StructuredSections {
+    let mut sections = StructuredSections::default();
+    let mut current: Option<String> = None;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("## ") {
+            current = normalize_section(name);
+            continue;
+        }
+        if let Some(name) = trimmed.strip_prefix("### ") {
+            current = normalize_section(name);
+            continue;
+        }
+        let section = match current.as_deref() {
+            Some(section) => section,
+            None => continue,
+        };
+        if let Some(item) = strip_bullet_prefix(trimmed) {
+            match section {
+                "facts" => {
+                    if let Some((k, v)) = parse_fact_line(item) {
+                        sections.facts.push((k, v));
+                    }
+                }
+                "evidence" => {
+                    if !item.is_empty() {
+                        sections.evidence.push(item.to_string());
+                    }
+                }
+                _ => {}
             }
-            cursor = end + 2;
-        } else {
-            break;
         }
     }
+
+    sections
+}
+
+fn normalize_section(name: &str) -> Option<String> {
+    let lower = name.trim().to_lowercase();
+    match lower.as_str() {
+        "facts" | "fact" | "claims" | "claim" => Some("facts".to_string()),
+        "relations" | "relation" | "links" | "link" => Some("relations".to_string()),
+        "evidence" | "sources" | "source" => Some("evidence".to_string()),
+        _ => None,
+    }
+}
+
+fn strip_bullet_prefix(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        return Some(rest.trim());
+    }
+    if let Some(rest) = trimmed.strip_prefix("* ") {
+        return Some(rest.trim());
+    }
+    if let Some(rest) = trimmed.strip_prefix("+ ") {
+        return Some(rest.trim());
+    }
+    None
+}
+
+fn parse_fact_line(line: &str) -> Option<(String, String)> {
+    let (left, right) = if let Some((k, v)) = line.split_once(':') {
+        (k, v)
+    } else if let Some((k, v)) = line.split_once('=') {
+        (k, v)
+    } else {
+        return None;
+    };
+    let key = normalize_fact_key(left);
+    let value = right.trim();
+    if key.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((key, value.to_string()))
+}
+
+fn insert_fact(structured: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    let base = format!("fact.{key}");
+    if !structured.contains_key(&base) {
+        structured.insert(base, value.to_string());
+        return;
+    }
+    let mut i = 2;
+    loop {
+        let candidate = format!("{base}.{i}");
+        if !structured.contains_key(&candidate) {
+            structured.insert(candidate, value.to_string());
+            break;
+        }
+        i += 1;
+    }
+}
+
+fn insert_evidence(structured: &mut BTreeMap<String, String>, evidence: &str) {
+    let mut i = 1;
+    loop {
+        let key = format!("evidence.{:02}", i);
+        if !structured.contains_key(&key) {
+            structured.insert(key, evidence.to_string());
+            break;
+        }
+        i += 1;
+    }
+}
+
+fn normalize_fact_key(key: &str) -> String {
+    let mut out = String::new();
+    let mut prev_underscore = false;
+    for ch in key.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_underscore = false;
+        } else if ch == ' ' || ch == '-' || ch == '_' {
+            if !prev_underscore && !out.is_empty() {
+                out.push('_');
+                prev_underscore = true;
+            }
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
     out
+}
+
+fn is_structure_heading(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "facts" | "fact" | "claims" | "relations" | "relation" | "links" | "evidence" | "sources"
+    )
 }
 
 fn derive_summary(title: &str, body: &str) -> String {
@@ -189,6 +350,15 @@ fn derive_summary(title: &str, body: &str) -> String {
         return title_trimmed.chars().take(140).collect();
     }
     format!("{title_trimmed} summary")
+}
+
+fn normalize_summary(summary: &str, title: &str, body: &str) -> String {
+    let trimmed = summary.trim();
+    let length = trimmed.chars().count();
+    if (8..=140).contains(&length) {
+        return trimmed.to_string();
+    }
+    derive_summary(title, body)
 }
 
 fn yaml_escape(input: &str) -> String {
@@ -221,7 +391,7 @@ Link to [[Node_A]].
                 .map(String::as_str),
             Some("chat")
         );
-        assert_eq!(parsed.links.len(), 1);
+        assert!(parsed.links.is_empty());
     }
 
     #[test]
@@ -241,5 +411,44 @@ Link to [[Node_A]].
         assert!(markdown.contains("summary: "));
         assert!(markdown.contains("---"));
         assert!(markdown.contains("# Title"));
+    }
+
+    #[test]
+    fn parse_structured_sections_inserts_facts_and_evidence() {
+        let input = r#"---
+node_id: note_x
+summary: A summary long enough.
+---
+# Note X
+
+## Facts
+- Owner: Team Alpha
+- Priority = High
+
+## Relations
+- [[Project_Y]] | depends_on | 0.9
+- Related_Node(label=related, weight=0.6)
+
+## Evidence
+- Meeting notes 2024-03-01
+- Ticket ABC-123
+"#;
+        let parsed = parse_markdown(input);
+        assert_eq!(
+            parsed
+                .structured_data
+                .get("fact.owner")
+                .map(String::as_str),
+            Some("Team Alpha")
+        );
+        assert_eq!(
+            parsed
+                .structured_data
+                .get("fact.priority")
+                .map(String::as_str),
+            Some("High")
+        );
+        assert!(parsed.structured_data.get("evidence.01").is_some());
+        assert!(parsed.links.is_empty());
     }
 }

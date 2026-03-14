@@ -1,143 +1,272 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mempedia Graph Explorer</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mempedia UI</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
     <header class="topbar">
-      <div class="brand">Mempedia</div>
-      <div class="title">
-        <h1>知识图谱可视化与浏览</h1>
-        <p>全量数据概览 + 关系图 + 结构化视图</p>
+      <div class="topbar__brand">
+        <p class="eyebrow">Mempedia UI</p>
+        <div>
+          <h1>Knowledge workspace</h1>
+          <p class="subtitle">Human-readable notes, structured memory, and graph-aware editing in one workspace.</p>
+        </div>
       </div>
-      <div class="controls">
-        <label class="file">
-          <span>选择目录</span>
-          <input id="folder-input" type="file" webkitdirectory directory multiple />
-        </label>
-        <select id="root-select" aria-label="存储根"></select>
-        <button id="load-btn">加载</button>
+      <div class="topbar__center">
+        <div class="topbar__meta">
+          <span id="workspace-status">Mode: standalone viewer</span>
+          <span>Loads: <code>.mempedia/index/state.json</code> + version objects</span>
+          <span>Edits: <code>Body</code>, <code>Facts</code>, <code>Relations</code>, <code>Evidence</code></span>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--primary" id="load-folder">Open .mempedia Folder</button>
+          <button class="btn" id="refresh-workspace">Refresh Workspace</button>
+          <button class="btn btn--ghost" id="load-demo">Load Demo Data</button>
+          <label class="btn btn--ghost" for="file-input">Import Markdown Files</label>
+          <input id="file-input" type="file" accept=".md" multiple />
+        </div>
+      </div>
+      <div class="topbar__preview">
+        <div class="card__title">Selected Note</div>
+        <div class="card__content" id="hero-preview">
+          Open the integrated UI to edit markdown and sync it into the graph.
+        </div>
       </div>
     </header>
 
-    <main class="layout">
-      <aside class="sidebar">
-        <div class="panel">
-          <h2>数据状态</h2>
-          <p id="status">等待导入目录…</p>
-          <div class="stats">
-            <div><strong id="metric-nodes">0</strong><span>Nodes</span></div>
-            <div><strong id="metric-edges">0</strong><span>Edges</span></div>
-            <div><strong id="metric-versions">0</strong><span>Versions</span></div>
-            <div><strong id="metric-access">0</strong><span>Access Logs</span></div>
+    <main id="main" class="workspace-shell">
+      <aside class="menu-rail menu-rail--primary" aria-label="Primary workspace menu">
+        <section class="panel panel--controls" aria-labelledby="controls-title">
+          <div class="panel__header panel__header--tight">
+            <div>
+              <h2 id="controls-title">Workspace</h2>
+              <p class="panel__lead">Top-level search, filters, and workspace status.</p>
+            </div>
           </div>
-        </div>
-        <div class="panel">
-          <h2>节点检索</h2>
-          <input id="node-search" type="search" placeholder="搜索 node id / title" />
-          <p id="node-count">0 nodes</p>
-          <div id="node-list" class="node-list"></div>
-        </div>
-        <div class="panel">
-          <h2>关系列表</h2>
-          <div id="edge-list" class="edge-list"></div>
-        </div>
+          <label class="field">
+            <span>Natural language query</span>
+            <input id="search-input" type="text" placeholder="e.g., recovery baseline for fatigue model" />
+          </label>
+
+          <div class="filters">
+            <label class="field">
+              <span>Source</span>
+              <select id="filter-source">
+                <option value="all">All</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Origin</span>
+              <select id="filter-origin">
+                <option value="all">All</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button class="btn" id="clear-all">Clear All</button>
+            <button class="btn btn--ghost" id="export-json">Export Filtered JSON</button>
+            <button class="btn btn--ghost" id="new-node">New Node</button>
+          </div>
+
+          <div class="status" id="status">0 nodes loaded</div>
+          <div class="status status--muted" id="editor-status">Open the integrated UI from codecli to enable graph sync editing.</div>
+          <section class="workspace-glance" id="workspace-glance" aria-label="Workspace summary"></section>
+        </section>
       </aside>
 
-      <section class="content">
-        <div class="tabs">
-          <button class="tab active" data-tab="graph">Graph</button>
-          <button class="tab" data-tab="node">Node</button>
-          <button class="tab" data-tab="habits">Habits</button>
-          <button class="tab" data-tab="patterns">Patterns</button>
-          <button class="tab" data-tab="conversations">Conversations</button>
-        </div>
+      <aside class="menu-rail menu-rail--secondary" aria-label="Secondary workspace menu">
+        <section class="panel panel--list" aria-labelledby="list-title">
+          <div class="panel__header panel__header--tight">
+            <div>
+              <h2 id="list-title">Workspace Library</h2>
+              <p class="panel__lead">Notes, situational memory, and recent activity live here.</p>
+            </div>
+          </div>
+          <div class="segmented" role="tablist" aria-label="Library views">
+            <button class="segmented__item is-active" id="view-knowledge" type="button" role="tab" aria-selected="true">Knowledge</button>
+            <button class="segmented__item" id="view-memory" type="button" role="tab" aria-selected="false">Situational</button>
+            <button class="segmented__item" id="view-activity" type="button" role="tab" aria-selected="false">Activity</button>
+          </div>
+          <div class="node-list" id="node-list"></div>
+          <div class="memory-list is-hidden" id="memory-list"></div>
+          <div class="activity-list is-hidden" id="activity-list"></div>
+        </section>
 
-        <div id="tab-graph" class="tab-panel active">
-          <div class="graph-toolbar">
-            <label>布局
-              <select id="layout-select">
-                <option value="force">Force</option>
-                <option value="radial">Radial</option>
-              </select>
+        <section class="sidebar-stack">
+          <div class="sidebar-card">
+            <div class="sidebar-card__header">
+              <h3>Pages</h3>
+              <span class="sidebar-card__hint">Tree navigation</span>
+            </div>
+            <div class="page-tree" id="page-tree"></div>
+          </div>
+          <div class="sidebar-card">
+            <div class="sidebar-card__header">
+              <h3>Recent Opened</h3>
+              <span class="sidebar-card__hint">Working set</span>
+            </div>
+            <div class="mini-list" id="recent-list"></div>
+          </div>
+          <div class="sidebar-card">
+            <div class="sidebar-card__header">
+              <h3>Branch Graph</h3>
+              <span class="sidebar-card__hint">CLI reasoning tree</span>
+            </div>
+            <div class="mini-list" id="branch-runs"></div>
+            <div class="branch-graph" id="branch-graph"></div>
+          </div>
+          <div class="sidebar-card">
+            <div class="sidebar-card__header">
+              <h3>Tags</h3>
+              <span class="sidebar-card__hint">Quick filters</span>
+            </div>
+            <div class="tag-cloud" id="tags-list"></div>
+          </div>
+          <div class="sidebar-card">
+            <div class="sidebar-card__header">
+              <h3>Outline</h3>
+              <span class="sidebar-card__hint">Current note</span>
+            </div>
+            <div class="mini-list" id="outline-list"></div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="content-stage">
+        <section class="panel panel--detail" aria-labelledby="detail-title">
+        <section class="note-shell" aria-labelledby="note-shell-title">
+          <div class="note-shell__banner"></div>
+          <div class="note-shell__body">
+            <p class="eyebrow eyebrow--compact" id="note-breadcrumb">Knowledge / Untitled</p>
+            <h2 id="note-shell-title">Structured Markdown Editor</h2>
+            <p class="panel__lead" id="note-shell-summary">Edit knowledge in a form, generate markdown automatically, and sync it into the graph.</p>
+            <div class="note-shell__meta" id="note-shell-meta"></div>
+          </div>
+        </section>
+
+        <div class="panel__header">
+          <div>
+            <h2 id="detail-title">Structured Markdown Editor</h2>
+            <p class="panel__lead">Edit knowledge in a form, generate markdown automatically, and sync it into the graph.</p>
+          </div>
+          <div class="editor-toolbar">
+            <label class="toggle">
+              <input id="auto-save-toggle" type="checkbox" checked />
+              <span>Auto-save</span>
             </label>
-            <label>显示
-              <select id="graph-scope">
-                <option value="all">全部节点</option>
-                <option value="selected">选中节点一跳</option>
-              </select>
+            <button class="btn btn--ghost" id="reload-node">Reload</button>
+            <button class="btn btn--primary" id="save-node">Save to Graph</button>
+          </div>
+        </div>
+
+        <section class="editor-card" aria-labelledby="graph-title">
+          <div class="panel__header panel__header--tight">
+            <div>
+              <h3 id="graph-title">Graph Relationships</h3>
+              <p class="panel__lead">Visualize outgoing and incoming links around the selected node, or switch to the filtered graph.</p>
+            </div>
+            <div class="graph-toolbar">
+              <label class="field field--compact">
+                <span>Scope</span>
+                <select id="graph-scope">
+                  <option value="selected">Selected node</option>
+                  <option value="filtered">Filtered nodes</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="graph-summary" id="graph-summary">No graph data yet.</div>
+          <label class="field">
+            <span>Canonical Outgoing Links (index graph only)</span>
+            <textarea id="editor-graph-links" rows="5" placeholder="target_node | related | 0.8"></textarea>
+          </label>
+          <div class="graph-surface">
+            <svg id="graph-view" class="graph-view" viewBox="0 0 960 420" role="img" aria-label="Knowledge graph visualization"></svg>
+          </div>
+        </section>
+
+        <section class="editor-card" aria-labelledby="editor-form-title">
+          <h3 id="editor-form-title">Node Form</h3>
+          <div class="editor-grid">
+            <label class="field">
+              <span>Node ID</span>
+              <input id="editor-node-id" type="text" placeholder="fatigue_model" />
             </label>
-            <button id="reheat-btn">重新布局</button>
+            <label class="field">
+              <span>Title</span>
+              <input id="editor-title" type="text" placeholder="Fatigue Model" />
+            </label>
+            <label class="field editor-grid__wide">
+              <span>Summary</span>
+              <textarea id="editor-summary" rows="3" placeholder="Short overview for humans and retrieval."></textarea>
+            </label>
+            <label class="field">
+              <span>Source</span>
+              <input id="editor-source" type="text" placeholder="design-doc" />
+            </label>
+            <label class="field">
+              <span>Origin</span>
+              <input id="editor-origin" type="text" placeholder="human or agent id" />
+            </label>
+            <label class="field">
+              <span>Confidence</span>
+              <input id="editor-confidence" type="number" min="0" max="1" step="0.01" value="0.9" />
+            </label>
+            <label class="field">
+              <span>Importance</span>
+              <input id="editor-importance" type="number" min="0" step="0.1" value="1.0" />
+            </label>
           </div>
-          <canvas id="graph-canvas" width="1200" height="720"></canvas>
-          <div class="legend">
-            <span class="dot tracked"></span> 主节点
-            <span class="dot referenced"></span> 引用节点
-            <span class="line"></span> 关系边
-          </div>
-        </div>
 
-        <div id="tab-node" class="tab-panel">
-          <div class="node-header">
-            <h2 id="node-title">未选择节点</h2>
-            <p id="node-meta"></p>
-          </div>
-          <div class="node-body">
-            <div>
-              <h3>正文</h3>
-              <div id="node-body" class="markdown"></div>
-            </div>
-            <div>
-              <h3>结构化字段</h3>
-              <table class="kv" id="node-structured"></table>
-            </div>
-          </div>
-          <div class="node-relations">
-            <div>
-              <h3>Outgoing</h3>
-              <div id="node-outgoing" class="chips"></div>
-            </div>
-            <div>
-              <h3>Incoming</h3>
-              <div id="node-incoming" class="chips"></div>
-            </div>
-          </div>
-          <div class="node-versions">
-            <h3>Versions</h3>
-            <ol id="version-list"></ol>
-          </div>
-        </div>
+          <label class="field">
+            <span>Narrative Body</span>
+            <textarea id="editor-body" rows="10" placeholder="Describe the node in clear human language."></textarea>
+          </label>
 
-        <div id="tab-habits" class="tab-panel">
-          <h2>用户偏好与习惯</h2>
-          <div id="habits-list" class="card-list"></div>
-        </div>
-
-        <div id="tab-patterns" class="tab-panel">
-          <h2>行为模式</h2>
-          <div id="patterns-list" class="card-list"></div>
-        </div>
-
-        <div id="tab-conversations" class="tab-panel">
-          <h2>对话原始记录</h2>
-          <div class="conv-grid">
-            <div>
-              <h3>与节点映射</h3>
-              <div id="conversation-node-label">未选择节点</div>
-              <ul id="conversation-list"></ul>
-            </div>
-            <div>
-              <h3>内容</h3>
-              <pre id="conversation-detail"></pre>
-            </div>
+          <div class="editor-columns">
+            <label class="field">
+              <span>Facts (one per line)</span>
+              <textarea id="editor-facts" rows="8" placeholder="recovery_baseline: sleep_quality"></textarea>
+            </label>
+            <label class="field">
+              <span>Markdown Relation Notes</span>
+              <textarea id="editor-relations" rows="8" placeholder="Free-form relation notes inside markdown."></textarea>
+            </label>
+            <label class="field">
+              <span>Evidence (one per line)</span>
+              <textarea id="editor-evidence" rows="8" placeholder="meeting-notes-2026-03-13"></textarea>
+            </label>
           </div>
-        </div>
+        </section>
+
+        <section class="editor-card" aria-labelledby="markdown-title">
+          <h3 id="markdown-title">Generated Markdown</h3>
+          <textarea id="editor-markdown" class="editor-markdown" rows="16" readonly></textarea>
+        </section>
+
+        <article class="detail" id="node-detail">
+          <p class="detail__empty">Select a node to inspect its metadata and content.</p>
+        </article>
+
+        <section class="editor-card" aria-labelledby="context-memory-title">
+          <h3 id="context-memory-title">Situational Memory</h3>
+          <div class="context-memory" id="context-memory">
+            <p class="detail__empty">No linked conversation or preference memory yet.</p>
+          </div>
+        </section>
+        </section>
       </section>
     </main>
 
-    <script src="./script.js"></script>
+    <footer class="footer">
+      <p>Designed for consistent, human-readable memory. No embeddings required.</p>
+    </footer>
+
+    <script src="script.js"></script>
   </body>
 </html>

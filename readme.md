@@ -33,6 +33,12 @@ Default storage location (project-scoped):
 cargo run -- --help
 ```
 
+Embedding configuration (optional, for real vector search):
+- `EMBEDDING_API_KEY` (or `OPENAI_API_KEY`)
+- `EMBEDDING_BASE_URL` (optional, defaults to `https://api.openai.com/v1`)
+- `EMBEDDING_MODEL` (optional, defaults to `text-embedding-3-small`)
+- `EMBEDDING_TIMEOUT_MS` (optional, default 120000)
+
 CLI will not write demo data automatically. You must pass an action JSON explicitly.
 If `--project` is omitted, current working directory is used as project root.
 
@@ -145,10 +151,13 @@ For agent-side direct calls:
 - `compare_versions`
 - `traverse`
 - `search_nodes`
+- `search_hybrid`
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
 - `agent_upsert_markdown`
+- `ingest`
+- `sync_markdown`
 - `rollback_node`
 - `node_history`
 
@@ -170,6 +179,7 @@ CLI examples:
 cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
 cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
+cargo run -- --project /path/to/project --action '{"action":"sync_markdown","path":"/path/to/project/.mempedia/memory/knowledge/nodes/fatigue_model-1234abcd.md"}'
 ```
 
 Runtime mode:
@@ -271,10 +281,13 @@ Rust API 入口：`src/api/mod.rs`。
 - `compare_versions`
 - `traverse`
 - `search_nodes`
+- `search_hybrid`
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
 - `agent_upsert_markdown`
+- `ingest`
+- `sync_markdown`
 - `rollback_node`
 - `node_history`
 

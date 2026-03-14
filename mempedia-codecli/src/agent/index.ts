@@ -5,6 +5,10 @@ import { ToolAction } from '../mempedia/types.js';
 import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as dotenv from 'dotenv';
+import { z } from 'zod';
+
+dotenv.config();
 
 // Define tools manually for OpenAI API to avoid type issues with imported definitions
 const TOOLS = [
@@ -18,6 +22,27 @@ const TOOLS = [
         properties: {
           query: { type: 'string', description: 'The search query' },
           limit: { type: 'number', description: 'Max number of results' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_search_hybrid',
+      description: 'Hybrid search using BM25/keyword + vector + graph with RRF fusion.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query' },
+          limit: { type: 'number', description: 'Max number of results' },
+          rrf_k: { type: 'number', description: 'RRF k parameter (optional)' },
+          bm25_weight: { type: 'number', description: 'Weight for BM25 list (optional)' },
+          vector_weight: { type: 'number', description: 'Weight for vector list (optional)' },
+          graph_weight: { type: 'number', description: 'Weight for graph list (optional)' },
+          graph_depth: { type: 'number', description: 'Graph expansion depth (optional)' },
+          graph_seed_limit: { type: 'number', description: 'Seed count from lexical/vector hits (optional)' },
         },
         required: ['query'],
       },
@@ -70,6 +95,38 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'mempedia_traverse',
+      description: 'Traverse the knowledge graph from a start node.',
+      parameters: {
+        type: 'object',
+        properties: {
+          start_node: { type: 'string', description: 'Start node id' },
+          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first | confidence_filtered' },
+          depth_limit: { type: 'number', description: 'Depth limit (optional)' },
+          min_confidence: { type: 'number', description: 'Min confidence for confidence_filtered mode (optional)' },
+        },
+        required: ['start_node', 'mode'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_history',
+      description: 'Inspect the version history of a node.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Node id' },
+          limit: { type: 'number', description: 'Max number of versions (optional)' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'run_shell',
       description: 'Run a shell command.',
       parameters: {
@@ -111,6 +168,66 @@ const TOOLS = [
     },
   },
 ];
+
+const AGENT_TOOL_NAMES = [
+  'mempedia_search',
+  'mempedia_search_hybrid',
+  'mempedia_read',
+  'mempedia_conversation_lookup',
+  'mempedia_save',
+  'mempedia_traverse',
+  'mempedia_history',
+  'run_shell',
+  'read_file',
+  'write_file',
+] as const;
+
+const PlannerToolNameSchema = z.enum(AGENT_TOOL_NAMES);
+
+const PlannerToolCallSchema = z.object({
+  name: PlannerToolNameSchema,
+  arguments: z.record(z.any()).default({}),
+  goal: z.string().trim().min(1).max(240).optional(),
+});
+
+const PlannerBranchSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  goal: z.string().trim().min(1).max(240),
+  why: z.string().trim().min(1).max(240).optional(),
+  priority: z.number().min(0).max(1).optional(),
+});
+
+const PlannerDecisionSchema = z.object({
+  kind: z.enum(['tool', 'branch', 'final']),
+  thought: z.string().trim().min(1),
+  confidence: z.number().min(0).max(1).optional(),
+  tool_calls: z.array(PlannerToolCallSchema).optional(),
+  branches: z.array(PlannerBranchSchema).optional(),
+  final_answer: z.string().optional(),
+  completion_summary: z.string().trim().min(1).max(280).optional(),
+});
+
+type PlannerDecision = z.infer<typeof PlannerDecisionSchema>;
+
+interface BranchTranscriptMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface BranchState {
+  id: string;
+  parentId: string | null;
+  depth: number;
+  label: string;
+  goal: string;
+  priority: number;
+  steps: number;
+  transcript: BranchTranscriptMessage[];
+  savedNodeIds: string[];
+  completionSummary?: string;
+  finalAnswer?: string;
+  confidence?: number;
+}
 
 function createHmacClient(baseURL: string | undefined, accessKey: string, secretKey: string): ChatClient {
   if (!baseURL) {
@@ -195,7 +312,15 @@ function createGatewayClient(baseURL: string | undefined, gatewayApiKey: string)
 export interface TraceEvent {
   type: 'thought' | 'action' | 'observation' | 'error';
   content: string;
-  metadata?: any;
+  metadata?: {
+    branchId?: string;
+    parentBranchId?: string | null;
+    branchLabel?: string;
+    depth?: number;
+    step?: number;
+    toolName?: string;
+    [key: string]: any;
+  };
 }
 
 export interface AgentConfig {
@@ -267,6 +392,10 @@ export class Agent {
   private readonly relationSearchMinScore: number;
   private readonly relationSearchLimit: number;
   private readonly relationMax: number;
+  private readonly branchMaxDepth: number;
+  private readonly branchMaxWidth: number;
+  private readonly branchMaxSteps: number;
+  private readonly branchMaxCompleted: number;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.openai = config.hmacAccessKey && config.hmacSecretKey
@@ -319,6 +448,14 @@ export class Agent {
     this.relationSearchLimit = Number.isFinite(rawRelationSearchLimit) ? Math.max(1, Math.min(10, Math.floor(rawRelationSearchLimit))) : 3;
     const rawRelationMax = Number(process.env.MEMORY_RELATION_MAX ?? 6);
     this.relationMax = Number.isFinite(rawRelationMax) ? Math.max(0, Math.min(20, Math.floor(rawRelationMax))) : 6;
+    const rawBranchMaxDepth = Number(process.env.REACT_BRANCH_MAX_DEPTH ?? 2);
+    this.branchMaxDepth = Number.isFinite(rawBranchMaxDepth) ? Math.max(0, Math.min(4, Math.floor(rawBranchMaxDepth))) : 2;
+    const rawBranchMaxWidth = Number(process.env.REACT_BRANCH_MAX_WIDTH ?? 3);
+    this.branchMaxWidth = Number.isFinite(rawBranchMaxWidth) ? Math.max(1, Math.min(5, Math.floor(rawBranchMaxWidth))) : 3;
+    const rawBranchMaxSteps = Number(process.env.REACT_BRANCH_MAX_STEPS ?? 8);
+    this.branchMaxSteps = Number.isFinite(rawBranchMaxSteps) ? Math.max(2, Math.min(24, Math.floor(rawBranchMaxSteps))) : 8;
+    const rawBranchMaxCompleted = Number(process.env.REACT_BRANCH_MAX_COMPLETED ?? 4);
+    this.branchMaxCompleted = Number.isFinite(rawBranchMaxCompleted) ? Math.max(1, Math.min(8, Math.floor(rawBranchMaxCompleted))) : 4;
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
     this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
     this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
@@ -337,6 +474,10 @@ export class Agent {
 
   async start() {
     this.mempedia.start();
+  }
+
+  async sendMempediaAction(action: ToolAction) {
+    return this.mempedia.send(action);
   }
 
   stop() {
@@ -391,6 +532,7 @@ export class Agent {
       || lc.includes('deprecatedwarning')
       || lc.includes('unknown tool')
       || lc.includes('initializing react agent context')
+      || lc.includes('initializing branching react context')
       || lc.includes('mempedia process exited with code');
   }
 
@@ -694,6 +836,156 @@ export class Agent {
       return value;
     }
     return value.slice(value.length - maxChars);
+  }
+
+  private parseFrontmatter(markdown: string): { frontmatter: Record<string, string>; body: string } {
+    const match = markdown.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
+    if (!match) {
+      return { frontmatter: {}, body: markdown };
+    }
+    const frontmatter: Record<string, string> = {};
+    for (const line of match[1].split(/\r?\n/)) {
+      const [rawKey, ...rest] = line.split(':');
+      if (!rawKey || rest.length === 0) {
+        continue;
+      }
+      frontmatter[rawKey.trim()] = rest.join(':').trim().replace(/^"|"$/g, '');
+    }
+    return { frontmatter, body: markdown.slice(match[0].length) };
+  }
+
+  private extractMarkdownTitle(markdown: string): string {
+    const { frontmatter, body } = this.parseFrontmatter(markdown);
+    if (frontmatter.title) {
+      return frontmatter.title.trim();
+    }
+    const heading = body.match(/^#\s+(.+)$/m);
+    if (heading) {
+      return heading[1].trim();
+    }
+    return '';
+  }
+
+  private normalizeTextForSimilarity(value: string): string[] {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/[`#>*_\-:[\]()/\\|.,!?]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .split(' ')
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3);
+  }
+
+  private lexicalOverlapScore(left: string, right: string): number {
+    const leftTokens = new Set(this.normalizeTextForSimilarity(left));
+    const rightTokens = new Set(this.normalizeTextForSimilarity(right));
+    if (leftTokens.size === 0 || rightTokens.size === 0) {
+      return 0;
+    }
+    let shared = 0;
+    for (const token of leftTokens) {
+      if (rightTokens.has(token)) {
+        shared += 1;
+      }
+    }
+    return shared / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
+  }
+
+  private applyNodeIdToMarkdown(markdown: string, nodeId: string, titleHint: string): string {
+    const trimmed = markdown.trim();
+    const { frontmatter, body } = this.parseFrontmatter(trimmed);
+    const title = frontmatter.title?.trim() || titleHint.trim() || this.extractMarkdownTitle(trimmed) || nodeId;
+    const summary = frontmatter.summary?.trim();
+    const frontmatterLines = [
+      '---',
+      `node_id: "${this.yamlEscape(nodeId)}"`,
+      `title: "${this.yamlEscape(title)}"`,
+      summary ? `summary: "${this.yamlEscape(summary)}"` : null,
+      '---',
+      '',
+    ].filter(Boolean);
+    const nextBody = body.trim() || trimmed;
+    return `${frontmatterLines.join('\n')}${nextBody.endsWith('\n') ? nextBody : `${nextBody}\n`}`;
+  }
+
+  private deriveSaveNodeId(requestedNodeId: string, markdown: string): string {
+    const requested = requestedNodeId.trim();
+    if (requested) {
+      return requested;
+    }
+    const title = this.extractMarkdownTitle(markdown);
+    const slug = this.toSlug(title || this.firstSentence(markdown) || 'saved_note');
+    if (slug.includes('dir') || slug.includes('directory') || slug.includes('structure') || slug.includes('source')) {
+      return `kg_code_${slug}`;
+    }
+    return `kg_doc_${slug}`;
+  }
+
+  private async guardedMempediaSave(requestedNodeId: string, markdown: string): Promise<Record<string, unknown>> {
+    const originalNodeId = this.deriveSaveNodeId(requestedNodeId, markdown);
+    const title = this.extractMarkdownTitle(markdown) || originalNodeId;
+    let resolvedNodeId = originalNodeId;
+    let redirected = false;
+    let redirectReason = '';
+
+    const titleAlignment = this.lexicalOverlapScore(originalNodeId.replace(/_/g, ' '), title);
+    if (requestedNodeId.trim() && titleAlignment < 0.18) {
+      resolvedNodeId = this.deriveSaveNodeId('', markdown);
+      redirected = resolvedNodeId !== originalNodeId;
+      redirectReason = `save redirected from ${originalNodeId} to ${resolvedNodeId} because requested node id does not align with markdown title`;
+    }
+
+    try {
+      const existing = await this.mempedia.send({
+        action: 'open_node',
+        node_id: redirected ? resolvedNodeId : originalNodeId,
+        markdown: true,
+      });
+      if ((existing as any)?.kind === 'markdown' && typeof (existing as any)?.markdown === 'string') {
+        const existingMarkdown = String((existing as any).markdown || '');
+        const overlap = this.lexicalOverlapScore(markdown, existingMarkdown);
+        const titleSlug = this.toSlug(title);
+        const idLooksAligned = resolvedNodeId.includes(titleSlug) || titleSlug.includes(this.toSlug(resolvedNodeId));
+        if (overlap < 0.16 && !idLooksAligned) {
+          resolvedNodeId = this.deriveSaveNodeId('', markdown);
+          redirected = resolvedNodeId !== originalNodeId;
+          redirectReason = `save redirected from ${originalNodeId} to ${resolvedNodeId} due to low content overlap (${overlap.toFixed(2)})`;
+        }
+      }
+    } catch {
+      // missing node is acceptable; keep original node id
+    }
+
+    const normalizedMarkdown = this.applyNodeIdToMarkdown(markdown, resolvedNodeId, title);
+    const result = await this.mempedia.send({
+      action: 'agent_upsert_markdown',
+      node_id: resolvedNodeId,
+      markdown: normalizedMarkdown,
+      confidence: 1.0,
+      importance: 1.0,
+      agent_id: 'mempedia-codecli',
+      reason: redirected ? `Branching ReAct task completion (${redirectReason})` : 'Branching ReAct task completion',
+      source: 'agent',
+    });
+
+    return {
+      requested_node_id: requestedNodeId || originalNodeId,
+      resolved_node_id: resolvedNodeId,
+      redirected,
+      redirect_reason: redirectReason || undefined,
+      result,
+    };
+  }
+
+  private extractSavedNodeId(payload: string): string | null {
+    try {
+      const parsed = JSON.parse(payload);
+      const direct = parsed?.resolved_node_id || parsed?.node_id || parsed?.version?.node_id || parsed?.result?.version?.node_id;
+      return typeof direct === 'string' && direct.trim() ? direct.trim() : null;
+    } catch {
+      return null;
+    }
   }
 
   private appendMemoryLog(runId: string, phase: string, data: Record<string, unknown> = {}) {
@@ -1227,17 +1519,16 @@ export class Agent {
       traceBuffer.push(event);
       onTrace(event);
     };
-    emitTrace({ type: 'thought', content: 'Initializing ReAct agent context from Mempedia...' });
+    emitTrace({ type: 'thought', content: 'Initializing branching ReAct context from Mempedia...' });
     
     let context = '';
     try {
       context = await this.measure(perfEntries, 'context_retrieval', async () => {
         let builtContext = '';
         const searchResults = await this.mempedia.send({
-          action: 'search_nodes',
+          action: 'search_hybrid',
           query: input,
-          limit: 5,
-          include_highlight: true,
+          limit: 8,
         });
         if (searchResults.kind === 'search_results') {
           builtContext = searchResults.results
@@ -1266,151 +1557,445 @@ export class Agent {
       { role: 'assistant', content: turn.assistant }
     ]);
 
-    const messages: any[] = [
-      {
-        role: 'system',
-        content: `You are a ReAct agent powered by Mempedia.
+    const toolCatalog = TOOLS.map((tool) => {
+      const fn = (tool as any).function;
+      return `- ${fn.name}: ${fn.description}\n  params: ${JSON.stringify(fn.parameters)}`;
+    }).join('\n');
+
+    const systemPrompt = `You are a branching ReAct agent powered by Mempedia.
+Treat ReAct as a functional loop. A branch is an independent child loop with its own thought -> action -> observation state.
+
 You have access to a knowledge graph stored in Mempedia and local tools.
-Your goal is to help the user with their request by strictly following the ReAct (Reasoning and Acting) paradigm.
+You must return exactly one JSON object on every loop iteration. Do not use markdown fences.
 
-For each step, you must:
-1. **THOUGHT**: Analyze the current situation, plan the next step, or reason about the previous observation. Output this as normal text.
-2. **ACTION**: If you need more information or need to affect the environment, call a tool.
-3. **OBSERVATION**: The tool output will be provided to you.
+Allowed JSON schema:
+{
+  "kind": "tool" | "branch" | "final",
+  "thought": "string",
+  "confidence": 0.0,
+  "tool_calls": [{ "name": "tool_name", "arguments": {}, "goal": "optional" }],
+  "branches": [{ "label": "short label", "goal": "what this child branch should try", "why": "optional", "priority": 0.0 }],
+  "final_answer": "string",
+  "completion_summary": "optional short summary"
+}
 
-Context from Mempedia based on query:
-${context}
+Rules:
+1. Prefer kind="tool" when one next action is clearly best.
+2. Use kind="branch" only when there are multiple materially distinct strategies worth trying.
+3. A branch must represent a genuinely different hypothesis, search path, or execution strategy.
+4. Never create more than ${this.branchMaxWidth} child branches in one step.
+5. Prefer mempedia_search_hybrid for high-recall retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
+6. When you finish, return kind="final" with a direct user-facing answer.
+7. Consider mempedia_save only for atomic reusable knowledge, not transient chatter.
+8. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
+9. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
 
-When you complete a task, you MUST consider saving the result or important information back to Mempedia using 'mempedia_save' so you remember it next time.
-Save only atomic, reusable knowledge as nodes. Do not store raw conversation logs or transient context in nodes.
-User habits and behavior patterns are stored by the system in separate structures; do not save them as nodes.
-If needed, use 'mempedia_conversation_lookup' to inspect raw local conversation records mapped to a node.
-`,
-      },
+Available tools:
+${toolCatalog}
+
+Shared Mempedia context for this request:
+${context || '(no context found)'}
+`;
+
+    const rootBranch: BranchState = {
+      id: 'B0',
+      parentId: null,
+      depth: 0,
+      label: 'root',
+      goal: 'Solve the user request end-to-end.',
+      priority: 1,
+      steps: 0,
+      savedNodeIds: [],
+      transcript: [
+        {
+          role: 'user',
+          content: `Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`,
+        },
+      ],
+    };
+
+    const queue: BranchState[] = [rootBranch];
+    const completed: BranchState[] = [];
+    let lastTouchedBranch: BranchState | null = rootBranch;
+    let totalLoopSteps = 0;
+    const totalLoopBudget = Math.max(this.branchMaxSteps, this.branchMaxSteps * this.branchMaxWidth * (this.branchMaxDepth + 1));
+
+    const extractText = (content: any): string => {
+      if (typeof content === 'string') {
+        return content;
+      }
+      if (Array.isArray(content)) {
+        return content.map((item) => {
+          if (typeof item === 'string') {
+            return item;
+          }
+          if (item && typeof item === 'object' && typeof item.text === 'string') {
+            return item.text;
+          }
+          return JSON.stringify(item);
+        }).join('\n');
+      }
+      if (content == null) {
+        return '';
+      }
+      return String(content);
+    };
+
+    const traceMeta = (branch: BranchState, extra: Record<string, unknown> = {}) => ({
+      branchId: branch.id,
+      parentBranchId: branch.parentId,
+      branchLabel: branch.label,
+      depth: branch.depth,
+      step: branch.steps,
+      ...extra,
+    });
+
+    const emitBranchTrace = (
+      type: TraceEvent['type'],
+      branch: BranchState,
+      content: string,
+      extra: Record<string, unknown> = {}
+    ) => {
+      emitTrace({ type, content, metadata: traceMeta(branch, extra) });
+    };
+
+    const parseDecision = (raw: string): PlannerDecision => {
+      const trimmed = raw.trim();
+      const withoutFence = trimmed
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```$/i, '')
+        .trim();
+      let jsonText = withoutFence;
+      if (!jsonText.startsWith('{')) {
+        const start = jsonText.indexOf('{');
+        const end = jsonText.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          jsonText = jsonText.slice(start, end + 1);
+        }
+      }
+      return PlannerDecisionSchema.parse(JSON.parse(jsonText));
+    };
+
+    const buildMessages = (branch: BranchState) => ([
+      { role: 'system', content: systemPrompt },
       ...recentConversationMessages,
-      { role: 'user', content: input },
-    ];
+      ...branch.transcript,
+      {
+        role: 'user',
+        content: `Current branch state:\n- branch_id: ${branch.id}\n- parent_branch_id: ${branch.parentId || 'none'}\n- depth: ${branch.depth}/${this.branchMaxDepth}\n- label: ${branch.label}\n- goal: ${branch.goal}\n- step_budget: ${branch.steps}/${this.branchMaxSteps}\n\nReturn exactly one JSON object. If branching is still useful, only emit materially distinct branches.`,
+      },
+    ]);
 
-    while (true) {
-      const completion = await this.measure(perfEntries, 'llm_completion', async () =>
+    const executeToolCall = async (branch: BranchState, toolCall: z.infer<typeof PlannerToolCallSchema>): Promise<string> => {
+      const args = toolCall.arguments || {};
+      const fnName = toolCall.name;
+      emitBranchTrace('action', branch, `Calling ${fnName}${toolCall.goal ? ` — ${toolCall.goal}` : ''}`, {
+        toolName: fnName,
+        args,
+      });
+
+      const toolStart = Date.now();
+      let result = '';
+      try {
+        if (fnName === 'mempedia_search') {
+          const res = await this.mempedia.send({
+            action: 'search_nodes',
+            query: args.query,
+            limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_search_hybrid') {
+          const res = await this.mempedia.send({
+            action: 'search_hybrid',
+            query: args.query,
+            limit: args.limit,
+            rrf_k: args.rrf_k,
+            bm25_weight: args.bm25_weight,
+            vector_weight: args.vector_weight,
+            graph_weight: args.graph_weight,
+            graph_depth: args.graph_depth,
+            graph_seed_limit: args.graph_seed_limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_read') {
+          const res = await this.mempedia.send({
+            action: 'open_node',
+            node_id: args.node_id,
+            markdown: true,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_traverse') {
+          const res = await this.mempedia.send({
+            action: 'traverse',
+            start_node: args.start_node,
+            mode: args.mode,
+            depth_limit: args.depth_limit,
+            min_confidence: args.min_confidence,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_history') {
+          const res = await this.mempedia.send({
+            action: 'node_history',
+            node_id: args.node_id,
+            limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_conversation_lookup') {
+          const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
+          result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
+        } else if (fnName === 'mempedia_save') {
+          const res = await this.guardedMempediaSave(String(args.node_id || ''), String(args.content || ''));
+          result = JSON.stringify(res);
+        } else if (fnName === 'run_shell') {
+          result = await new Promise((resolve) => {
+            exec(String(args.command || ''), (error, stdout, stderr) => {
+              if (error) {
+                resolve(`Error: ${error.message}\nStderr: ${stderr}`);
+                return;
+              }
+              resolve(stdout || stderr || 'Command executed successfully.');
+            });
+          });
+        } else if (fnName === 'read_file') {
+          try {
+            result = fs.readFileSync(String(args.path || ''), 'utf-8');
+          } catch (error: any) {
+            result = `Error reading file: ${error.message}`;
+          }
+        } else if (fnName === 'write_file') {
+          try {
+            fs.mkdirSync(path.dirname(String(args.path || '')), { recursive: true });
+            fs.writeFileSync(String(args.path || ''), String(args.content || ''));
+            result = `File written to ${args.path}`;
+          } catch (error: any) {
+            result = `Error writing file: ${error.message}`;
+          }
+        } else {
+          result = `Unknown tool: ${fnName}`;
+        }
+      } catch (error: any) {
+        result = `Error executing tool: ${error.message}`;
+      }
+
+      if (perfEntries) {
+        perfEntries.push({ label: `tool_${branch.id}_${fnName}`, ms: Date.now() - toolStart });
+      }
+
+      const clipped = this.clipText(String(result), 7000);
+      const savedNodeId = fnName === 'mempedia_save' ? this.extractSavedNodeId(clipped) : null;
+      if (savedNodeId && !branch.savedNodeIds.includes(savedNodeId)) {
+        branch.savedNodeIds.push(savedNodeId);
+      }
+      emitBranchTrace('observation', branch, clipped, { toolName: fnName });
+      return clipped;
+    };
+
+    const finalizeFromBranch = async (branch: BranchState, reason: string): Promise<string> => {
+      emitBranchTrace('thought', branch, `Forcing finalization for ${branch.id}: ${reason}`);
+      const completion = await this.measure(perfEntries, `finalize_${branch.id}`, async () =>
         this.openai.chat.completions.create({
           model: this.model,
-          messages: messages as any,
-          tools: TOOLS as any,
+          messages: [
+            { role: 'system', content: `${systemPrompt}\nYou must now finish. Do not branch. Do not call tools. Return plain text only.` },
+            ...recentConversationMessages,
+            ...branch.transcript,
+            { role: 'user', content: `Finalize branch ${branch.id}. User request:\n${input}\n\nReason: ${reason}` },
+          ] as any,
+        })
+      );
+      return extractText(completion.choices[0]?.message?.content).trim();
+    };
+
+    const synthesizeCompletedBranches = async (branches: BranchState[]): Promise<string> => {
+      if (branches.length === 1 && branches[0].finalAnswer) {
+        return branches[0].finalAnswer;
+      }
+      emitTrace({ type: 'thought', content: `Synthesizing ${branches.length} completed branches into one final answer...` });
+      const branchSummary = branches
+        .sort((a, b) => (b.confidence ?? 0.5) - (a.confidence ?? 0.5))
+        .map((branch) => [
+          `Branch ${branch.id}`,
+          `label: ${branch.label}`,
+          `goal: ${branch.goal}`,
+          `confidence: ${branch.confidence ?? 0.5}`,
+          `saved_nodes: ${branch.savedNodeIds.length ? branch.savedNodeIds.join(', ') : '(none)'}`,
+          `summary: ${branch.completionSummary || '(none)'}`,
+          `answer:\n${branch.finalAnswer || ''}`,
+        ].join('\n'))
+        .join('\n\n---\n\n');
+
+      const completion = await this.measure(perfEntries, 'branch_synthesis', async () =>
+        this.openai.chat.completions.create({
+          model: this.model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are the synthesis stage for a branching ReAct agent. Merge completed branches into the best possible final answer. Prefer correctness and directness. Mention uncertainty only when branches genuinely disagree. If you mention saved node ids, use only ids explicitly listed in saved_nodes. Do not invent node ids.',
+            },
+            {
+              role: 'user',
+              content: `User request:\n${input}\n\nShared context:\n${this.clipText(context || '(no shared context)', 4000)}\n\nCompleted branches:\n${branchSummary}`,
+            },
+          ] as any,
         })
       );
 
-      const message = completion.choices[0].message;
-      messages.push(message);
+      return extractText(completion.choices[0]?.message?.content).trim();
+    };
 
-      if (message.content) {
-        emitTrace({ type: 'thought', content: message.content });
+    while (queue.length > 0 && completed.length < this.branchMaxCompleted && totalLoopSteps < totalLoopBudget) {
+      queue.sort((a, b) => (b.priority - a.priority) || (a.depth - b.depth) || (a.steps - b.steps));
+      const branch = queue.shift()!;
+      lastTouchedBranch = branch;
+
+      if (branch.steps >= this.branchMaxSteps) {
+        const forced = await finalizeFromBranch(branch, 'step budget reached');
+        branch.finalAnswer = forced || branch.finalAnswer || 'I reached the reasoning budget without a stronger answer.';
+        branch.completionSummary = branch.completionSummary || 'Forced finalization after step budget.';
+        branch.confidence = branch.confidence ?? 0.45;
+        completed.push(branch);
+        emitBranchTrace('observation', branch, `Branch completed after hitting step budget.`);
+        continue;
       }
 
-      if (message.tool_calls && message.tool_calls.length > 0) {
-        for (const toolCall of message.tool_calls) {
-          const fnName = toolCall.function.name;
-          const args = JSON.parse(toolCall.function.arguments);
-          
-          emitTrace({ 
-            type: 'action', 
-            content: `Calling ${fnName}`, 
-            metadata: { args } 
+      branch.steps += 1;
+      totalLoopSteps += 1;
+
+      let decision: PlannerDecision;
+      try {
+        const completion = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps}`, async () =>
+          this.openai.chat.completions.create({
+            model: this.model,
+            messages: buildMessages(branch) as any,
+          })
+        );
+        const raw = extractText(completion.choices[0]?.message?.content);
+        decision = parseDecision(raw);
+      } catch (error: any) {
+        emitBranchTrace('error', branch, `Failed to parse branch step: ${error.message}`);
+        branch.transcript.push({
+          role: 'user',
+          content: `Your last response was invalid. Error: ${error.message}. Return exactly one valid JSON object next.`,
+        });
+        queue.push(branch);
+        continue;
+      }
+
+      branch.confidence = decision.confidence ?? branch.confidence;
+      branch.transcript.push({ role: 'assistant', content: JSON.stringify(decision) });
+      emitBranchTrace('thought', branch, decision.thought);
+
+      if (decision.kind === 'tool') {
+        const toolCalls = (decision.tool_calls || []).slice(0, this.branchMaxWidth);
+        if (toolCalls.length === 0) {
+          branch.transcript.push({
+            role: 'user',
+            content: 'You selected kind="tool" but provided no tool_calls. Either provide tool_calls or finish with kind="final".',
           });
-          
-          let result = '';
-          const toolStart = Date.now();
-          try {
-            if (fnName === 'mempedia_search') {
-              const res = await this.mempedia.send({
-                action: 'search_nodes',
-                query: args.query,
-                limit: args.limit,
-              });
-              result = JSON.stringify(res);
-            } else if (fnName === 'mempedia_read') {
-              const res = await this.mempedia.send({
-                action: 'open_node',
-                node_id: args.node_id,
-                markdown: true,
-              });
-              result = JSON.stringify(res);
-            } else if (fnName === 'mempedia_conversation_lookup') {
-              const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
-              result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
-            } else if (fnName === 'mempedia_save') {
-               const res = await this.mempedia.send({
-                 action: 'agent_upsert_markdown',
-                 node_id: args.node_id,
-                 markdown: args.content,
-                 confidence: 1.0,
-                 importance: 1.0,
-                 agent_id: 'mempedia-codecli',
-                 reason: 'User request or task completion',
-                 source: 'agent',
-               });
-               result = JSON.stringify(res);
-            } else if (fnName === 'run_shell') {
-              result = await new Promise((resolve) => {
-                exec(args.command, (error, stdout, stderr) => {
-                  if (error) resolve(`Error: ${error.message}\nStderr: ${stderr}`);
-                  else resolve(stdout || stderr || 'Command executed successfully.');
-                });
-              });
-            } else if (fnName === 'read_file') {
-               try {
-                   result = fs.readFileSync(args.path, 'utf-8');
-               } catch (e: any) {
-                   result = `Error reading file: ${e.message}`;
-               }
-            } else if (fnName === 'write_file') {
-                try {
-                    fs.mkdirSync(path.dirname(args.path), { recursive: true });
-                    fs.writeFileSync(args.path, args.content);
-                    result = `File written to ${args.path}`;
-                } catch (e: any) {
-                    result = `Error writing file: ${e.message}`;
-                }
-            } else {
-                result = `Unknown tool: ${fnName}`;
-            }
-          } catch (e: any) {
-            result = `Error executing tool: ${e.message}`;
-          }
-          if (perfEntries) {
-            perfEntries.push({ label: `tool_${fnName}`, ms: Date.now() - toolStart });
-          }
+          queue.push(branch);
+          continue;
+        }
 
-          emitTrace({ type: 'observation', content: String(result) });
-
-          messages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: String(result),
+        for (const toolCall of toolCalls) {
+          const observation = await executeToolCall(branch, toolCall);
+          branch.transcript.push({
+            role: 'user',
+            content: `TOOL OBSERVATION for ${toolCall.name}:\n${observation}`,
           });
         }
-      } else {
-        const finalAnswer = message.content || '';
-        this.conversationTurns.push({ user: input, assistant: finalAnswer });
-        if (this.conversationTurns.length > this.maxConversationTurns) {
-          this.conversationTurns = this.conversationTurns.slice(-this.maxConversationTurns);
+        queue.push(branch);
+        continue;
+      }
+
+      if (decision.kind === 'branch') {
+        const children = (decision.branches || []).slice(0, this.branchMaxWidth);
+        if (branch.depth >= this.branchMaxDepth || children.length < 2) {
+          branch.transcript.push({
+            role: 'user',
+            content: `Branching was rejected because ${branch.depth >= this.branchMaxDepth ? 'the branch depth budget is exhausted' : 'fewer than two valid child branches were provided'}. Continue this branch without further splitting unless necessary.`,
+          });
+          queue.push(branch);
+          continue;
         }
-        this.scheduleMemorySave(input, traceBuffer, finalAnswer);
-        emitTrace({ type: 'observation', content: 'Memory save queued (debounced + serialized).' });
-        if (perfEntries && perfEntries.length > 0) {
-          const totalMs = perfEntries.reduce((sum, item) => sum + item.ms, 0);
-          const top = [...perfEntries]
-            .sort((a, b) => b.ms - a.ms)
-            .slice(0, 8)
-            .map((item) => `${item.label}:${item.ms}ms`)
-            .join(' | ');
+
+        emitBranchTrace('action', branch, `Spawning ${children.length} child branches.`, { childCount: children.length });
+        children.forEach((child, index) => {
+          const childBranch: BranchState = {
+            id: `${branch.id}.${index + 1}`,
+            parentId: branch.id,
+            depth: branch.depth + 1,
+            label: child.label,
+            goal: child.goal,
+            priority: Math.max(0.05, branch.priority * (child.priority ?? Math.max(0.2, 1 - index * 0.2))),
+            steps: branch.steps,
+            savedNodeIds: branch.savedNodeIds.slice(),
+            transcript: [
+              ...branch.transcript,
+              {
+                role: 'user',
+                content: `Continue only this child branch.\nChild label: ${child.label}\nChild goal: ${child.goal}\nWhy this branch exists: ${child.why || 'Distinct strategy'}\nDo not repeat sibling work unless needed.`,
+              },
+            ],
+          };
+          queue.push(childBranch);
           emitTrace({
             type: 'observation',
-            content: `Perf total=${totalMs}ms; top=${top}`
+            content: `Spawned child branch ${childBranch.id}: ${child.label}`,
+            metadata: traceMeta(childBranch),
           });
-        }
-        return finalAnswer;
+        });
+        continue;
       }
+
+      const finalAnswer = (decision.final_answer || '').trim();
+      if (!finalAnswer) {
+        branch.transcript.push({
+          role: 'user',
+          content: 'You selected kind="final" but did not provide final_answer. Return a complete final answer.',
+        });
+        queue.push(branch);
+        continue;
+      }
+
+      branch.finalAnswer = finalAnswer;
+      branch.completionSummary = decision.completion_summary || this.firstSentence(finalAnswer) || `Completed branch ${branch.id}`;
+      branch.confidence = decision.confidence ?? branch.confidence ?? 0.65;
+      completed.push(branch);
+      emitBranchTrace('observation', branch, `Branch completed: ${branch.completionSummary}`);
     }
+
+    if (totalLoopSteps >= totalLoopBudget) {
+      emitTrace({ type: 'error', content: `Reached total branch loop budget (${totalLoopBudget}). Finalizing best available result.` });
+    }
+
+    if (completed.length === 0 && lastTouchedBranch) {
+      const forced = await finalizeFromBranch(lastTouchedBranch, 'no branch produced a final answer');
+      lastTouchedBranch.finalAnswer = forced || 'I could not complete the branching loop.';
+      lastTouchedBranch.completionSummary = lastTouchedBranch.completionSummary || 'Forced finalization because no branch returned final output.';
+      lastTouchedBranch.confidence = lastTouchedBranch.confidence ?? 0.35;
+      completed.push(lastTouchedBranch);
+    }
+
+    const finalAnswer = await synthesizeCompletedBranches(completed.slice(0, this.branchMaxCompleted));
+    this.conversationTurns.push({ user: input, assistant: finalAnswer });
+    if (this.conversationTurns.length > this.maxConversationTurns) {
+      this.conversationTurns = this.conversationTurns.slice(-this.maxConversationTurns);
+    }
+    this.scheduleMemorySave(input, traceBuffer, finalAnswer);
+    emitTrace({ type: 'observation', content: 'Memory save queued (debounced + serialized).' });
+    if (perfEntries && perfEntries.length > 0) {
+      const totalMs = perfEntries.reduce((sum, item) => sum + item.ms, 0);
+      const top = [...perfEntries]
+        .sort((a, b) => b.ms - a.ms)
+        .slice(0, 8)
+        .map((item) => `${item.label}:${item.ms}ms`)
+        .join(' | ');
+      emitTrace({
+        type: 'observation',
+        content: `Perf total=${totalMs}ms; top=${top}`
+      });
+    }
+    return finalAnswer;
   }
 }

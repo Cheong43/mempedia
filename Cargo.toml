@@ -1,10 +1,10 @@
 [package]
 name = "mempedia"
 version = "0.1.0"
-edition = "2026"
+edition = "2024"
 
 [dependencies]
 blake3 = "1.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-可以
+reqwest = { version = "0.12", features = ["blocking", "json"] }

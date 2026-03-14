@@ -11,6 +11,18 @@ use crate::core::{
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmbeddingCache {
+    pub vectors: HashMap<String, CachedVector>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedVector {
+    pub version: String,
+    pub dim: usize,
+    pub vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexSnapshot {
     pub heads: HashMap<String, String>,
     pub nodes: HashMap<String, Node>,
@@ -96,6 +108,10 @@ impl FileStorage {
         self.index_dir().join("agent_actions.log")
     }
 
+    fn embeddings_path(&self) -> PathBuf {
+        self.index_dir().join("embeddings.json")
+    }
+
     fn markdown_node_path(&self, node_id: &str) -> PathBuf {
         let digest = blake3::hash(node_id.as_bytes()).to_hex();
         let safe_name = sanitize_node_id(node_id);
@@ -134,6 +150,14 @@ impl FileStorage {
         access_state: &HashMap<String, AccessStats>,
     ) -> MemoryResult<()> {
         self.atomic_write_json(self.access_state_path(), access_state)
+    }
+
+    pub fn load_embedding_cache(&self) -> MemoryResult<EmbeddingCache> {
+        self.load_json(self.embeddings_path())
+    }
+
+    pub fn persist_embedding_cache(&self, cache: &EmbeddingCache) -> MemoryResult<()> {
+        self.atomic_write_json(self.embeddings_path(), cache)
     }
 
     fn load_json<T: serde::de::DeserializeOwned + Default>(

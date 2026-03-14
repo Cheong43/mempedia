@@ -23,6 +23,8 @@ timestamp: <unix_seconds>
 confidence: <0.0-1.0>
 importance: <float_ge_0>
 title: "<title>"
+source: "<originating source, optional>"
+origin: "<author or agent id, optional>"
 parents:
   - "<version_id>"
 ---
@@ -41,6 +43,27 @@ Reserved keys inserted by runtime:
 - `kb.last_source`
 - `kb.updated_at`
 - `meta.*` (derived from markdown front matter on parse)
+  - `meta.source` / `meta.origin` are reflected in front matter when present
+
+### 3.1 Optional Structured Sections in Markdown Body
+
+These sections allow humans to edit knowledge in markdown while keeping it structured for agents.
+Section headings are case-insensitive and accept synonyms:
+
+- Facts: `Facts`, `Fact`, `Claims`, `Claim`
+- Relations: `Relations`, `Relation`, `Links`, `Link`
+- Evidence: `Evidence`, `Sources`, `Source`
+
+Format rules:
+
+- **Facts**: bullet lines in `key: value` or `key = value` form.
+  - Stored as `fact.<key>` in `structured_data` (key is normalized to `snake_case`).
+- **Relations**: bullet lines in one of the following forms:
+  - `Target | label | weight`
+  - `Target(label=..., weight=...)`
+  - `Target`
+  - Stored as graph links with optional `label` and `weight`.
+- **Evidence**: bullet lines, stored as `evidence.01`, `evidence.02`, etc.
 
 ## 4. Audit Log Schema
 

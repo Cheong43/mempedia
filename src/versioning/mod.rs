@@ -94,6 +94,44 @@ impl VersionEngine {
         Ok(version)
     }
 
+    pub fn replace_node(
+        storage: &FileStorage,
+        heads: &mut HashMap<String, String>,
+        nodes: &mut HashMap<String, Node>,
+        node_id: &str,
+        content: NodeContent,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        validate_scores(confidence, importance)?;
+        validate_content(&content)?;
+
+        let head_id = heads
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+
+        let mut version = NodeVersion {
+            node_id: node_id.to_string(),
+            version: String::new(),
+            parents: vec![head_id],
+            timestamp: now_ts(),
+            content,
+            confidence,
+            importance,
+        };
+        version.version = storage.write_object(&version)?;
+
+        heads.insert(node_id.to_string(), version.version.clone());
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.head = version.version.clone();
+            append_unique(&mut node.branches, version.version.clone());
+        }
+
+        persist_index(storage, heads, nodes)?;
+        Ok(version)
+    }
+
     pub fn fork_node(
         storage: &FileStorage,
         heads: &mut HashMap<String, String>,

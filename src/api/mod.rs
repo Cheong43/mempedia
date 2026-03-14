@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::env;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::core::{
     AccessLog, AccessStats, AgentActionLog, ExploreBudgetItem, ExploreCandidate, Link, MemoryError,
@@ -11,9 +13,9 @@ use crate::core::{
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
-use crate::markdown::{parse_markdown, render_node_markdown};
+use crate::markdown::{parse_markdown, parse_markdown_with_meta, render_node_markdown};
 use crate::promotion::{PromotionSignal, compute_importance};
-use crate::storage::{FileStorage, IndexSnapshot};
+use crate::storage::{CachedVector, EmbeddingCache, FileStorage, IndexSnapshot};
 use crate::versioning::VersionEngine;
 
 pub struct MemoryEngine {
@@ -22,9 +24,12 @@ pub struct MemoryEngine {
     nodes: HashMap<String, Node>,
     graph_index: GraphIndex,
     keyword_index: HashMap<String, HashMap<String, f32>>,
+    bm25_index: Bm25Index,
+    vector_index: VectorIndex,
     access_state: HashMap<String, AccessStats>,
     auto_promotion: AutoPromotionConfig,
     agent_governance: AgentGovernanceConfig,
+    retrieval_config: RetrievalConfig,
 }
 
 pub type SharedMemoryEngine = Arc<RwLock<MemoryEngine>>;
@@ -65,6 +70,133 @@ impl Default for AgentGovernanceConfig {
             max_markdown_bytes: 200_000,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RetrievalConfig {
+    pub vector_dim: usize,
+    pub rrf_k: usize,
+    pub bm25_k1: f32,
+    pub bm25_b: f32,
+    pub bm25_weight: f32,
+    pub vector_weight: f32,
+    pub graph_weight: f32,
+    pub graph_depth: usize,
+    pub graph_seed_limit: usize,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            vector_dim: 256,
+            rrf_k: 60,
+            bm25_k1: 1.4,
+            bm25_b: 0.75,
+            bm25_weight: 1.0,
+            vector_weight: 1.0,
+            graph_weight: 0.6,
+            graph_depth: 1,
+            graph_seed_limit: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Bm25Index {
+    postings: HashMap<String, HashMap<String, f32>>,
+    doc_len: HashMap<String, f32>,
+    avg_len: f32,
+    doc_count: usize,
+    df: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct VectorIndex {
+    dim: usize,
+    vectors: HashMap<String, Vec<f32>>,
+}
+
+impl VectorIndex {
+    fn new(dim: usize) -> Self {
+        Self {
+            dim: dim.max(64),
+            vectors: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingClient {
+    base_url: String,
+    api_key: String,
+    model: String,
+    timeout: Duration,
+}
+
+impl EmbeddingClient {
+    fn from_env() -> Option<Self> {
+        let api_key = env::var("EMBEDDING_API_KEY").ok()?;
+        let base_url = env::var("EMBEDDING_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let model = env::var("EMBEDDING_MODEL")
+            .unwrap_or_else(|_| "text-embedding-3-small".to_string());
+        let timeout_ms = env::var("EMBEDDING_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(120_000);
+
+        Some(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            model,
+            timeout: Duration::from_millis(timeout_ms),
+        })
+    }
+
+    fn embed(&self, text: &str) -> MemoryResult<Vec<f32>> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(self.timeout)
+            .build()
+            .map_err(|e| MemoryError::Invalid(format!("embedding client error: {e}")))?;
+        let url = format!("{}/embeddings", self.base_url);
+        let payload = json!({
+            "model": self.model,
+            "input": [text],
+        });
+        let resp = client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&payload)
+            .send()
+            .map_err(|e| MemoryError::Invalid(format!("embedding request error: {e}")))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .map_err(|e| MemoryError::Invalid(format!("embedding response error: {e}")))?;
+        let value: serde_json::Value = serde_json::from_str(&text)?;
+        if !status.is_success() {
+            return Err(MemoryError::Invalid(format!(
+                "embedding request failed ({status}): {value}"
+            )));
+        }
+        let embedding = value["data"][0]["embedding"]
+            .as_array()
+            .ok_or_else(|| MemoryError::Invalid("embedding missing in response".to_string()))?;
+        let mut out = Vec::with_capacity(embedding.len());
+        for v in embedding {
+            out.push(v.as_f64().unwrap_or(0.0) as f32);
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestRelation {
+    pub target: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub weight: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +241,23 @@ pub enum ToolAction {
         #[serde(default)]
         include_highlight: Option<bool>,
     },
+    SearchHybrid {
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        rrf_k: Option<usize>,
+        #[serde(default)]
+        bm25_weight: Option<f32>,
+        #[serde(default)]
+        vector_weight: Option<f32>,
+        #[serde(default)]
+        graph_weight: Option<f32>,
+        #[serde(default)]
+        graph_depth: Option<usize>,
+        #[serde(default)]
+        graph_seed_limit: Option<usize>,
+    },
     SuggestExploration {
         node_id: String,
         limit: Option<usize>,
@@ -133,6 +282,64 @@ pub enum ToolAction {
         agent_id: String,
         reason: String,
         source: String,
+    },
+    Ingest {
+        #[serde(default)]
+        node_id: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        text: String,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        facts: Option<BTreeMap<String, String>>,
+        #[serde(default)]
+        relations: Option<Vec<IngestRelation>>,
+        #[serde(default)]
+        highlights: Option<Vec<String>>,
+        #[serde(default)]
+        evidence: Option<Vec<String>>,
+        source: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        confidence: Option<f32>,
+        #[serde(default)]
+        importance: Option<f32>,
+    },
+    SyncMarkdown {
+        #[serde(default)]
+        node_id: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        markdown: Option<String>,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        confidence: Option<f32>,
+        #[serde(default)]
+        importance: Option<f32>,
+    },
+    SetNodeLinks {
+        node_id: String,
+        links: Vec<Link>,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        confidence: Option<f32>,
+        #[serde(default)]
+        importance: Option<f32>,
     },
     RollbackNode {
         node_id: String,
@@ -210,15 +417,19 @@ impl MemoryEngine {
         let storage = FileStorage::new(data_root)?;
         let snapshot = storage.load_index_snapshot()?;
         let access_state = storage.load_access_state()?;
+        let retrieval_config = RetrievalConfig::default();
         let mut engine = Self {
             storage,
             heads: snapshot.heads,
             nodes: snapshot.nodes,
             graph_index: GraphIndex::default(),
             keyword_index: HashMap::new(),
+            bm25_index: Bm25Index::default(),
+            vector_index: VectorIndex::new(retrieval_config.vector_dim),
             access_state,
             auto_promotion: AutoPromotionConfig::default(),
             agent_governance: AgentGovernanceConfig::default(),
+            retrieval_config,
         };
         engine.rebuild_index()?;
         engine.ensure_markdown_projection()?;
@@ -237,6 +448,11 @@ impl MemoryEngine {
         self.agent_governance = config;
     }
 
+    pub fn set_retrieval_config(&mut self, config: RetrievalConfig) -> MemoryResult<()> {
+        self.retrieval_config = config;
+        self.rebuild_index()
+    }
+
     pub fn create_node(
         &mut self,
         node_id: &str,
@@ -244,6 +460,7 @@ impl MemoryEngine {
         confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
+        let content = normalize_content(content);
         let version = VersionEngine::create_node(
             &self.storage,
             &mut self.heads,
@@ -265,12 +482,35 @@ impl MemoryEngine {
         confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
+        let patch = self.normalize_patch_with_head(node_id, patch)?;
         let version = VersionEngine::update_node(
             &self.storage,
             &mut self.heads,
             &mut self.nodes,
             node_id,
             patch,
+            confidence,
+            importance,
+        )?;
+        self.sync_markdown_for_version(node_id, &version)?;
+        self.rebuild_index()?;
+        Ok(version)
+    }
+
+    pub fn replace_node(
+        &mut self,
+        node_id: &str,
+        content: NodeContent,
+        confidence: f32,
+        importance: f32,
+    ) -> MemoryResult<NodeVersion> {
+        let content = normalize_content(content);
+        let version = VersionEngine::replace_node(
+            &self.storage,
+            &mut self.heads,
+            &mut self.nodes,
+            node_id,
+            content,
             confidence,
             importance,
         )?;
@@ -351,7 +591,14 @@ impl MemoryEngine {
                 content.links.push(link);
             }
         }
+        let mut content = normalize_content(content);
         let now = now_ts();
+        content
+            .structured_data
+            .insert("meta.source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("meta.origin".to_string(), agent_id.to_string());
         content
             .structured_data
             .insert("kb.last_agent_id".to_string(), agent_id.to_string());
@@ -384,6 +631,316 @@ impl MemoryEngine {
             agent_id: agent_id.to_string(),
             action: "agent_upsert_markdown".to_string(),
             node_id: node_id.to_string(),
+            version: version.version.clone(),
+            reason: reason.trim().to_string(),
+            source: source.trim().to_string(),
+        })?;
+
+        Ok(version)
+    }
+
+    pub fn sync_markdown(
+        &mut self,
+        node_id: Option<String>,
+        path: Option<String>,
+        markdown: Option<String>,
+        agent_id: Option<String>,
+        reason: Option<String>,
+        source: Option<String>,
+        confidence: Option<f32>,
+        importance: Option<f32>,
+    ) -> MemoryResult<NodeVersion> {
+        let markdown = if let Some(md) = markdown {
+            md
+        } else if let Some(path) = &path {
+            std::fs::read_to_string(path)?
+        } else if let Some(node_id) = &node_id {
+            let (_, content) = self
+                .storage
+                .read_markdown_node(node_id)?
+                .ok_or_else(|| {
+                    MemoryError::NotFound(format!("markdown for node {node_id} not found"))
+                })?;
+            content
+        } else {
+            return Err(MemoryError::Invalid(
+                "sync_markdown requires markdown, path, or node_id".to_string(),
+            ));
+        };
+
+        let parsed = parse_markdown_with_meta(&markdown);
+        let node_id_from_meta = parsed.frontmatter.get("node_id").cloned();
+        let resolved_node_id = match (node_id, node_id_from_meta) {
+            (Some(from_arg), Some(from_meta)) => {
+                if from_arg != from_meta {
+                    return Err(MemoryError::Invalid(format!(
+                        "node_id mismatch: action={from_arg} frontmatter={from_meta}"
+                    )));
+                }
+                from_arg
+            }
+            (Some(from_arg), None) => from_arg,
+            (None, Some(from_meta)) => from_meta,
+            (None, None) => {
+                return Err(MemoryError::Invalid(
+                    "sync_markdown missing node_id (provide in action or frontmatter)"
+                        .to_string(),
+                ))
+            }
+        };
+
+        let confidence = confidence
+            .or_else(|| {
+                parsed
+                    .frontmatter
+                    .get("confidence")
+                    .and_then(|value| value.parse::<f32>().ok())
+            })
+            .unwrap_or(0.9);
+        let importance = importance
+            .or_else(|| {
+                parsed
+                    .frontmatter
+                    .get("importance")
+                    .and_then(|value| value.parse::<f32>().ok())
+            })
+            .unwrap_or(1.0);
+
+        let agent_id = agent_id.unwrap_or_else(|| "human".to_string());
+        let reason = reason.unwrap_or_else(|| "manual markdown sync".to_string());
+        let source = source.unwrap_or_else(|| "manual_edit".to_string());
+        self.validate_agent_markdown_request(&markdown, confidence, &agent_id, &reason, &source)?;
+
+        let existing_head = self
+            .head(&resolved_node_id)
+            .and_then(|head_id| self.get_version(head_id).ok());
+
+        let now = now_ts();
+        let mut content = normalize_content(parsed.content);
+        if let Some(head) = &existing_head {
+            content.links = head.content.links.clone();
+        }
+        content
+            .structured_data
+            .insert("meta.source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("meta.origin".to_string(), agent_id.to_string());
+        content
+            .structured_data
+            .insert("kb.last_agent_id".to_string(), agent_id.to_string());
+        content
+            .structured_data
+            .insert("kb.last_reason".to_string(), reason.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.last_source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.updated_at".to_string(), now.to_string());
+
+        let version = if self.head(&resolved_node_id).is_some() {
+            self.replace_node(&resolved_node_id, content, confidence, importance)?
+        } else {
+            self.create_node(&resolved_node_id, content, confidence, importance)?
+        };
+
+        self.storage.append_agent_action_log(&AgentActionLog {
+            timestamp: now,
+            agent_id: agent_id.to_string(),
+            action: "sync_markdown".to_string(),
+            node_id: resolved_node_id.to_string(),
+            version: version.version.clone(),
+            reason: reason.trim().to_string(),
+            source: source.trim().to_string(),
+        })?;
+
+        Ok(version)
+    }
+
+    pub fn set_node_links(
+        &mut self,
+        node_id: &str,
+        links: Vec<Link>,
+        agent_id: Option<String>,
+        reason: Option<String>,
+        source: Option<String>,
+        confidence: Option<f32>,
+        importance: Option<f32>,
+    ) -> MemoryResult<NodeVersion> {
+        let head_id = self
+            .head(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .to_string();
+        let head = self.get_version(&head_id)?;
+
+        let agent_id = agent_id.unwrap_or_else(|| "ui-editor".to_string());
+        let reason = reason.unwrap_or_else(|| "update canonical graph links".to_string());
+        let source = source.unwrap_or_else(|| "graph_editor".to_string());
+        let confidence = confidence.unwrap_or(head.confidence);
+        let importance = importance.unwrap_or(head.importance);
+        self.validate_agent_governed_request(confidence, &agent_id, &reason, &source)?;
+
+        let now = now_ts();
+        let mut content = normalize_content(head.content.clone());
+        content.links = normalize_links(links);
+        content
+            .structured_data
+            .insert("kb.last_agent_id".to_string(), agent_id.to_string());
+        content
+            .structured_data
+            .insert("kb.last_reason".to_string(), reason.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.last_source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.updated_at".to_string(), now.to_string());
+
+        let version = self.replace_node(node_id, content, confidence, importance)?;
+        self.storage.append_agent_action_log(&AgentActionLog {
+            timestamp: now,
+            agent_id,
+            action: "set_node_links".to_string(),
+            node_id: node_id.to_string(),
+            version: version.version.clone(),
+            reason: reason.trim().to_string(),
+            source: source.trim().to_string(),
+        })?;
+        Ok(version)
+    }
+
+    pub fn ingest_text(
+        &mut self,
+        node_id: Option<String>,
+        title: Option<String>,
+        text: &str,
+        summary: Option<String>,
+        facts: Option<BTreeMap<String, String>>,
+        relations: Option<Vec<IngestRelation>>,
+        highlights: Option<Vec<String>>,
+        evidence: Option<Vec<String>>,
+        source: &str,
+        agent_id: Option<String>,
+        reason: Option<String>,
+        confidence: Option<f32>,
+        importance: Option<f32>,
+    ) -> MemoryResult<NodeVersion> {
+        let agent_id = agent_id.unwrap_or_else(|| "agent-ingest".to_string());
+        let reason = reason.unwrap_or_else(|| "auto ingestion".to_string());
+        let confidence = confidence.unwrap_or(self.agent_governance.min_confidence.max(0.7));
+        let importance = importance.unwrap_or(1.0);
+        self.validate_agent_governed_request(confidence, &agent_id, &reason, source)?;
+
+        let parsed = parse_markdown_with_meta(text);
+        let mut content = parsed.content;
+        if let Some(title) = title {
+            content.title = title;
+        }
+        if let Some(summary) = summary {
+            content.summary = ensure_summary(&summary, &content.title, &content.body);
+        } else {
+            content.summary = ensure_summary(&content.summary, &content.title, &content.body);
+        }
+
+        if let Some(highlights) = highlights {
+            for item in highlights {
+                if !content.highlights.iter().any(|h| h == &item) {
+                    content.highlights.push(item);
+                }
+            }
+        }
+
+        if let Some(facts) = facts {
+            for (k, v) in facts {
+                let key = normalize_fact_key(&k);
+                if !key.is_empty() && !v.trim().is_empty() {
+                    insert_fact(&mut content.structured_data, &key, v.trim());
+                }
+            }
+        }
+
+        for (k, v) in extract_inline_facts(&content.body) {
+            let key = normalize_fact_key(&k);
+            if !key.is_empty() && !v.trim().is_empty() {
+                insert_fact(&mut content.structured_data, &key, v.trim());
+            }
+        }
+
+        if let Some(relations) = relations {
+            for relation in relations {
+                let target = relation.target.trim().to_string();
+                if target.is_empty() {
+                    continue;
+                }
+                let label = relation.label.clone().unwrap_or_else(|| "related".to_string());
+                let weight = relation.weight.unwrap_or(0.8).max(0.0);
+                if !content
+                    .links
+                    .iter()
+                    .any(|link| link.target == target && link.label.as_deref() == Some(&label))
+                {
+                    content.links.push(Link {
+                        target,
+                        label: Some(label),
+                        weight,
+                    });
+                }
+            }
+        }
+
+        if let Some(evidence) = evidence {
+            for item in evidence {
+                if !item.trim().is_empty() {
+                    insert_evidence(&mut content.structured_data, item.trim());
+                }
+            }
+        }
+
+        let mut content = normalize_content(content);
+        content
+            .structured_data
+            .insert("meta.source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("meta.origin".to_string(), agent_id.to_string());
+
+        let now = now_ts();
+        content
+            .structured_data
+            .insert("kb.last_agent_id".to_string(), agent_id.to_string());
+        content
+            .structured_data
+            .insert("kb.last_reason".to_string(), reason.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.last_source".to_string(), source.trim().to_string());
+        content
+            .structured_data
+            .insert("kb.updated_at".to_string(), now.to_string());
+
+        let resolved_node_id = node_id
+            .or_else(|| parsed.frontmatter.get("node_id").cloned())
+            .unwrap_or_else(|| derive_node_id(&content.title));
+        let version = if self.head(&resolved_node_id).is_some() {
+            let patch = NodePatch {
+                title: Some(content.title.clone()),
+                summary: Some(content.summary.clone()),
+                body: Some(content.body.clone()),
+                structured_upserts: content.structured_data.clone(),
+                add_links: content.links.clone(),
+                add_highlights: content.highlights.clone(),
+            };
+            self.update_node(&resolved_node_id, patch, confidence, importance)?
+        } else {
+            self.create_node(&resolved_node_id, content, confidence, importance)?
+        };
+
+        self.storage.append_agent_action_log(&AgentActionLog {
+            timestamp: now,
+            agent_id: agent_id.to_string(),
+            action: "ingest".to_string(),
+            node_id: resolved_node_id.to_string(),
             version: version.version.clone(),
             reason: reason.trim().to_string(),
             source: source.trim().to_string(),
@@ -539,6 +1096,120 @@ impl MemoryEngine {
             hits.truncate(limit);
         }
         Ok(hits)
+    }
+
+    pub fn search_bm25(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        search_bm25(query, limit, &self.bm25_index, &self.retrieval_config)
+    }
+
+    pub fn search_vector(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        search_vector(query, limit, &self.vector_index)
+    }
+
+    pub fn search_hybrid(
+        &self,
+        query: &str,
+        limit: usize,
+        rrf_k: Option<usize>,
+        bm25_weight: Option<f32>,
+        vector_weight: Option<f32>,
+        graph_weight: Option<f32>,
+        graph_depth: Option<usize>,
+        graph_seed_limit: Option<usize>,
+    ) -> MemoryResult<Vec<SearchHit>> {
+        let limit = limit.max(1);
+        let bm25_limit = limit.saturating_mul(4).max(12);
+        let vector_limit = limit.saturating_mul(4).max(12);
+        let graph_limit = limit.saturating_mul(4).max(12);
+
+        let bm25_hits = self.search_bm25(query, bm25_limit);
+        let vector_hits = self.search_vector(query, vector_limit);
+
+        let seed_limit = graph_seed_limit.unwrap_or(self.retrieval_config.graph_seed_limit);
+        let mut seeds = Vec::new();
+        for hit in bm25_hits.iter().take(seed_limit) {
+            seeds.push(hit.node_id.clone());
+        }
+        for hit in vector_hits.iter().take(seed_limit) {
+            if !seeds.iter().any(|id| id == &hit.node_id) {
+                seeds.push(hit.node_id.clone());
+            }
+        }
+
+        let graph_hits = self.graph_candidates(
+            &seeds,
+            graph_depth.unwrap_or(self.retrieval_config.graph_depth),
+            graph_limit,
+        );
+
+        let fused = rrf_fuse(
+            vec![
+                (bm25_hits, bm25_weight.unwrap_or(self.retrieval_config.bm25_weight)),
+                (
+                    vector_hits,
+                    vector_weight.unwrap_or(self.retrieval_config.vector_weight),
+                ),
+                (
+                    graph_hits,
+                    graph_weight.unwrap_or(self.retrieval_config.graph_weight),
+                ),
+            ],
+            rrf_k.unwrap_or(self.retrieval_config.rrf_k),
+            limit,
+        );
+        Ok(fused)
+    }
+
+    fn graph_candidates(&self, seeds: &[String], depth_limit: usize, limit: usize) -> Vec<SearchHit> {
+        if seeds.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut scores: HashMap<String, f32> = HashMap::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        let mut visited: HashSet<String> = HashSet::new();
+
+        for seed in seeds {
+            queue.push_back((seed.clone(), 0));
+            visited.insert(seed.clone());
+        }
+
+        while let Some((node_id, depth)) = queue.pop_front() {
+            let importance = self
+                .graph_index
+                .importance_index
+                .get(&node_id)
+                .copied()
+                .unwrap_or(0.0);
+            let depth_penalty = 1.0 / ((depth + 1) as f32);
+            let base = if depth == 0 { 5.0 } else { 0.0 };
+            let score = (importance + base) * depth_penalty;
+            *scores.entry(node_id.clone()).or_insert(0.0) += score;
+
+            if depth >= depth_limit {
+                continue;
+            }
+            for neighbor in self.graph_index.neighbors(&node_id) {
+                if visited.insert(neighbor.clone()) {
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+            for neighbor in self.graph_index.inbound_neighbors(&node_id) {
+                if visited.insert(neighbor.clone()) {
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+        }
+
+        let mut hits: Vec<SearchHit> = scores
+            .into_iter()
+            .map(|(node_id, score)| SearchHit { node_id, score })
+            .collect();
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+        if hits.len() > limit {
+            hits.truncate(limit);
+        }
+        hits
     }
 
     pub fn suggest_exploration(
@@ -1021,6 +1692,27 @@ impl MemoryEngine {
                     }
                     Ok(ToolResponse::SearchResults { results: hits })
                 }),
+            ToolAction::SearchHybrid {
+                query,
+                limit,
+                rrf_k,
+                bm25_weight,
+                vector_weight,
+                graph_weight,
+                graph_depth,
+                graph_seed_limit,
+            } => self
+                .search_hybrid(
+                    &query,
+                    limit.unwrap_or(10),
+                    rrf_k,
+                    bm25_weight,
+                    vector_weight,
+                    graph_weight,
+                    graph_depth,
+                    graph_seed_limit,
+                )
+                .map(|results| ToolResponse::SearchResults { results }),
             ToolAction::SuggestExploration { node_id, limit } => self
                 .suggest_exploration(&node_id, limit.unwrap_or(8))
                 .map(|results| ToolResponse::ExploreResults { results }),
@@ -1057,6 +1749,77 @@ impl MemoryEngine {
             } => self
                 .agent_upsert_markdown(
                     &node_id, &markdown, confidence, importance, &agent_id, &reason, &source,
+                )
+                .map(|version| ToolResponse::Version { version }),
+            ToolAction::Ingest {
+                node_id,
+                title,
+                text,
+                summary,
+                facts,
+                relations,
+                highlights,
+                evidence,
+                source,
+                agent_id,
+                reason,
+                confidence,
+                importance,
+            } => self
+                .ingest_text(
+                    node_id,
+                    title,
+                    &text,
+                    summary,
+                    facts,
+                    relations,
+                    highlights,
+                    evidence,
+                    &source,
+                    agent_id,
+                    reason,
+                    confidence,
+                    importance,
+                )
+                .map(|version| ToolResponse::Version { version }),
+            ToolAction::SyncMarkdown {
+                node_id,
+                path,
+                markdown,
+                agent_id,
+                reason,
+                source,
+                confidence,
+                importance,
+            } => self
+                .sync_markdown(
+                    node_id,
+                    path,
+                    markdown,
+                    agent_id,
+                    reason,
+                    source,
+                    confidence,
+                    importance,
+                )
+                .map(|version| ToolResponse::Version { version }),
+            ToolAction::SetNodeLinks {
+                node_id,
+                links,
+                agent_id,
+                reason,
+                source,
+                confidence,
+                importance,
+            } => self
+                .set_node_links(
+                    &node_id,
+                    links,
+                    agent_id,
+                    reason,
+                    source,
+                    confidence,
+                    importance,
                 )
                 .map(|version| ToolResponse::Version { version }),
             ToolAction::RollbackNode {
@@ -1153,6 +1916,12 @@ impl MemoryEngine {
     fn rebuild_index(&mut self) -> MemoryResult<()> {
         self.graph_index = GraphIndex::build(&self.storage, &self.heads)?;
         self.keyword_index = build_keyword_index(&self.storage, &self.heads)?;
+        self.bm25_index = build_bm25_index(&self.storage, &self.heads)?;
+        self.vector_index = build_vector_index(
+            &self.storage,
+            &self.heads,
+            self.retrieval_config.vector_dim,
+        )?;
         Ok(())
     }
 
@@ -1171,6 +1940,22 @@ impl MemoryEngine {
             self.sync_markdown_for_version(node_id, &version)?;
         }
         Ok(())
+    }
+
+    fn normalize_patch_with_head(
+        &self,
+        node_id: &str,
+        patch: NodePatch,
+    ) -> MemoryResult<NodePatch> {
+        let head_id = self
+            .head(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?;
+        let head = self.get_version(head_id)?;
+        Ok(normalize_patch(
+            patch,
+            &head.content.title,
+            &head.content.body,
+        ))
     }
 
     fn validate_agent_markdown_request(
@@ -1192,6 +1977,34 @@ impl MemoryEngine {
                 self.agent_governance.max_markdown_bytes
             )));
         }
+        if confidence < self.agent_governance.min_confidence {
+            return Err(MemoryError::Invalid(format!(
+                "confidence {} is below governance minimum {}",
+                confidence, self.agent_governance.min_confidence
+            )));
+        }
+        if agent_id.trim().is_empty() {
+            return Err(MemoryError::Invalid("agent_id is required".to_string()));
+        }
+        if reason.trim().chars().count() < self.agent_governance.min_reason_chars {
+            return Err(MemoryError::Invalid(format!(
+                "reason must be at least {} characters",
+                self.agent_governance.min_reason_chars
+            )));
+        }
+        if source.trim().is_empty() {
+            return Err(MemoryError::Invalid("source is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn validate_agent_governed_request(
+        &self,
+        confidence: f32,
+        agent_id: &str,
+        reason: &str,
+        source: &str,
+    ) -> MemoryResult<()> {
         if confidence < self.agent_governance.min_confidence {
             return Err(MemoryError::Invalid(format!(
                 "confidence {} is below governance minimum {}",
@@ -1348,6 +2161,252 @@ fn tokenize(input: &str) -> Vec<String> {
     tokens
 }
 
+fn ensure_summary(summary: &str, title: &str, body: &str) -> String {
+    let trimmed = summary.trim();
+    let length = trimmed.chars().count();
+    if (8..=140).contains(&length) {
+        return trimmed.to_string();
+    }
+    derive_summary_for_text(title, body)
+}
+
+fn derive_summary_for_text(title: &str, body: &str) -> String {
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        let compact: String = normalized.chars().take(140).collect();
+        if compact.chars().count() >= 8 {
+            return compact;
+        }
+    }
+    let title_trimmed = title.trim();
+    if title_trimmed.chars().count() >= 8 {
+        return title_trimmed.chars().take(140).collect();
+    }
+    format!("{title_trimmed} summary")
+}
+
+fn normalize_fact_key(key: &str) -> String {
+    let mut out = String::new();
+    let mut prev_underscore = false;
+    for ch in key.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_underscore = false;
+        } else if ch == ' ' || ch == '-' || ch == '_' {
+            if !prev_underscore && !out.is_empty() {
+                out.push('_');
+                prev_underscore = true;
+            }
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+fn insert_fact(structured: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    let base = format!("fact.{key}");
+    if !structured.contains_key(&base) {
+        structured.insert(base, value.to_string());
+        return;
+    }
+    let mut i = 2;
+    loop {
+        let candidate = format!("{base}.{i}");
+        if !structured.contains_key(&candidate) {
+            structured.insert(candidate, value.to_string());
+            break;
+        }
+        i += 1;
+    }
+}
+
+fn insert_evidence(structured: &mut BTreeMap<String, String>, evidence: &str) {
+    let mut i = 1;
+    loop {
+        let key = format!("evidence.{:02}", i);
+        if !structured.contains_key(&key) {
+            structured.insert(key, evidence.to_string());
+            break;
+        }
+        i += 1;
+    }
+}
+
+fn derive_node_id(title: &str) -> String {
+    let mut out = String::new();
+    let mut prev_underscore = false;
+    for ch in title.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_underscore = false;
+        } else if ch == ' ' || ch == '-' || ch == '_' {
+            if !prev_underscore && !out.is_empty() {
+                out.push('_');
+                prev_underscore = true;
+            }
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "untitled".to_string()
+    } else {
+        out
+    }
+}
+
+fn extract_inline_facts(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (left, right) = if let Some(pair) = trimmed.split_once(':') {
+            pair
+        } else if let Some(pair) = trimmed.split_once('=') {
+            pair
+        } else {
+            continue;
+        };
+        let key = left.trim();
+        let value = right.trim();
+        if key.len() < 2 || key.len() > 40 {
+            continue;
+        }
+        if value.len() < 2 || value.len() > 160 {
+            continue;
+        }
+        out.push((key.to_string(), value.to_string()));
+        if out.len() >= 12 {
+            break;
+        }
+    }
+    out
+}
+
+fn normalize_content(mut content: NodeContent) -> NodeContent {
+    content.title = content.title.trim().to_string();
+    if content.title.is_empty() {
+        content.title = "Untitled".to_string();
+    }
+
+    content.body = content.body.trim().to_string();
+    if content.body.is_empty() {
+        content.body = format!("# {}", content.title);
+    }
+    content.summary = ensure_summary(&content.summary, &content.title, &content.body);
+    content.highlights = normalize_highlights(content.highlights);
+    content.links = normalize_links(content.links);
+
+    let mut cleaned = BTreeMap::new();
+    for (k, v) in content.structured_data {
+        let key = k.trim();
+        let value = v.trim();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        let normalized_key = if let Some(rest) = key.strip_prefix("fact.") {
+            let suffix = normalize_fact_key(rest);
+            if suffix.is_empty() {
+                continue;
+            }
+            format!("fact.{suffix}")
+        } else {
+            key.to_string()
+        };
+        cleaned.insert(normalized_key, value.to_string());
+    }
+    content.structured_data = cleaned;
+
+    content
+}
+
+fn normalize_patch(mut patch: NodePatch, base_title: &str, base_body: &str) -> NodePatch {
+    if let Some(title) = patch.title {
+        let trimmed = title.trim().to_string();
+        patch.title = Some(if trimmed.is_empty() {
+            "Untitled".to_string()
+        } else {
+            trimmed
+        });
+    }
+    if let Some(body) = patch.body {
+        let trimmed = body.trim().to_string();
+        patch.body = Some(trimmed);
+    }
+    if let Some(summary) = patch.summary {
+        let title = patch.title.as_deref().unwrap_or(base_title);
+        let body = patch.body.as_deref().unwrap_or(base_body);
+        patch.summary = Some(ensure_summary(&summary, title, body));
+    } else if patch.body.is_some() {
+        let title = patch.title.as_deref().unwrap_or(base_title);
+        let body = patch.body.as_deref().unwrap_or(base_body);
+        patch.summary = Some(ensure_summary("", title, body));
+    }
+
+    if !patch.add_links.is_empty() {
+        patch.add_links = normalize_links(patch.add_links);
+    }
+    if !patch.add_highlights.is_empty() {
+        patch.add_highlights = normalize_highlights(patch.add_highlights);
+    }
+
+    patch
+}
+
+fn normalize_highlights(items: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if out.iter().any(|h| h == trimmed) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+        if out.len() >= 12 {
+            break;
+        }
+    }
+    out
+}
+
+fn normalize_links(links: Vec<Link>) -> Vec<Link> {
+    let mut map: HashMap<(String, String), f32> = HashMap::new();
+    for link in links {
+        let target = link.target.trim();
+        if target.is_empty() {
+            continue;
+        }
+        let label = link.label.unwrap_or_else(|| "related".to_string());
+        let key = (target.to_string(), label.clone());
+        let entry = map.entry(key).or_insert(link.weight);
+        if link.weight > *entry {
+            *entry = link.weight;
+        }
+    }
+
+    let mut out = Vec::new();
+    for ((target, label), weight) in map {
+        out.push(Link {
+            target,
+            label: Some(label),
+            weight,
+        });
+    }
+    out.sort_by(|a, b| a.target.cmp(&b.target).then_with(|| a.label.cmp(&b.label)));
+    out
+}
+
 fn build_keyword_index(
     storage: &FileStorage,
     heads: &HashMap<String, String>,
@@ -1387,6 +2446,404 @@ fn add_text_tokens(
         let entry = index.entry(token).or_default();
         *entry.entry(node_id.to_string()).or_insert(0.0) += weight;
     }
+}
+
+fn tokenize_with_counts(input: &str) -> HashMap<String, f32> {
+    let mut counts: HashMap<String, f32> = HashMap::new();
+    let mut ascii_buf = String::new();
+    let mut cjk_buf = String::new();
+
+    for ch in input.chars() {
+        if is_cjk(ch) {
+            if !ascii_buf.is_empty() {
+                push_ascii_token(&mut counts, &ascii_buf);
+                ascii_buf.clear();
+            }
+            cjk_buf.push(ch);
+            continue;
+        }
+
+        if ch.is_alphanumeric() || ch == '_' {
+            if !cjk_buf.is_empty() {
+                flush_cjk_counts(&mut counts, &mut cjk_buf);
+            }
+            ascii_buf.push(ch);
+            continue;
+        }
+
+        if !ascii_buf.is_empty() {
+            push_ascii_token(&mut counts, &ascii_buf);
+            ascii_buf.clear();
+        }
+        if !cjk_buf.is_empty() {
+            flush_cjk_counts(&mut counts, &mut cjk_buf);
+        }
+    }
+
+    if !ascii_buf.is_empty() {
+        push_ascii_token(&mut counts, &ascii_buf);
+    }
+    if !cjk_buf.is_empty() {
+        flush_cjk_counts(&mut counts, &mut cjk_buf);
+    }
+
+    counts
+}
+
+fn push_ascii_token(counts: &mut HashMap<String, f32>, token: &str) {
+    let token = token.trim().to_lowercase();
+    if token.len() < 2 {
+        return;
+    }
+    *counts.entry(token).or_insert(0.0) += 1.0;
+}
+
+fn flush_cjk_counts(counts: &mut HashMap<String, f32>, buf: &mut String) {
+    let len = buf.chars().count();
+    if len < 2 {
+        buf.clear();
+        return;
+    }
+
+    *counts.entry(buf.clone()).or_insert(0.0) += 1.0;
+    let chars: Vec<char> = buf.chars().collect();
+    for window in chars.windows(2) {
+        let mut gram = String::new();
+        for ch in window {
+            gram.push(*ch);
+        }
+        *counts.entry(gram).or_insert(0.0) += 1.0;
+    }
+    buf.clear();
+}
+
+fn collect_weighted_tokens(content: &NodeContent) -> HashMap<String, f32> {
+    let mut counts: HashMap<String, f32> = HashMap::new();
+    add_text_counts(&mut counts, &content.title, 4.5);
+    add_text_counts(&mut counts, &content.summary, 3.5);
+    add_text_counts(&mut counts, &content.body, 2.0);
+    add_text_counts(&mut counts, &content.highlights.join(" "), 2.5);
+    for (k, v) in &content.structured_data {
+        add_text_counts(&mut counts, k, 1.0);
+        add_text_counts(&mut counts, v, 1.5);
+    }
+    counts
+}
+
+fn add_text_counts(counts: &mut HashMap<String, f32>, text: &str, weight: f32) {
+    for (token, count) in tokenize_with_counts(text) {
+        *counts.entry(token).or_insert(0.0) += count * weight;
+    }
+}
+
+fn build_bm25_index(storage: &FileStorage, heads: &HashMap<String, String>) -> MemoryResult<Bm25Index> {
+    let mut postings: HashMap<String, HashMap<String, f32>> = HashMap::new();
+    let mut doc_len: HashMap<String, f32> = HashMap::new();
+    let mut total_len = 0.0;
+
+    for (node_id, version_id) in heads {
+        let version = storage.read_object(version_id)?;
+        let counts = collect_weighted_tokens(&version.content);
+        if counts.is_empty() {
+            continue;
+        }
+        let length: f32 = counts.values().sum();
+        doc_len.insert(node_id.clone(), length.max(1.0));
+        total_len += length.max(1.0);
+        for (token, tf) in counts {
+            postings
+                .entry(token)
+                .or_default()
+                .insert(node_id.clone(), tf);
+        }
+    }
+
+    let mut df: HashMap<String, usize> = HashMap::new();
+    for (token, posting) in &postings {
+        df.insert(token.clone(), posting.len());
+    }
+
+    let doc_count = doc_len.len();
+    let avg_len = if doc_count == 0 {
+        0.0
+    } else {
+        total_len / (doc_count as f32)
+    };
+
+    Ok(Bm25Index {
+        postings,
+        doc_len,
+        avg_len,
+        doc_count,
+        df,
+    })
+}
+
+fn search_bm25(
+    query: &str,
+    limit: usize,
+    index: &Bm25Index,
+    config: &RetrievalConfig,
+) -> Vec<SearchHit> {
+    if limit == 0 || index.doc_count == 0 {
+        return Vec::new();
+    }
+    let query_counts = tokenize_with_counts(query);
+    if query_counts.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scores: HashMap<String, f32> = HashMap::new();
+    let avg_len = if index.avg_len > 0.0 {
+        index.avg_len
+    } else {
+        1.0
+    };
+    let n = index.doc_count as f32;
+
+    for (token, qtf) in query_counts {
+        let posting = match index.postings.get(&token) {
+            Some(p) => p,
+            None => continue,
+        };
+        let df = *index.df.get(&token).unwrap_or(&0) as f32;
+        let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+        for (node_id, tf) in posting {
+            let doc_len = index.doc_len.get(node_id).copied().unwrap_or(1.0);
+            let denom = tf + config.bm25_k1 * (1.0 - config.bm25_b + config.bm25_b * (doc_len / avg_len));
+            let score = idf * (tf * (config.bm25_k1 + 1.0) / denom.max(0.0001));
+            *scores.entry(node_id.clone()).or_insert(0.0) += score * qtf;
+        }
+    }
+
+    let mut hits: Vec<SearchHit> = scores
+        .into_iter()
+        .map(|(node_id, score)| SearchHit { node_id, score })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    if hits.len() > limit {
+        hits.truncate(limit);
+    }
+    hits
+}
+
+fn build_vector_index(
+    storage: &FileStorage,
+    heads: &HashMap<String, String>,
+    dim: usize,
+) -> MemoryResult<VectorIndex> {
+    let mut index = VectorIndex::new(dim);
+    let cache = storage.load_embedding_cache().unwrap_or_default();
+    let client = EmbeddingClient::from_env();
+    let mut expected_dim: Option<usize> = None;
+
+    if let Some(client) = &client {
+        let probe = client.embed("mempedia embedding probe")?;
+        if !probe.is_empty() {
+            expected_dim = Some(probe.len());
+            index.dim = probe.len();
+        }
+    }
+
+    let mut updated_cache = EmbeddingCache {
+        vectors: HashMap::new(),
+    };
+
+    for (node_id, version_id) in heads {
+        if let Some(cached) = cache.vectors.get(node_id) {
+            if cached.version == *version_id && cached.dim > 0 {
+                if let Some(expected) = expected_dim {
+                    if cached.dim != expected {
+                        // Skip stale cache from a different embedding dimension.
+                        continue;
+                    }
+                } else if index.dim != cached.dim {
+                    index.dim = cached.dim;
+                }
+                index.vectors.insert(node_id.clone(), cached.vector.clone());
+                updated_cache
+                    .vectors
+                    .insert(node_id.clone(), cached.clone());
+                continue;
+            }
+        }
+
+        let version = storage.read_object(version_id)?;
+        let text = build_embedding_text(&version.content);
+        let vector = if let Some(client) = &client {
+            client.embed(&text)?
+        } else {
+            let counts = collect_weighted_tokens(&version.content);
+            embed_counts(&counts, index.dim)
+        };
+
+        if vector.is_empty() {
+            continue;
+        }
+        if let Some(expected) = expected_dim {
+            if vector.len() != expected {
+                return Err(MemoryError::Invalid(format!(
+                    "embedding dimension mismatch (expected {expected}, got {})",
+                    vector.len()
+                )));
+            }
+        } else if index.dim != vector.len() {
+            index.dim = vector.len();
+        }
+        index.vectors.insert(node_id.clone(), vector.clone());
+        updated_cache.vectors.insert(
+            node_id.clone(),
+            CachedVector {
+                version: version_id.clone(),
+                dim: vector.len(),
+                vector,
+            },
+        );
+    }
+
+    if !updated_cache.vectors.is_empty() {
+        storage.persist_embedding_cache(&updated_cache)?;
+    }
+
+    Ok(index)
+}
+
+fn search_vector(query: &str, limit: usize, index: &VectorIndex) -> Vec<SearchHit> {
+    if limit == 0 || index.vectors.is_empty() {
+        return Vec::new();
+    }
+    let counts = tokenize_with_counts(query);
+    if counts.is_empty() {
+        return Vec::new();
+    }
+    let query_vec = embed_counts(&counts, index.dim);
+    if query_vec.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hits = Vec::new();
+    for (node_id, vec) in &index.vectors {
+        let score = cosine_similarity(&query_vec, vec);
+        if score > 0.0 {
+            hits.push(SearchHit {
+                node_id: node_id.clone(),
+                score,
+            });
+        }
+    }
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    if hits.len() > limit {
+        hits.truncate(limit);
+    }
+    hits
+}
+
+fn embed_counts(counts: &HashMap<String, f32>, dim: usize) -> Vec<f32> {
+    if dim == 0 {
+        return Vec::new();
+    }
+    let mut vec = vec![0.0f32; dim];
+    for (token, weight) in counts {
+        let (idx, sign) = hash_token(token, dim);
+        vec[idx] += sign * weight.sqrt();
+    }
+    normalize_vector(&mut vec);
+    vec
+}
+
+fn hash_token(token: &str, dim: usize) -> (usize, f32) {
+    let hash = blake3::hash(token.as_bytes());
+    let bytes = hash.as_bytes();
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&bytes[0..8]);
+    let value = u64::from_le_bytes(buf);
+    let idx = (value % (dim as u64)) as usize;
+    let sign = if (value & 1) == 0 { 1.0 } else { -1.0 };
+    (idx, sign)
+}
+
+fn normalize_vector(vec: &mut [f32]) {
+    let mut norm = 0.0;
+    for v in vec.iter() {
+        norm += v * v;
+    }
+    if norm <= 0.0 {
+        return;
+    }
+    let inv = norm.sqrt().recip();
+    for v in vec.iter_mut() {
+        *v *= inv;
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+    }
+    dot
+}
+
+fn build_embedding_text(content: &NodeContent) -> String {
+    let mut parts = Vec::new();
+    if !content.title.trim().is_empty() {
+        parts.push(content.title.trim().to_string());
+    }
+    if !content.summary.trim().is_empty() {
+        parts.push(content.summary.trim().to_string());
+    }
+    if !content.body.trim().is_empty() {
+        parts.push(content.body.trim().to_string());
+    }
+    if !content.highlights.is_empty() {
+        parts.push(content.highlights.join(" "));
+    }
+    if !content.structured_data.is_empty() {
+        let mut facts = Vec::new();
+        for (k, v) in &content.structured_data {
+            if k.starts_with("fact.") || k.starts_with("evidence.") {
+                facts.push(format!("{k}: {v}"));
+            }
+        }
+        if !facts.is_empty() {
+            parts.push(facts.join("\n"));
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn rrf_fuse(
+    lists: Vec<(Vec<SearchHit>, f32)>,
+    k: usize,
+    limit: usize,
+) -> Vec<SearchHit> {
+    let mut scores: HashMap<String, f32> = HashMap::new();
+    let denom = k.max(1) as f32;
+
+    for (mut list, weight) in lists {
+        if weight <= 0.0 || list.is_empty() {
+            continue;
+        }
+        list.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+        for (idx, item) in list.into_iter().enumerate() {
+            let rank = (idx + 1) as f32;
+            let score = weight / (denom + rank);
+            *scores.entry(item.node_id).or_insert(0.0) += score;
+        }
+    }
+
+    let mut hits: Vec<SearchHit> = scores
+        .into_iter()
+        .map(|(node_id, score)| SearchHit { node_id, score })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    if hits.len() > limit {
+        hits.truncate(limit);
+    }
+    hits
 }
 
 fn is_cjk(c: char) -> bool {
@@ -1782,15 +3239,16 @@ mod tests {
     }
 
     #[test]
-    fn create_node_requires_non_empty_summary() {
-        let dir = temp_data_dir("summary-required");
+    fn create_node_normalizes_empty_summary() {
+        let dir = temp_data_dir("summary-normalize");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
-        let mut content = sample_content("SummaryRule", "body", "Ref");
+        let mut content = sample_content("SummaryRule", "body text", "Ref");
         content.summary = "".to_string();
-        let err = engine
+        let version = engine
             .create_node("SummaryRule", content, 0.8, 1.0)
-            .expect_err("should reject empty summary");
-        assert!(err.to_string().contains("summary is required"));
+            .expect("should normalize summary");
+        assert!(!version.content.summary.trim().is_empty());
+        assert!(version.content.summary.chars().count() >= 8);
     }
 
     #[test]

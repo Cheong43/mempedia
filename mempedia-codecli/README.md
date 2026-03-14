@@ -38,6 +38,13 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
    OPENAI_MODEL=gpt-4o
    ```
 
+   For embeddings used by Mempedia hybrid search (optional):
+   ```
+   EMBEDDING_API_KEY=your_key_here
+   EMBEDDING_BASE_URL=https://api.openai.com/v1
+   EMBEDDING_MODEL=text-embedding-3-small
+   ```
+
    For separate memory extraction/saving model (optional):
    ```
    MEMORY_API_KEY=your_memory_key_here
@@ -67,6 +74,15 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
    ```
    Set any timeout to a positive value only when you need forced fail-fast behavior.
 
+   Branching ReAct loop controls:
+   ```
+   REACT_BRANCH_MAX_DEPTH=2
+   REACT_BRANCH_MAX_WIDTH=3
+   REACT_BRANCH_MAX_STEPS=8
+   REACT_BRANCH_MAX_COMPLETED=4
+   ```
+   These tune how aggressively the agent forks child reasoning loops when one thought step has multiple viable next actions.
+
 ## Running
 
 ```bash
@@ -95,6 +111,10 @@ npm start
 ## Architecture
 
 - **React/Ink**: UI rendering.
-- **Agent**: Logic loop using OpenAI.
+- **Branching ReAct Agent**: The agent now treats ReAct as a functional loop. Each loop step can either:
+   - continue linearly with one tool plan,
+   - fork into multiple child branches when there are materially different strategies,
+   - or finish with a final answer.
+- **Branch Synthesizer**: Completed branches are merged into one final user answer.
 - **Mempedia Client**: Communicates with `mempedia` binary via NDJSON over stdin/stdout.
-- **Stateless**: The agent retrieves context from Mempedia at the start of each interaction.
+- **Memory Save Queue**: Final traces are still serialized into background memory persistence.

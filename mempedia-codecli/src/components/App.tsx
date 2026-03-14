@@ -20,6 +20,7 @@ interface HistoryItem {
   type: 'user' | 'agent' | 'info' | 'trace';
   content: string;
   traceType?: 'thought' | 'action' | 'observation' | 'error';
+  traceMeta?: TraceEvent['metadata'];
 }
 
 interface LocalSkill {
@@ -32,6 +33,7 @@ interface WebConversationItem {
   role: 'user' | 'assistant' | 'trace';
   content: string;
   traceType?: 'thought' | 'action' | 'observation' | 'error';
+  traceMeta?: TraceEvent['metadata'];
   timestamp: number;
 }
 
@@ -221,6 +223,28 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     }
     const accessLogs = readJsonLines(path.join(indexDir, 'access.log'), (row) => row && typeof row.node_id === 'string');
     const agentActions = readJsonLines(path.join(indexDir, 'agent_actions.log'), (row) => row && typeof row.node_id === 'string');
+    const habits = readJsonLines(path.join(indexDir, 'user_habits.jsonl'), (row) => row && typeof row.topic === 'string');
+    const behaviorPatterns = readJsonLines(path.join(indexDir, 'behavior_patterns.jsonl'), (row) => row && typeof row.pattern_key === 'string');
+    const nodeConversations = readJsonLines(path.join(indexDir, 'node_conversations.jsonl'), (row) => row && typeof row.node_id === 'string');
+    const conversationDir = path.join(indexDir, 'conversations');
+    const conversations: Array<{ id: string; timestamp?: string; input?: string; answer?: string }> = [];
+    if (fs.existsSync(conversationDir)) {
+      const conversationFiles = listFiles(conversationDir).filter((f) => f.endsWith('.json'));
+      for (const file of conversationFiles) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+          if (parsed?.id) {
+            conversations.push({
+              id: String(parsed.id),
+              timestamp: typeof parsed.timestamp === 'string' ? parsed.timestamp : undefined,
+              input: typeof parsed.input === 'string' ? parsed.input : undefined,
+              answer: typeof parsed.answer === 'string' ? parsed.answer : undefined,
+            });
+          }
+        } catch {}
+      }
+      conversations.sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+    }
     const markdownByNode: Array<[string, { path: string; markdown: string }]> = [];
     if (fs.existsSync(knowledgeDir)) {
       const markdownFiles = listFiles(knowledgeDir).filter((f) => f.endsWith('.md'));
@@ -244,6 +268,10 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       versions,
       accessLogs,
       agentActions,
+      habits,
+      behaviorPatterns,
+      nodeConversations,
+      conversations,
       markdownByNode,
     };
   };
@@ -271,7 +299,8 @@ ${query}`
     const safePrefix = `${safeRoot}${path.sep}`;
     return http.createServer(async (req, res) => {
       const method = req.method || 'GET';
-      const rawPath = (req.url || '/').split('?')[0];
+      const requestUrl = new URL(req.url || '/', 'http://127.0.0.1');
+      const rawPath = requestUrl.pathname;
       if (rawPath === '/api/cli/status' && method === 'GET') {
         writeJson(res, 200, {
           ok: true,
@@ -288,6 +317,109 @@ ${query}`
       if (rawPath === '/api/memory/snapshot' && method === 'GET') {
         try {
           writeJson(res, 200, { ok: true, ...loadMemorySnapshot() });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/node' && method === 'GET') {
+        try {
+          const nodeId = String(requestUrl.searchParams.get('node_id') || '').trim();
+          if (!nodeId) {
+            writeJson(res, 400, { ok: false, error: 'node_id is required' });
+            return;
+          }
+          const result = await agent.sendMempediaAction({
+            action: 'open_node',
+            node_id: nodeId,
+            markdown: true,
+            agent_id: 'ui-editor',
+          });
+          if ((result as any)?.kind === 'error') {
+            writeJson(res, 400, { ok: false, error: (result as any).message || 'Failed to open node' });
+            return;
+          }
+          if ((result as any)?.kind !== 'markdown') {
+            writeJson(res, 500, { ok: false, error: 'Unexpected response while opening node' });
+            return;
+          }
+          writeJson(res, 200, { ok: true, ...(result as any) });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/node/save' && method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const markdown = String(body?.markdown || '');
+          const nodeId = String(body?.node_id || parseFrontmatterNodeId(markdown) || '').trim();
+          const graphLinks = Array.isArray(body?.graph_links) ? body.graph_links : [];
+          const agentId = String(body?.agent_id || 'ui-editor').trim() || 'ui-editor';
+          const reason = String(body?.reason || 'ui autosave sync').trim() || 'ui autosave sync';
+          const source = String(body?.source || 'mempedia-ui').trim() || 'mempedia-ui';
+          const confidence = Number(body?.confidence);
+          const importance = Number(body?.importance);
+          if (!markdown.trim()) {
+            writeJson(res, 400, { ok: false, error: 'markdown is required' });
+            return;
+          }
+          if (!nodeId) {
+            writeJson(res, 400, { ok: false, error: 'node_id is required in request or markdown frontmatter' });
+            return;
+          }
+          const result = await agent.sendMempediaAction({
+            action: 'sync_markdown',
+            node_id: nodeId,
+            markdown,
+            agent_id: agentId,
+            reason,
+            source,
+            confidence: Number.isFinite(confidence) ? confidence : undefined,
+            importance: Number.isFinite(importance) ? importance : undefined,
+          });
+          if ((result as any)?.kind === 'error') {
+            writeJson(res, 400, { ok: false, error: (result as any).message || 'Failed to save markdown' });
+            return;
+          }
+          const linkResult = await agent.sendMempediaAction({
+            action: 'set_node_links',
+            node_id: nodeId,
+            links: graphLinks
+              .map((link: any) => ({
+                target: String(link?.target || '').trim(),
+                label: String(link?.label || '').trim() || undefined,
+                weight: Number.isFinite(Number(link?.weight)) ? Number(link.weight) : undefined,
+              }))
+              .filter((link: any) => link.target),
+            agent_id: agentId,
+            reason: `${reason} (graph links)`,
+            source,
+            confidence: Number.isFinite(confidence) ? confidence : undefined,
+            importance: Number.isFinite(importance) ? importance : undefined,
+          });
+          if ((linkResult as any)?.kind === 'error') {
+            writeJson(res, 400, { ok: false, error: (linkResult as any).message || 'Failed to save graph links' });
+            return;
+          }
+          const opened = await agent.sendMempediaAction({
+            action: 'open_node',
+            node_id: nodeId,
+            markdown: true,
+            agent_id: agentId,
+          });
+          if ((opened as any)?.kind === 'error') {
+            writeJson(res, 400, { ok: false, error: (opened as any).message || 'Saved but failed to reopen node' });
+            return;
+          }
+          writeJson(res, 200, {
+            ok: true,
+            node_id: nodeId,
+            result,
+            linkResult,
+            opened,
+            snapshot: loadMemorySnapshot(),
+          });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
         }
@@ -311,14 +443,15 @@ ${query}`
             : null;
           const prompt = formatPromptWithSkill(query, selectedSkill);
           uiBusyRef.current = true;
-          const traces: Array<{ type: string; content: string }> = [];
+          const traces: Array<{ type: string; content: string; metadata?: TraceEvent['metadata'] }> = [];
           webConversationRef.current.push({ role: 'user', content: query, timestamp: Date.now() });
           const answer = await agent.run(prompt, (event: TraceEvent) => {
-            traces.push({ type: event.type, content: event.content });
+            traces.push({ type: event.type, content: event.content, metadata: event.metadata });
             webConversationRef.current.push({
               role: 'trace',
               content: event.content,
               traceType: event.type,
+              traceMeta: event.metadata,
               timestamp: Date.now(),
             });
           });
@@ -413,7 +546,8 @@ ${query}`
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'trace',
         content: event.content,
-        traceType: event.type
+        traceType: event.type,
+        traceMeta: event.metadata,
       }]);
       setStatus(event.type === 'thought' ? 'Thinking...' : event.type === 'action' ? 'Acting...' : 'Observing...');
     });
@@ -574,9 +708,18 @@ ${query}`
     }
   };
 
+  const formatTraceBranch = (meta?: TraceEvent['metadata']) => {
+    if (!meta?.branchId) {
+      return '';
+    }
+    const label = meta.branchLabel ? ` ${meta.branchLabel}` : '';
+    const depth = typeof meta.depth === 'number' ? ` d${meta.depth}` : '';
+    return `[${meta.branchId}${depth}${label}] `;
+  };
+
   return (
     <Box flexDirection="column" padding={1}>
-      <Text color="green" bold>Mempedia CodeCLI (ReAct Agent)</Text>
+      <Text color="green" bold>Mempedia CodeCLI (Branching ReAct Agent)</Text>
       <Text color="dim">Skill: {activeSkill ? activeSkill.name : 'none'} | Use /skills to list</Text>
       <Text color="dim">UI: {uiUrl || 'stopped'} | /ui start to launch mempedia-ui</Text>
       <Box flexDirection="column" marginY={1}>
@@ -584,7 +727,7 @@ ${query}`
           <Box key={index} flexDirection="column" marginY={0} marginLeft={item.type === 'trace' ? 2 : 0}>
             {item.type === 'trace' ? (
               <Text color={getTraceColor(item.traceType)}>
-                {getTracePrefix(item.traceType)} {item.content}
+                {getTracePrefix(item.traceType)} {formatTraceBranch(item.traceMeta)}{item.content}
               </Text>
             ) : (
               <Text color={item.type === 'user' ? 'blue' : item.type === 'agent' ? 'green' : 'yellow'}>
