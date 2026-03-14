@@ -16,6 +16,10 @@ Each loop iteration must do exactly one of the following:
 3. **THOUGHT → FINAL**
    If the branch is done, emit a final answer for that branch.
 
+4. **THOUGHT → ASYNC SAVE (optional)**
+   If a branch has discovered durable value, call the async memory-save tool immediately.
+   This should preserve only valuable information plus the raw conversation snapshot, without blocking the main loop.
+
 Completed branches are synthesized into one user-facing answer.
 
 ## When to Branch
@@ -28,6 +32,16 @@ Branch only if the alternatives are genuinely different, for example:
 - quick answer path vs. validation path
 
 Do **not** branch for trivial wording variations.
+
+## When to Save Memory
+
+Use async memory save only when at least one of these is true:
+
+- a reusable project fact was discovered
+- a stable workflow/pattern was confirmed
+- a valuable branch result should be preserved before the session ends
+
+Do **not** save every branch by default.
 
 ## Tool Order (Recommended)
 

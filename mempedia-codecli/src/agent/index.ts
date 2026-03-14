@@ -95,6 +95,24 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'queue_memory_save',
+      description: 'Queue an asynchronous memory save job for valuable knowledge and the raw conversation snapshot without blocking the main reasoning loop.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Why this memory is worth saving now.' },
+          focus: { type: 'string', description: 'Optional summary of the valuable information to preserve.' },
+          save_habits: { type: 'boolean', description: 'Whether to extract user habits from this snapshot.' },
+          save_patterns: { type: 'boolean', description: 'Whether to extract reusable behavior patterns from this snapshot.' },
+          save_atomic: { type: 'boolean', description: 'Whether to extract atomic project or domain knowledge from this snapshot.' },
+        },
+        required: ['reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'mempedia_traverse',
       description: 'Traverse the knowledge graph from a start node.',
       parameters: {
@@ -175,6 +193,7 @@ const AGENT_TOOL_NAMES = [
   'mempedia_read',
   'mempedia_conversation_lookup',
   'mempedia_save',
+  'queue_memory_save',
   'mempedia_traverse',
   'mempedia_history',
   'run_shell',
@@ -209,9 +228,30 @@ const PlannerDecisionSchema = z.object({
 
 type PlannerDecision = z.infer<typeof PlannerDecisionSchema>;
 
+const ContextSelectionSchema = z.object({
+  relevant_node_ids: z.array(z.string()).max(4).default([]),
+  rationale: z.string().trim().min(1).max(280).optional(),
+});
+
+type ContextSelection = z.infer<typeof ContextSelectionSchema>;
+
 interface BranchTranscriptMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+interface ContextCandidate {
+  nodeId: string;
+  searchScore: number;
+  markdown: string;
+  preview: string;
+}
+
+interface RetrievedContext {
+  contextText: string;
+  recalledNodeIds: string[];
+  selectedNodeIds: string[];
+  rationale: string;
 }
 
 interface BranchState {
@@ -354,6 +394,18 @@ interface MemoryExtraction {
   atomic_knowledge: Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>;
 }
 
+interface MemorySaveJob {
+  input: string;
+  traces: TraceEvent[];
+  answer: string;
+  reason: string;
+  focus?: string;
+  saveHabits: boolean;
+  savePatterns: boolean;
+  saveAtomic: boolean;
+  branchId?: string;
+}
+
 type ChatClient = {
   chat: {
     completions: {
@@ -372,13 +424,10 @@ export class Agent {
   private readonly maxConversationTurns: number;
   private conversationTurns: ConversationTurn[];
   private onBackgroundTaskCallback: ((task: string, status: 'started' | 'completed') => void) | null = null;
-  private saveQueue: Array<{ input: string; traces: TraceEvent[]; answer: string }> = [];
+  private saveQueue: MemorySaveJob[] = [];
   private saveInProgress = false;
   private saveCurrentPromise: Promise<void> | null = null;
-  private saveDebounceTimer: NodeJS.Timeout | null = null;
   private savePendingDrain = false;
-  private readonly saveDebounceMs: number;
-  private readonly saveBatchTurnsLimit: number;
   private readonly extractionMaxChars: number;
   private readonly autoLinkEnabled: boolean;
   private readonly autoLinkMaxNodes: number;
@@ -424,10 +473,6 @@ export class Agent {
     this.interactionCounter = 0;
     this.maxConversationTurns = 5;
     this.conversationTurns = [];
-    const rawDebounce = Number(process.env.MEMORY_SAVE_DEBOUNCE_MS ?? 3000);
-    this.saveDebounceMs = Number.isFinite(rawDebounce) ? Math.max(0, rawDebounce) : 3000;
-    const rawBatchTurns = Number(process.env.MEMORY_SAVE_BATCH_TURNS ?? 4);
-    this.saveBatchTurnsLimit = Number.isFinite(rawBatchTurns) ? Math.max(1, Math.min(20, Math.floor(rawBatchTurns))) : 4;
     const rawExtractionMaxChars = Number(process.env.MEMORY_EXTRACTION_MAX_CHARS ?? 12000);
     this.extractionMaxChars = Number.isFinite(rawExtractionMaxChars) ? Math.max(2000, Math.floor(rawExtractionMaxChars)) : 12000;
     const rawAutoLinkEnabled = String(process.env.MEMORY_AUTO_LINK_ENABLED ?? '1').toLowerCase();
@@ -485,10 +530,6 @@ export class Agent {
   }
 
   async shutdown(timeoutMs = 12000): Promise<void> {
-    if (this.saveDebounceTimer) {
-      clearTimeout(this.saveDebounceTimer);
-      this.saveDebounceTimer = null;
-    }
     if (this.saveQueue.length > 0 && !this.saveInProgress) {
       this.drainSaveQueue();
     }
@@ -988,6 +1029,187 @@ export class Agent {
     }
   }
 
+  private isLikelyFollowUp(input: string): boolean {
+    const text = input.trim().toLowerCase();
+    if (!text) {
+      return false;
+    }
+    const explicitMarkers = [
+      '继续', '接着', '刚才', '上一个', '上个问题', '上述', '前面', '这个', '那个', '它', '他们', '这些',
+      'that', 'those', 'it', 'them', 'previous', 'earlier', 'continue', 'follow up', 'same topic', 'also', 'then'
+    ];
+    if (explicitMarkers.some((marker) => text.includes(marker))) {
+      return true;
+    }
+    const compactTokens = this.normalizeTextForSimilarity(text);
+    return compactTokens.length <= 4;
+  }
+
+  private selectRelevantConversationTurns(input: string): ConversationTurn[] {
+    if (this.conversationTurns.length === 0) {
+      return [];
+    }
+    const followUp = this.isLikelyFollowUp(input);
+    const scored = this.conversationTurns
+      .map((turn, index) => {
+        const combined = `${turn.user}\n${turn.assistant}`;
+        const overlap = this.lexicalOverlapScore(input, combined);
+        const recency = (index + 1) / Math.max(1, this.conversationTurns.length) * 0.18;
+        const score = overlap + (followUp ? recency : recency * 0.5);
+        return { turn, score, index };
+      })
+      .sort((a, b) => b.score - a.score || b.index - a.index);
+
+    const threshold = followUp ? 0.06 : 0.12;
+    const selected = scored.filter((item) => item.score >= threshold).slice(0, followUp ? 2 : 1);
+    if (selected.length > 0) {
+      return selected
+        .sort((a, b) => a.index - b.index)
+        .map((item) => item.turn);
+    }
+    if (followUp) {
+      return this.conversationTurns.slice(-1);
+    }
+    return [];
+  }
+
+  private buildContextCandidatePreview(markdown: string): string {
+    const title = this.extractMarkdownTitle(markdown);
+    const compact = this.clipText(markdown.replace(/\s+/g, ' ').trim(), 1200);
+    return title ? `${title} :: ${compact}` : compact;
+  }
+
+  private heuristicSelectContextCandidates(input: string, candidates: ContextCandidate[], selectedTurns: ConversationTurn[]): ContextCandidate[] {
+    const anchor = [
+      input,
+      ...selectedTurns.flatMap((turn) => [turn.user, turn.assistant]),
+    ].join('\n');
+    return candidates
+      .map((candidate) => {
+        const overlap = this.lexicalOverlapScore(anchor, candidate.preview || candidate.markdown);
+        const score = candidate.searchScore + overlap * 2.2;
+        return { candidate, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .filter((item, index) => item.score >= 0.18 || index < 2)
+      .slice(0, 3)
+      .map((item) => item.candidate);
+  }
+
+  private async selectRelevantContextCandidates(
+    input: string,
+    candidates: ContextCandidate[],
+    selectedTurns: ConversationTurn[],
+    perfEntries: PerfEntry[] | null,
+  ): Promise<{ selected: ContextCandidate[]; rationale: string }> {
+    if (candidates.length <= 1) {
+      return {
+        selected: candidates,
+        rationale: candidates.length === 1 ? 'Only one recalled context candidate was available.' : 'No recalled context candidates were available.',
+      };
+    }
+
+    const candidateList = candidates.map((candidate, index) => [
+      `${index + 1}. node_id=${candidate.nodeId}`,
+      `score=${candidate.searchScore.toFixed(2)}`,
+      `preview=${this.clipText(candidate.preview, 600)}`,
+    ].join('\n')).join('\n\n');
+
+    const recentTurnsText = selectedTurns.length > 0
+      ? selectedTurns.map((turn, index) => `Turn ${index + 1}\nUser: ${turn.user}\nAssistant: ${turn.assistant}`).join('\n\n')
+      : '(none)';
+
+    try {
+      const completion = await this.measure(perfEntries, 'context_selection', async () =>
+        this.openai.chat.completions.create({
+          model: this.model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a context selector. First assume all recalled context may be noisy. Then choose only the context candidates that are directly relevant to the current user request. Return JSON only: {"relevant_node_ids":[...],"rationale":"..."}. Select at most 3 node ids.',
+            },
+            {
+              role: 'user',
+              content: `Current user request:\n${input}\n\nSelected recent conversation turns:\n${recentTurnsText}\n\nRecalled context candidates:\n${candidateList}`,
+            },
+          ] as any,
+        })
+      );
+      const raw = String(completion.choices[0]?.message?.content || '').trim();
+      const jsonText = raw.startsWith('{') ? raw : raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+      const parsed = ContextSelectionSchema.parse(JSON.parse(jsonText));
+      const allowed = new Set(parsed.relevant_node_ids);
+      const selected = candidates.filter((candidate) => allowed.has(candidate.nodeId)).slice(0, 3);
+      if (selected.length > 0) {
+        return {
+          selected,
+          rationale: parsed.rationale || `Selected ${selected.length} context candidates after relevance filtering.`,
+        };
+      }
+    } catch {
+      // fall through to heuristic selection
+    }
+
+    const selected = this.heuristicSelectContextCandidates(input, candidates, selectedTurns);
+    return {
+      selected,
+      rationale: `Selected ${selected.length} context candidates with heuristic relevance filtering.`,
+    };
+  }
+
+  private async retrieveRelevantContext(
+    input: string,
+    selectedTurns: ConversationTurn[],
+    perfEntries: PerfEntry[] | null,
+  ): Promise<RetrievedContext> {
+    const query = [input, ...selectedTurns.map((turn) => turn.user)].filter(Boolean).join('\n');
+    const searchResults = await this.mempedia.send({
+      action: 'search_hybrid',
+      query,
+      limit: 10,
+    });
+
+    if (searchResults.kind !== 'search_results' || !Array.isArray(searchResults.results) || searchResults.results.length === 0) {
+      return {
+        contextText: '',
+        recalledNodeIds: [],
+        selectedNodeIds: [],
+        rationale: 'No context candidates were recalled from Mempedia.',
+      };
+    }
+
+    const recalledNodeIds = searchResults.results.map((item: any) => String(item.node_id));
+    const candidates: ContextCandidate[] = [];
+    for (const hit of searchResults.results.slice(0, 5)) {
+      const opened = await this.mempedia.send({
+        action: 'open_node',
+        node_id: String(hit.node_id),
+        markdown: true,
+      });
+      if (opened.kind !== 'markdown' || !opened.markdown) {
+        continue;
+      }
+      candidates.push({
+        nodeId: String(hit.node_id),
+        searchScore: typeof hit.score === 'number' ? hit.score : 0,
+        markdown: String(opened.markdown),
+        preview: this.buildContextCandidatePreview(String(opened.markdown)),
+      });
+    }
+
+    const { selected, rationale } = await this.selectRelevantContextCandidates(input, candidates, selectedTurns, perfEntries);
+    const contextText = selected
+      .map((candidate) => `--- Context: ${candidate.nodeId} (score=${candidate.searchScore.toFixed(2)}) ---\n${candidate.markdown}\n--- End Context: ${candidate.nodeId} ---`)
+      .join('\n\n');
+
+    return {
+      contextText,
+      recalledNodeIds,
+      selectedNodeIds: selected.map((candidate) => candidate.nodeId),
+      rationale,
+    };
+  }
+
   private appendMemoryLog(runId: string, phase: string, data: Record<string, unknown> = {}) {
     try {
       fs.mkdirSync(path.dirname(this.memoryLogPath), { recursive: true });
@@ -1259,16 +1481,23 @@ export class Agent {
   }
 
   private async persistInteractionMemory(
-    input: string,
-    traces: TraceEvent[],
-    answer: string,
+    job: MemorySaveJob,
     perfEntries: PerfEntry[] | null
   ): Promise<void> {
+    const input = job.input;
+    const traces = job.traces;
+    const answer = job.answer;
     this.notifyBackgroundTask('Saving memory...', 'started');
     const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const startedAt = Date.now();
     const conversationId = this.appendConversationLog(runId, input, traces, answer);
     this.appendMemoryLog(runId, 'memory_save_started', {
+      reason: job.reason,
+      focus: job.focus || '',
+      branch_id: job.branchId || null,
+      save_habits: job.saveHabits,
+      save_patterns: job.savePatterns,
+      save_atomic: job.saveAtomic,
       input_chars: input.length,
       traces_count: traces.length,
       answer_chars: answer.length
@@ -1276,19 +1505,44 @@ export class Agent {
     try {
       await this.withTimeout((async () => {
         const extractionStartedAt = Date.now();
+        const extractionInput = [
+          `保存原因: ${job.reason}`,
+          job.focus ? `保存重点: ${job.focus}` : '',
+          `类别选择: habits=${job.saveHabits} patterns=${job.savePatterns} atomic=${job.saveAtomic}`,
+          '',
+          input,
+        ].filter(Boolean).join('\n');
         let payload = await this.measure(perfEntries, 'memory_extract', async () =>
           this.withTimeout(
-            this.extractMemoryPayload(input, traces, answer),
+            this.extractMemoryPayload(extractionInput, traces, answer),
             this.memoryExtractTimeoutMs,
             'memory extraction'
           )
         );
+        if (!job.saveHabits) {
+          payload.user_habits_env = [];
+        }
+        if (!job.savePatterns) {
+          payload.behavior_patterns = [];
+        }
+        if (!job.saveAtomic) {
+          payload.atomic_knowledge = [];
+        }
         if (
           payload.user_habits_env.length === 0 &&
           payload.behavior_patterns.length === 0 &&
           payload.atomic_knowledge.length === 0
         ) {
-          const fallbackPayload = this.fallbackExtractMemory(input, answer);
+          const fallbackPayload = this.fallbackExtractMemory(extractionInput, answer);
+          if (!job.saveHabits) {
+            fallbackPayload.user_habits_env = [];
+          }
+          if (!job.savePatterns) {
+            fallbackPayload.behavior_patterns = [];
+          }
+          if (!job.saveAtomic) {
+            fallbackPayload.atomic_knowledge = [];
+          }
           if (
             fallbackPayload.user_habits_env.length > 0 ||
             fallbackPayload.behavior_patterns.length > 0 ||
@@ -1413,7 +1667,7 @@ export class Agent {
         }
 
         if (linkedNodes.size === 0) {
-          this.appendMemoryLog(runId, 'memory_payload_empty', { note: 'no atomic nodes generated' });
+          this.appendMemoryLog(runId, 'memory_payload_empty', { note: 'no selected memory nodes generated' });
         }
 
         if (this.autoLinkEnabled && this.autoLinkMaxNodes > 0 && linkedNodes.size > 0) {
@@ -1447,16 +1701,6 @@ export class Agent {
     }
   }
 
-  private startSaveDebounce() {
-    if (this.saveDebounceTimer) {
-      clearTimeout(this.saveDebounceTimer);
-    }
-    this.saveDebounceTimer = setTimeout(() => {
-      this.saveDebounceTimer = null;
-      this.drainSaveQueue();
-    }, this.saveDebounceMs);
-  }
-
   private drainSaveQueue() {
     if (this.saveInProgress) {
       this.savePendingDrain = true;
@@ -1465,24 +1709,11 @@ export class Agent {
     if (this.saveQueue.length === 0) {
       return;
     }
-    const batch = this.saveQueue.splice(0);
+    const job = this.saveQueue.shift()!;
     this.saveInProgress = true;
     this.savePendingDrain = false;
 
-    const effectiveBatch = batch.slice(-this.saveBatchTurnsLimit);
-    const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    this.appendMemoryLog(runId, 'drain_save_queue', {
-      queued_turns: batch.length,
-      effective_turns: effectiveBatch.length,
-      batch_turn_limit: this.saveBatchTurnsLimit
-    });
-    const combinedInput = effectiveBatch
-      .map((item, index) => `Turn ${index + 1}\nUser:\n${item.input}\nAssistant:\n${item.answer}`)
-      .join('\n\n---\n\n');
-    const combinedAnswer = effectiveBatch[effectiveBatch.length - 1]?.answer || '';
-    const combinedTraces = effectiveBatch.flatMap((item) => item.traces);
-
-    this.saveCurrentPromise = this.persistInteractionMemory(combinedInput, combinedTraces, combinedAnswer, null);
+    this.saveCurrentPromise = this.persistInteractionMemory(job, null);
     this.saveCurrentPromise
       .catch(() => {
         // errors are already logged inside persistInteractionMemory
@@ -1494,21 +1725,28 @@ export class Agent {
           this.savePendingDrain = false;
         }
         if (this.saveQueue.length > 0) {
-          this.startSaveDebounce();
-          if (this.saveDebounceMs === 0) {
-            this.drainSaveQueue();
-          }
+          this.drainSaveQueue();
         }
       });
   }
 
-  private scheduleMemorySave(input: string, traces: TraceEvent[], answer: string) {
+  private scheduleMemorySave(job: MemorySaveJob) {
     this.saveQueue.push({
-      input,
-      traces: traces.slice(),
-      answer,
+      ...job,
+      traces: job.traces.slice(),
     });
-    this.startSaveDebounce();
+    this.appendMemoryLog(`${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, 'memory_save_enqueued', {
+      reason: job.reason,
+      focus: job.focus || '',
+      branch_id: job.branchId || null,
+      save_habits: job.saveHabits,
+      save_patterns: job.savePatterns,
+      save_atomic: job.saveAtomic,
+      queue_depth: this.saveQueue.length,
+    });
+    if (!this.saveInProgress) {
+      this.drainSaveQueue();
+    }
   }
 
   async run(input: string, onTrace: (event: TraceEvent) => void): Promise<string> {
@@ -1520,39 +1758,35 @@ export class Agent {
       onTrace(event);
     };
     emitTrace({ type: 'thought', content: 'Initializing branching ReAct context from Mempedia...' });
-    
+
+    const selectedConversationTurns = this.selectRelevantConversationTurns(input);
+    emitTrace({
+      type: 'observation',
+      content: selectedConversationTurns.length > 0
+        ? `Selected ${selectedConversationTurns.length} relevant recent conversation turn(s) for follow-up grounding.`
+        : 'Selected 0 recent conversation turns; treating this request as context-isolated.',
+    });
+
     let context = '';
+    let recalledNodeIds: string[] = [];
+    let selectedNodeIds: string[] = [];
     try {
-      context = await this.measure(perfEntries, 'context_retrieval', async () => {
-        let builtContext = '';
-        const searchResults = await this.mempedia.send({
-          action: 'search_hybrid',
-          query: input,
-          limit: 8,
-        });
-        if (searchResults.kind === 'search_results') {
-          builtContext = searchResults.results
-            .map((r: any) => `- Node: ${r.node_id} (Score: ${r.score.toFixed(2)})`)
-            .join('\n');
-          for (const res of searchResults.results.slice(0, 2)) {
-            const node = await this.mempedia.send({
-              action: 'open_node',
-              node_id: res.node_id,
-              markdown: true,
-            });
-            if (node.kind === 'markdown' && node.markdown) {
-              builtContext += `\n\n--- Content of ${res.node_id} ---\n${node.markdown}\n--- End of ${res.node_id} ---\n`;
-            }
-          }
-        }
-        return builtContext;
+      const retrieved = await this.measure(perfEntries, 'context_retrieval', async () =>
+        this.retrieveRelevantContext(input, selectedConversationTurns, perfEntries)
+      );
+      context = retrieved.contextText;
+      recalledNodeIds = retrieved.recalledNodeIds;
+      selectedNodeIds = retrieved.selectedNodeIds;
+      emitTrace({
+        type: 'observation',
+        content: `Recalled ${recalledNodeIds.length} context candidate(s); selected ${selectedNodeIds.length} relevant node(s). ${retrieved.rationale}`,
       });
     } catch (e: any) {
       console.error('Context retrieval failed:', e);
       context = 'Failed to retrieve context from Mempedia.';
     }
 
-    const recentConversationMessages = this.conversationTurns.flatMap((turn) => [
+    const recentConversationMessages = selectedConversationTurns.flatMap((turn) => [
       { role: 'user', content: turn.user },
       { role: 'assistant', content: turn.assistant }
     ]);
@@ -1589,12 +1823,16 @@ Rules:
 7. Consider mempedia_save only for atomic reusable knowledge, not transient chatter.
 8. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
 9. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
+10. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
 
 Available tools:
 ${toolCatalog}
 
 Shared Mempedia context for this request:
 ${context || '(no context found)'}
+
+Selected context node ids:
+${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
 `;
 
     const rootBranch: BranchState = {
@@ -1677,6 +1915,30 @@ ${context || '(no context found)'}
       return PlannerDecisionSchema.parse(JSON.parse(jsonText));
     };
 
+    const buildBranchMemoryJob = (
+      branch: BranchState,
+      reason: string,
+      focus?: string,
+      flags?: { saveHabits?: boolean; savePatterns?: boolean; saveAtomic?: boolean }
+    ): MemorySaveJob => {
+      const branchTraces = traceBuffer.filter((event) => {
+        const eventBranchId = event.metadata?.branchId;
+        return typeof eventBranchId === 'string' ? eventBranchId.startsWith(branch.id) : branch.id === 'B0';
+      });
+      const branchSummary = branch.finalAnswer || branch.completionSummary || branch.transcript.slice(-6).map((item) => item.content).join('\n\n');
+      return {
+        input: `Original user request:\n${input}\n\nActive branch: ${branch.id} (${branch.label})\nBranch goal: ${branch.goal}`,
+        traces: branchTraces,
+        answer: branchSummary,
+        reason,
+        focus: focus?.trim() || branch.goal,
+        saveHabits: flags?.saveHabits ?? true,
+        savePatterns: flags?.savePatterns ?? true,
+        saveAtomic: flags?.saveAtomic ?? true,
+        branchId: branch.id,
+      };
+    };
+
     const buildMessages = (branch: BranchState) => ([
       { role: 'system', content: systemPrompt },
       ...recentConversationMessages,
@@ -1747,6 +2009,28 @@ ${context || '(no context found)'}
         } else if (fnName === 'mempedia_save') {
           const res = await this.guardedMempediaSave(String(args.node_id || ''), String(args.content || ''));
           result = JSON.stringify(res);
+        } else if (fnName === 'queue_memory_save') {
+          const reason = String(args.reason || '').trim();
+          if (!reason) {
+            result = JSON.stringify({ kind: 'error', message: 'queue_memory_save requires reason' });
+          } else {
+            const job = buildBranchMemoryJob(branch, reason, typeof args.focus === 'string' ? args.focus : '', {
+              saveHabits: typeof args.save_habits === 'boolean' ? args.save_habits : false,
+              savePatterns: typeof args.save_patterns === 'boolean' ? args.save_patterns : true,
+              saveAtomic: typeof args.save_atomic === 'boolean' ? args.save_atomic : true,
+            });
+            this.scheduleMemorySave(job);
+            result = JSON.stringify({
+              kind: 'queued_memory_save',
+              branch_id: branch.id,
+              reason,
+              focus: job.focus,
+              save_habits: job.saveHabits,
+              save_patterns: job.savePatterns,
+              save_atomic: job.saveAtomic,
+              traces_count: job.traces.length,
+            });
+          }
         } else if (fnName === 'run_shell') {
           result = await new Promise((resolve) => {
             exec(String(args.command || ''), (error, stdout, stderr) => {
@@ -1982,8 +2266,6 @@ ${context || '(no context found)'}
     if (this.conversationTurns.length > this.maxConversationTurns) {
       this.conversationTurns = this.conversationTurns.slice(-this.maxConversationTurns);
     }
-    this.scheduleMemorySave(input, traceBuffer, finalAnswer);
-    emitTrace({ type: 'observation', content: 'Memory save queued (debounced + serialized).' });
     if (perfEntries && perfEntries.length > 0) {
       const totalMs = perfEntries.reduce((sum, item) => sum + item.ms, 0);
       const top = [...perfEntries]

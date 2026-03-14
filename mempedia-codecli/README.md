@@ -115,6 +115,7 @@ npm start
    - continue linearly with one tool plan,
    - fork into multiple child branches when there are materially different strategies,
    - or finish with a final answer.
+- **Agent-decided Async Memory Saves**: Memory is no longer auto-saved for every completed session. Instead, the agent can queue asynchronous saves from any ReAct branch when it decides the result is valuable enough to preserve.
 - **Branch Synthesizer**: Completed branches are merged into one final user answer.
 - **Mempedia Client**: Communicates with `mempedia` binary via NDJSON over stdin/stdout.
-- **Memory Save Queue**: Final traces are still serialized into background memory persistence.
+- **Memory Save Queue**: Explicit save jobs are serialized in the background so knowledge extraction and raw conversation logging do not block the main loop.
