@@ -2,146 +2,290 @@ const state = {
   nodes: [],
   filtered: [],
   selectedId: null,
-  graphScope: 'selected',
-  canonicalGraph: { nodes: [], edges: [] },
-  libraryView: 'knowledge',
-  memoryStream: {
-    habits: [],
-    behaviorPatterns: [],
-    nodeConversations: [],
-    conversations: [],
-    agentActions: [],
-    accessLogs: [],
-  },
+  selectedBranchId: null,
   query: '',
   sourceFilter: 'all',
   originFilter: 'all',
+  graphScope: 'selected',
+  canonicalGraph: createEmptyGraph(),
   mempediaHandle: null,
   connected: false,
   memoryRoot: null,
-  autoSave: true,
-  saveTimer: null,
-  loadingNode: false,
-  recentOpened: [],
-  cliConversation: [],
-  cliRuns: [],
-  selectedCliRunId: null,
-  editor: null,
+  memoryStream: createEmptyMemoryStream(),
+  workspaceLabel: 'Standalone viewer',
+  lastLoadedAt: null,
 };
 
 const elements = {
-  nodeList: document.getElementById('node-list'),
-  nodeDetail: document.getElementById('node-detail'),
-  heroPreview: document.getElementById('hero-preview'),
+  workspaceStatus: document.getElementById('workspace-status'),
+  status: document.getElementById('status'),
+  editorStatus: document.getElementById('editor-status'),
+  metricsGrid: document.getElementById('metrics-grid'),
   searchInput: document.getElementById('search-input'),
   filterSource: document.getElementById('filter-source'),
   filterOrigin: document.getElementById('filter-origin'),
-  status: document.getElementById('status'),
-  editorStatus: document.getElementById('editor-status'),
-  workspaceGlance: document.getElementById('workspace-glance'),
-  pageTree: document.getElementById('page-tree'),
-  recentList: document.getElementById('recent-list'),
-  branchRuns: document.getElementById('branch-runs'),
-  branchGraph: document.getElementById('branch-graph'),
-  tagsList: document.getElementById('tags-list'),
-  outlineList: document.getElementById('outline-list'),
-  workspaceStatus: document.getElementById('workspace-status'),
-  refreshWorkspace: document.getElementById('refresh-workspace'),
-  loadFolder: document.getElementById('load-folder'),
-  loadDemo: document.getElementById('load-demo'),
-  clearAll: document.getElementById('clear-all'),
-  exportJson: document.getElementById('export-json'),
-  newNode: document.getElementById('new-node'),
-  saveNode: document.getElementById('save-node'),
-  reloadNode: document.getElementById('reload-node'),
-  autoSaveToggle: document.getElementById('auto-save-toggle'),
-  fileInput: document.getElementById('file-input'),
   graphScope: document.getElementById('graph-scope'),
+  nodeList: document.getElementById('node-list'),
+  legend: document.getElementById('legend'),
   graphSummary: document.getElementById('graph-summary'),
   graphView: document.getElementById('graph-view'),
-  memoryList: document.getElementById('memory-list'),
+  graphInsights: document.getElementById('graph-insights'),
+  heroPreview: document.getElementById('hero-preview'),
+  nodeDetail: document.getElementById('node-detail'),
+  markdownPreview: document.getElementById('markdown-preview'),
+  strategyLoop: document.getElementById('strategy-loop'),
+  toolOrder: document.getElementById('tool-order'),
+  branchRuns: document.getElementById('branch-runs'),
+  branchGraph: document.getElementById('branch-graph'),
   activityList: document.getElementById('activity-list'),
+  memoryList: document.getElementById('memory-list'),
+  workspaceGlance: document.getElementById('workspace-glance'),
+  pageTree: document.getElementById('page-tree'),
+  tagsList: document.getElementById('tags-list'),
+  outlineList: document.getElementById('outline-list'),
   contextMemory: document.getElementById('context-memory'),
-  noteBreadcrumb: document.getElementById('note-breadcrumb'),
-  noteShellSummary: document.getElementById('note-shell-summary'),
-  noteShellMeta: document.getElementById('note-shell-meta'),
-  viewButtons: {
-    knowledge: document.getElementById('view-knowledge'),
-    memory: document.getElementById('view-memory'),
-    activity: document.getElementById('view-activity'),
-  },
-  editorMarkdown: document.getElementById('editor-markdown'),
-  graphLinks: document.getElementById('editor-graph-links'),
-  fields: {
-    nodeId: document.getElementById('editor-node-id'),
-    title: document.getElementById('editor-title'),
-    summary: document.getElementById('editor-summary'),
-    source: document.getElementById('editor-source'),
-    origin: document.getElementById('editor-origin'),
-    confidence: document.getElementById('editor-confidence'),
-    importance: document.getElementById('editor-importance'),
-    body: document.getElementById('editor-body'),
-    factsText: document.getElementById('editor-facts'),
-    relationsText: document.getElementById('editor-relations'),
-    evidenceText: document.getElementById('editor-evidence'),
+  loadFolder: document.getElementById('load-folder'),
+  refreshWorkspace: document.getElementById('refresh-workspace'),
+  loadDemo: document.getElementById('load-demo'),
+  fileInput: document.getElementById('file-input'),
+  clearAll: document.getElementById('clear-all'),
+  exportJson: document.getElementById('export-json'),
+};
+
+const strategyGuide = {
+  loopModes: [
+    {
+      id: 'tool',
+      title: 'Thought → Tool',
+      accent: 'primary',
+      summary: 'Pick one highest-yield tool call and continue inside the same branch.',
+      detail: 'Best for linear progress after the branch has already committed to one hypothesis or retrieval path.',
+    },
+    {
+      id: 'branch',
+      title: 'Thought → Branch',
+      accent: 'accent',
+      summary: 'Fork only when there are materially different strategies worth exploring.',
+      detail: 'Examples: lexical search vs graph traversal, top-hit read vs version-history verification.',
+    },
+    {
+      id: 'final',
+      title: 'Thought → Final',
+      accent: 'success',
+      summary: 'Close the branch when it has enough evidence to answer its local goal.',
+      detail: 'Completed branches are later synthesized into one user-facing answer.',
+    },
+    {
+      id: 'save',
+      title: 'Thought → Async Save',
+      accent: 'warning',
+      summary: 'Persist only durable, reusable knowledge discovered by a branch.',
+      detail: 'Save discipline is explicit: no noisy session dumps, only reusable atomic facts or patterns.',
+    },
+  ],
+  toolOrder: [
+    {
+      name: 'mempedia_search_hybrid',
+      order: 1,
+      purpose: 'High-recall retrieval before narrowing the hypothesis.',
+      usage: 'Start broad with limit=8–12.',
+    },
+    {
+      name: 'mempedia_read',
+      order: 2,
+      purpose: 'Confirm the top 1–3 nodes and remove false positives.',
+      usage: 'Read nodes returned by hybrid search or graph traversal.',
+    },
+    {
+      name: 'mempedia_traverse',
+      order: 3,
+      purpose: 'Expand dependencies, neighbors, or structural context.',
+      usage: 'Useful when the selected node is a hub or relation bridge.',
+    },
+    {
+      name: 'mempedia_history',
+      order: 4,
+      purpose: 'Validate how a fact evolved over time.',
+      usage: 'Use when confidence is low or evidence implies drift.',
+    },
+    {
+      name: 'mempedia_save',
+      order: 5,
+      purpose: 'Persist reusable memory after the branch has real value.',
+      usage: 'Never use for transient chatter or speculative state.',
+    },
+  ],
+  budgets: {
+    depth: 2,
+    width: 3,
+    steps: 8,
+    completed: 4,
   },
 };
 
 const demoNodes = [
   {
-    id: 'fatigue_model',
-    title: 'Fatigue Model',
-    summary: 'Baseline recovery assumptions and linked signals used across the project.',
-    body: 'Recovery baseline depends on sleep quality, stress recovery, and weekly decay signals.',
-    source: 'design-notes',
-    origin: 'human',
-    facts: ['recovery_baseline: sleep_quality', 'decay: exponential'],
-    relations: ['SleepSignals | depends_on | 0.9', 'CircadianRhythm | related | 0.6'],
-    evidence: ['meeting-notes-2024-03-01'],
-    highlights: [],
-    confidence: 0.9,
-    importance: 1.1,
+    id: 'branching_react_loop',
+    title: 'Branching ReAct Loop',
+    summary: 'Treat ReAct as a functional loop where one thought step can continue, fork, finish, or queue an async memory save.',
+    body: 'The root loop begins with one user objective. Each thought chooses either a single tool, a set of materially distinct child branches, a final answer, or a durable memory save. Completed branches are synthesized into one user-facing answer.',
+    source: 'react_strategy.md',
+    origin: 'codecli',
+    facts: [
+      'branch.max_depth: 2',
+      'branch.max_width: 3',
+      'branch.max_steps: 8',
+      'branch.max_completed: 4',
+    ],
+    relations: [
+      'tool_priority | defines | 0.93',
+      'branch_synthesizer | feeds | 0.91',
+      'async_memory_save | enables | 0.86',
+      'mempedia_search_hybrid | prioritizes | 0.78',
+    ],
+    evidence: ['mempedia-codecli/react_strategy.md', 'mempedia-codecli/README.md'],
+    confidence: 0.96,
+    importance: 1.3,
+    version: 'demo-v1',
   },
   {
-    id: 'context_pipeline',
-    title: 'Context Pipeline',
-    summary: 'Orchestration steps for ingesting, normalizing, and serving memory nodes.',
-    body: 'Pipeline stages:\n\n1. Ingest\n2. Normalize\n3. Index\n4. Retrieve',
-    source: 'ops-doc',
-    origin: 'agent',
-    facts: ['stages: ingest, normalize, index, retrieve'],
-    relations: ['SearchHybrid | feeds | 0.8', 'SyncMarkdown | feeds | 0.7'],
-    evidence: ['runbook-v2'],
-    highlights: [],
+    id: 'tool_priority',
+    title: 'Tool Priority Ladder',
+    summary: 'Hybrid retrieval comes first, then targeted read, graph traversal, temporal verification, and durable save.',
+    body: 'The CLI prefers high recall before local confirmation. Search broad, read top hits, traverse graph context, check version history, and save only after extracting durable value.',
+    source: 'README.md',
+    origin: 'codecli',
+    facts: [
+      'tool.1: mempedia_search_hybrid',
+      'tool.2: mempedia_read',
+      'tool.3: mempedia_traverse',
+      'tool.4: mempedia_history',
+      'tool.5: mempedia_save',
+    ],
+    relations: [
+      'mempedia_search_hybrid | ranks_before | 0.95',
+      'mempedia_read | follows | 0.9',
+      'mempedia_history | verifies | 0.78',
+      'async_memory_save | guards | 0.73',
+    ],
+    evidence: ['mempedia-codecli/README.md'],
+    confidence: 0.92,
+    importance: 1.12,
+    version: 'demo-v1',
+  },
+  {
+    id: 'markdown_projection',
+    title: 'Markdown Projection',
+    summary: 'Each head version projects into markdown with frontmatter plus optional Facts, Relations, and Evidence sections.',
+    body: 'Humans edit markdown; runtime projects it back into structured data and graph links. Frontmatter stores node identity, version, timestamp, confidence, importance, source, and origin.',
+    source: 'KB_SCHEMA.md',
+    origin: 'mempedia',
+    facts: [
+      'frontmatter.node_id: stable identifier',
+      'section.facts: fact.<key>',
+      'section.relations: graph links',
+      'section.evidence: evidence.01+',
+    ],
+    relations: [
+      'kb_schema | documents | 0.95',
+      'version_graph | projects_to | 0.84',
+      'knowledge_graph_stage | visualizes | 0.76',
+    ],
+    evidence: ['policies/KB_SCHEMA.md'],
+    confidence: 0.95,
+    importance: 1.08,
+    version: 'demo-v1',
+  },
+  {
+    id: 'version_graph',
+    title: 'Version Graph',
+    summary: 'Heads, version objects, and markdown projections combine into the canonical graph used for browsing and validation.',
+    body: 'The UI can load index state, read version objects, and reconstruct current node heads. History validation is a first-class reasoning path when the model needs drift checks.',
+    source: 'mempedia-ui',
+    origin: 'ui',
+    facts: [
+      'load.index_state: heads map',
+      'load.objects: version json',
+      'load.knowledge_nodes: markdown projection',
+    ],
+    relations: [
+      'mempedia_history | validates | 0.91',
+      'branching_react_loop | supports | 0.67',
+      'markdown_projection | reconstructs | 0.88',
+    ],
+    evidence: ['mempedia-ui/script.js'],
     confidence: 0.88,
     importance: 1.0,
+    version: 'demo-v1',
+  },
+  {
+    id: 'async_memory_save',
+    title: 'Async Memory Save',
+    summary: 'Branches may preserve durable value without blocking the main reasoning loop.',
+    body: 'Async save is optional and selective. The branch should queue a save only when it has discovered reusable project facts, confirmed stable workflows, or valuable branch results.',
+    source: 'react_strategy.md',
+    origin: 'codecli',
+    facts: [
+      'save.when: reusable project fact',
+      'save.when: confirmed stable workflow',
+      'save.when: valuable branch result',
+      'save.avoid: transient chatter',
+    ],
+    relations: [
+      'branching_react_loop | extends | 0.86',
+      'branch_synthesizer | complements | 0.68',
+      'tool_priority | constrains | 0.6',
+    ],
+    evidence: ['mempedia-codecli/react_strategy.md'],
+    confidence: 0.89,
+    importance: 1.04,
+    version: 'demo-v1',
+  },
+  {
+    id: 'branch_synthesizer',
+    title: 'Branch Synthesizer',
+    summary: 'Completed child branches are collapsed into one answer after local goals finish.',
+    body: 'The synthesis layer prevents the user from seeing three separate competing transcripts. Instead, the system merges finished branch findings into a single concise answer.',
+    source: 'README.md',
+    origin: 'codecli',
+    facts: [
+      'synthesis.input: completed branches',
+      'synthesis.output: single user answer',
+      'synthesis.bias: prefer best validated branch',
+    ],
+    relations: [
+      'branching_react_loop | completes_with | 0.94',
+      'async_memory_save | may_follow | 0.58',
+      'knowledge_graph_stage | explains | 0.42',
+    ],
+    evidence: ['mempedia-codecli/README.md'],
+    confidence: 0.9,
+    importance: 1.1,
+    version: 'demo-v1',
+  },
+  {
+    id: 'knowledge_graph_stage',
+    title: 'Knowledge Graph Stage',
+    summary: 'The redesigned UI centers on nodes, edge labels, graph density, and selected-neighborhood reasoning context.',
+    body: 'A graph-first UI reduces the need to open raw editors. Operators can filter sources, inspect hub nodes, map evidence, and understand why a branch prefers one retrieval strategy over another.',
+    source: 'mempedia-ui',
+    origin: 'ui',
+    facts: [
+      'ui.focus: graph-first',
+      'ui.focus: strategy-theatre',
+      'ui.focus: schema-coverage',
+    ],
+    relations: [
+      'markdown_projection | reveals | 0.83',
+      'branching_react_loop | narrates | 0.77',
+      'version_graph | renders | 0.71',
+    ],
+    evidence: ['mempedia-ui/index.html', 'mempedia-ui/styles.css'],
+    confidence: 0.87,
+    importance: 1.16,
+    version: 'demo-v1',
   },
 ];
-
-function createEmptyEditor(overrides = {}) {
-  return {
-    nodeId: '',
-    title: '',
-    summary: '',
-    source: '',
-    origin: 'human',
-    confidence: '0.90',
-    importance: '1.00',
-    body: '',
-    factsText: '',
-    relationsText: '',
-    evidenceText: '',
-    graphLinksText: '',
-    markdown: '',
-    version: '',
-    path: '',
-    dirty: false,
-    saving: false,
-    lastError: '',
-    lastSavedAt: '',
-    ...overrides,
-  };
-}
 
 function createEmptyGraph() {
   return { nodes: [], edges: [] };
@@ -158,8 +302,6 @@ function createEmptyMemoryStream() {
   };
 }
 
-state.editor = createEmptyEditor();
-
 function escapeHtml(value) {
   return String(value || '')
     .replaceAll('&', '&amp;')
@@ -169,73 +311,49 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function yamlEscape(value) {
-  return `"${String(value || '').replaceAll('"', '\\"')}"`;
-}
-
-function shortHash(value) {
-  return String(value || '').slice(0, 8);
-}
-
 function truncateText(value, length = 140) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
-  return text.length > length ? `${text.slice(0, length - 1)}…` : text;
-}
-
-function formatTimestamp(value) {
-  if (!value) return 'unknown time';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString();
-}
-
-function extractOutline(body = '', fallbackTitle = 'Untitled') {
-  const items = [];
-  const lines = String(body || '').split(/\r?\n/);
-  for (const line of lines) {
-    const heading = line.trim().match(/^(#{1,3})\s+(.+)$/);
-    if (!heading) continue;
-    items.push({ level: heading[1].length, title: heading[2].trim() });
-  }
-  if (!items.length) {
-    items.push({ level: 1, title: fallbackTitle });
-  }
-  return items.slice(0, 12);
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  return normalized.length > length ? `${normalized.slice(0, length - 1)}…` : normalized;
 }
 
 function formatNumber(value, digits = 2) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toFixed(digits) : '';
+  return Number.isFinite(parsed) ? parsed.toFixed(digits) : '0.00';
 }
 
-function updateSelect(select, options, value) {
-  select.innerHTML = '';
-  for (const option of options) {
-    const element = document.createElement('option');
-    element.value = option;
-    element.textContent = option === 'all' ? 'All' : option;
-    select.appendChild(element);
-  }
-  select.value = value;
+function formatTimestamp(value) {
+  if (!value) return 'not available';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function updateStatus(text, mutedText = '') {
+  elements.status.textContent = text;
+  if (mutedText) elements.editorStatus.textContent = mutedText;
+}
+
+function setWorkspaceMode(mode, detail) {
+  elements.workspaceStatus.textContent = mode;
+  if (detail) elements.editorStatus.textContent = detail;
 }
 
 function parseFrontmatter(markdown) {
-  const match = markdown.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
-  if (!match) return { meta: {}, body: markdown };
+  const match = String(markdown || '').match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
+  if (!match) return { meta: {}, body: String(markdown || '') };
   const meta = {};
   for (const line of match[1].split(/\r?\n/)) {
     const [key, ...rest] = line.split(':');
-    if (!key || rest.length === 0) continue;
+    if (!key || !rest.length) continue;
     meta[key.trim()] = rest.join(':').trim().replace(/^"|"$/g, '');
   }
-  return { meta, body: markdown.slice(match[0].length) };
+  return { meta, body: String(markdown).slice(match[0].length) };
 }
 
 function normalizeSectionName(name) {
-  const lower = String(name || '').trim().toLowerCase();
-  if (['facts', 'fact', 'claims', 'claim'].includes(lower)) return 'facts';
-  if (['relations', 'relation', 'links', 'link', 'related', 'related nodes', 'connections'].includes(lower)) return 'relations';
-  if (['evidence', 'sources', 'source'].includes(lower)) return 'evidence';
+  const value = String(name || '').trim().toLowerCase();
+  if (['facts', 'fact', 'claims', 'claim'].includes(value)) return 'facts';
+  if (['relations', 'relation', 'links', 'link', 'related', 'related nodes', 'connections'].includes(value)) return 'relations';
+  if (['evidence', 'sources', 'source'].includes(value)) return 'evidence';
   return null;
 }
 
@@ -243,15 +361,14 @@ function parseSections(body) {
   const sections = { facts: [], relations: [], evidence: [] };
   let current = null;
   for (const line of String(body || '').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    const heading = trimmed.match(/^#{2,3}\s+(.+)$/);
+    const heading = line.trim().match(/^#{2,3}\s+(.+)$/);
     if (heading) {
       current = normalizeSectionName(heading[1]);
       continue;
     }
     if (!current) continue;
-    if (/^[-*+]\s+/.test(trimmed)) {
-      sections[current].push(trimmed.replace(/^[-*+]\s+/, ''));
+    if (/^[-*+]\s+/.test(line.trim())) {
+      sections[current].push(line.trim().replace(/^[-*+]\s+/, ''));
     }
   }
   return sections;
@@ -259,50 +376,43 @@ function parseSections(body) {
 
 function deriveTitle(body, meta) {
   if (meta.title) return meta.title;
-  const match = String(body || '').match(/^#\s+(.+)/m);
-  if (match) return match[1].trim();
-  return 'Untitled';
+  const heading = String(body || '').match(/^#\s+(.+)/m);
+  return heading ? heading[1].trim() : 'Untitled';
 }
 
 function deriveSummary(body, meta) {
   if (meta.summary) return meta.summary;
-  const lines = String(body || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = String(body || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   for (const line of lines) {
-    if (!line.startsWith('#') && line.length > 10) {
-      return line.slice(0, 140);
-    }
+    if (!line.startsWith('#') && line.length > 10) return truncateText(line, 160);
   }
   return 'Summary unavailable.';
 }
 
 function extractNarrativeBody(body, title) {
   const kept = [];
-  let currentStructured = null;
+  let structured = null;
   for (const rawLine of String(body || '').split(/\r?\n/)) {
-    const trimmed = rawLine.trim();
-    const heading = trimmed.match(/^#{2,3}\s+(.+)$/);
+    const heading = rawLine.trim().match(/^#{2,3}\s+(.+)$/);
     if (heading) {
-      const structured = normalizeSectionName(heading[1]);
-      if (structured) {
-        currentStructured = structured;
+      const next = normalizeSectionName(heading[1]);
+      if (next) {
+        structured = next;
         continue;
       }
-      currentStructured = null;
+      structured = null;
       kept.push(rawLine);
       continue;
     }
-    if (currentStructured) {
-      if (!trimmed) continue;
-      if (/^[-*+]\s+/.test(trimmed)) continue;
-      continue;
-    }
+    if (structured) continue;
     kept.push(rawLine);
   }
   let narrative = kept.join('\n').trim();
-  const titleHeading = `# ${title}`;
-  if (narrative.startsWith(titleHeading)) {
-    narrative = narrative.slice(titleHeading.length).trimStart();
-  }
+  const heading = `# ${title}`;
+  if (narrative.startsWith(heading)) narrative = narrative.slice(heading.length).trimStart();
   return narrative.trim();
 }
 
@@ -318,34 +428,22 @@ function parseRelationEntry(line) {
   const raw = String(line || '').trim().replace(/^[-*+]\s+/, '');
   if (!raw) return null;
 
-  const normalizeTarget = (value) => {
-    const trimmed = String(value || '').trim();
-    const wiki = trimmed.match(/\[\[([^\]]+)\]\]/);
-    return (wiki ? wiki[1] : trimmed).trim();
-  };
-
   if (raw.includes('|')) {
     const parts = raw.split('|').map((part) => part.trim());
-    const target = normalizeTarget(parts[0]);
+    const target = parts[0];
     if (!target) return null;
     const label = parts[1] || 'related';
     const weight = Number(parts[2]);
-    return {
-      target,
-      label,
-      weight: Number.isFinite(weight) ? weight : null,
-      raw,
-    };
+    return { target, label, weight: Number.isFinite(weight) ? weight : null };
   }
 
   const fnStyle = raw.match(/^(.*?)\((.*)\)$/);
   if (fnStyle) {
-    const target = normalizeTarget(fnStyle[1]);
-    if (!target) return null;
+    const target = fnStyle[1].trim();
     let label = 'related';
     let weight = null;
     for (const part of fnStyle[2].split(',')) {
-      const [key, value] = part.split('=').map((token) => token?.trim());
+      const [key, value] = part.split('=').map((item) => item?.trim());
       if (!key || !value) continue;
       if (key === 'label') label = value;
       if (key === 'weight') {
@@ -353,47 +451,18 @@ function parseRelationEntry(line) {
         if (Number.isFinite(parsed)) weight = parsed;
       }
     }
-    return { target, label, weight, raw };
+    return target ? { target, label, weight } : null;
   }
 
-  const target = normalizeTarget(raw);
-  if (!target) return null;
-  return { target, label: 'related', weight: null, raw };
-}
-
-function formatGraphLink(edge) {
-  const label = String(edge?.label || 'related').trim() || 'related';
-  const weight = Number(edge?.weight);
-  return Number.isFinite(weight)
-    ? `${edge.target} | ${label} | ${weight}`
-    : `${edge.target} | ${label}`;
-}
-
-function getOutgoingGraphLinksText(nodeId) {
-  return (state.canonicalGraph?.edges || [])
-    .filter((edge) => edge.source === nodeId)
-    .map((edge) => formatGraphLink(edge))
-    .join('\n');
-}
-
-function parseGraphLinksText(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((line) => parseRelationEntry(line))
-    .filter(Boolean)
-    .map((relation) => ({
-      target: relation.target,
-      label: relation.label || 'related',
-      weight: relation.weight,
-    }));
+  return { target: raw, label: 'related', weight: null };
 }
 
 function parseMarkdownFile(markdown, fileName = '') {
   const { meta, body } = parseFrontmatter(markdown);
   const title = deriveTitle(body, meta);
   const sections = parseSections(body);
-  return {
-    id: meta.node_id || fileName.replace(/\.md$/, '') || 'untitled',
+  return normalizeNode({
+    id: meta.node_id || fileName.replace(/\.md$/i, '').replace(/-.+$/, '') || title.toLowerCase().replace(/\s+/g, '_'),
     title,
     summary: deriveSummary(body, meta),
     body: extractNarrativeBody(body, title),
@@ -402,1214 +471,140 @@ function parseMarkdownFile(markdown, fileName = '') {
     facts: sections.facts,
     relations: sections.relations,
     evidence: sections.evidence,
-    highlights: [],
-    markdown,
+    confidence: Number(meta.confidence || 0.9),
+    importance: Number(meta.importance || 1),
     version: meta.version || '',
+    markdown,
     path: fileName,
-    confidence: meta.confidence || '0.9',
-    importance: meta.importance || '1.0',
-  };
-}
-
-function createEditorFromNode(node) {
-  const editor = createEmptyEditor({
-    nodeId: node?.id || '',
-    title: node?.title || '',
-    summary: node?.summary || '',
-    source: node?.source || '',
-    origin: node?.origin || 'human',
-    confidence: formatNumber(node?.confidence ?? 0.9, 2),
-    importance: formatNumber(node?.importance ?? 1.0, 2),
-    body: node?.body || '',
-    factsText: (node?.facts || []).join('\n'),
-    relationsText: (node?.relations || []).join('\n'),
-    evidenceText: (node?.evidence || []).join('\n'),
-    graphLinksText: getOutgoingGraphLinksText(node?.id || ''),
-    version: node?.version || '',
-    path: node?.path || '',
   });
-  editor.markdown = node?.markdown || buildMarkdownFromEditor(editor);
-  return editor;
 }
 
-function editorToNode(editor) {
+function normalizeNode(node) {
   return {
-    id: editor.nodeId.trim(),
-    title: editor.title.trim() || editor.nodeId.trim() || 'Untitled',
-    summary: editor.summary.trim() || 'Summary unavailable.',
-    body: editor.body.trim(),
-    source: editor.source.trim() || 'manual-edit',
-    origin: editor.origin.trim() || 'human',
-    facts: normalizeListText(editor.factsText),
-    relations: normalizeListText(editor.relationsText),
-    evidence: normalizeListText(editor.evidenceText),
-    highlights: [],
-    markdown: buildMarkdownFromEditor(editor),
-    version: editor.version || '',
-    path: editor.path || '',
-    confidence: editor.confidence || '0.9',
-    importance: editor.importance || '1.0',
+    id: String(node.id || 'untitled').trim(),
+    title: String(node.title || node.id || 'Untitled').trim(),
+    summary: String(node.summary || 'Summary unavailable.').trim(),
+    body: String(node.body || '').trim(),
+    source: String(node.source || 'unknown').trim(),
+    origin: String(node.origin || 'unknown').trim(),
+    facts: Array.isArray(node.facts) ? node.facts.filter(Boolean) : normalizeListText(node.facts),
+    relations: Array.isArray(node.relations) ? node.relations.filter(Boolean) : normalizeListText(node.relations),
+    evidence: Array.isArray(node.evidence) ? node.evidence.filter(Boolean) : normalizeListText(node.evidence),
+    confidence: Number(node.confidence || 0.9),
+    importance: Number(node.importance || 1),
+    version: node.version || '',
+    markdown: node.markdown || '',
+    path: node.path || '',
   };
 }
 
-function buildMarkdownFromEditor(editor) {
-  const nodeId = editor.nodeId.trim();
-  const title = editor.title.trim() || nodeId || 'Untitled';
-  const summary = editor.summary.trim();
-  const source = editor.source.trim();
-  const origin = editor.origin.trim();
-  const confidence = Number(editor.confidence);
-  const importance = Number(editor.importance);
-  const facts = normalizeListText(editor.factsText);
-  const relations = normalizeListText(editor.relationsText);
-  const evidence = normalizeListText(editor.evidenceText);
-  const bodyParts = [`# ${title}`];
-  if (editor.body.trim()) bodyParts.push(editor.body.trim());
-  if (facts.length) bodyParts.push('## Facts', ...facts.map((item) => `- ${item}`));
-  if (relations.length) bodyParts.push('## Relations', ...relations.map((item) => `- ${item}`));
-  if (evidence.length) bodyParts.push('## Evidence', ...evidence.map((item) => `- ${item}`));
-  const frontmatter = [
-    '---',
-    `node_id: ${yamlEscape(nodeId)}`,
-    `title: ${yamlEscape(title)}`,
-    summary ? `summary: ${yamlEscape(summary)}` : null,
-    source ? `source: ${yamlEscape(source)}` : null,
-    origin ? `origin: ${yamlEscape(origin)}` : null,
-    Number.isFinite(confidence) ? `confidence: ${confidence}` : null,
-    Number.isFinite(importance) ? `importance: ${importance}` : null,
-    '---',
-    '',
-  ].filter(Boolean);
-  return `${frontmatter.join('\n')}${bodyParts.join('\n\n').trim()}\n`;
-}
-
-function setMemoryStream(payload = {}) {
-  state.memoryStream = {
-    habits: Array.isArray(payload.habits) ? payload.habits : [],
-    behaviorPatterns: Array.isArray(payload.behaviorPatterns) ? payload.behaviorPatterns : [],
-    nodeConversations: Array.isArray(payload.nodeConversations) ? payload.nodeConversations : [],
-    conversations: Array.isArray(payload.conversations) ? payload.conversations : [],
-    agentActions: Array.isArray(payload.agentActions) ? payload.agentActions : [],
-    accessLogs: Array.isArray(payload.accessLogs) ? payload.accessLogs : [],
-  };
-}
-
-function setNodes(nodes, options = {}) {
-  state.nodes = nodes;
-  state.recentOpened = state.recentOpened.filter((nodeId) => nodes.some((node) => node.id === nodeId));
-  if (options.selectedId !== undefined) {
-    state.selectedId = options.selectedId;
-    rememberRecentNode(options.selectedId);
-  }
-  applyFilters();
-}
-
-function rememberRecentNode(nodeId) {
-  const normalized = String(nodeId || '').trim();
-  if (!normalized) return;
-  state.recentOpened = [normalized, ...state.recentOpened.filter((item) => item !== normalized)].slice(0, 8);
-}
-
-function buildCliRuns(conversation = []) {
-  const sorted = Array.isArray(conversation)
-    ? conversation.slice().sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0))
-    : [];
-  const runs = [];
-  let current = null;
-
-  const flush = () => {
-    if (!current) return;
-    current.traceCount = current.traces.length;
-    current.branchCount = new Set(
-      current.traces
-        .map((item) => item?.traceMeta?.branchId)
-        .filter(Boolean)
-        .map((id) => String(id))
-    ).size;
-    runs.push(current);
-    current = null;
-  };
-
-  for (const item of sorted) {
-    const role = String(item?.role || 'trace');
-    const timestamp = Number(item?.timestamp || Date.now());
-    if (role === 'user') {
-      flush();
-      current = {
-        id: `run-${timestamp}-${runs.length + 1}`,
-        prompt: String(item?.content || ''),
-        answer: '',
-        startTs: timestamp,
-        endTs: timestamp,
-        items: [item],
-        traces: [],
-      };
-      continue;
-    }
-    if (!current) {
-      current = {
-        id: `run-${timestamp}-${runs.length + 1}`,
-        prompt: '',
-        answer: '',
-        startTs: timestamp,
-        endTs: timestamp,
-        items: [],
-        traces: [],
-      };
-    }
-    current.items.push(item);
-    current.endTs = timestamp;
-    if (role === 'trace') current.traces.push(item);
-    if (role === 'assistant') current.answer = String(item?.content || current.answer || '');
-  }
-
-  flush();
-  return runs;
-}
-
-function setCliConversation(items = []) {
-  state.cliConversation = Array.isArray(items) ? items : [];
-  state.cliRuns = buildCliRuns(state.cliConversation);
-  const hasSelection = state.cliRuns.some((run) => run.id === state.selectedCliRunId);
-  state.selectedCliRunId = hasSelection
-    ? state.selectedCliRunId
-    : (state.cliRuns[state.cliRuns.length - 1]?.id || null);
-}
-
-function getSelectedCliRun() {
-  if (!state.cliRuns.length) return null;
-  return state.cliRuns.find((run) => run.id === state.selectedCliRunId) || state.cliRuns[state.cliRuns.length - 1] || null;
-}
-
-function buildBranchGraph(run) {
-  const branchMap = new Map();
-  const globalEvents = [];
-
-  const ensureBranch = (branchId, meta = {}) => {
-    const normalizedId = String(branchId || 'B0');
-    if (!branchMap.has(normalizedId)) {
-      branchMap.set(normalizedId, {
-        id: normalizedId,
-        parentId: meta.parentId == null || meta.parentId === '' ? null : String(meta.parentId),
-        label: String(meta.label || normalizedId),
-        depth: Number.isFinite(Number(meta.depth)) ? Number(meta.depth) : 0,
-        events: [],
-        children: [],
-      });
-    }
-    const branch = branchMap.get(normalizedId);
-    if (meta.parentId !== undefined && meta.parentId !== null && meta.parentId !== '') {
-      branch.parentId = String(meta.parentId);
-    }
-    if (meta.label) branch.label = String(meta.label);
-    if (meta.depth !== undefined && Number.isFinite(Number(meta.depth))) {
-      branch.depth = Number(meta.depth);
-    }
-    return branch;
-  };
-
-  for (const trace of run?.traces || []) {
-    const meta = trace?.traceMeta || {};
-    const branchId = meta?.branchId ? String(meta.branchId) : '';
-    const event = {
-      type: String(trace?.traceType || 'observation'),
-      content: String(trace?.content || ''),
-      step: Number.isFinite(Number(meta?.step)) ? Number(meta.step) : null,
-      toolName: meta?.toolName ? String(meta.toolName) : '',
-      timestamp: Number(trace?.timestamp || 0),
-    };
-    if (!branchId) {
-      globalEvents.push(event);
-      continue;
-    }
-    const branch = ensureBranch(branchId, {
-      parentId: meta?.parentBranchId,
-      label: meta?.branchLabel,
-      depth: meta?.depth,
-    });
-    branch.events.push(event);
-  }
-
-  if (!branchMap.size && globalEvents.length) {
-    const fallback = ensureBranch('B0', { label: 'root', depth: 0 });
-    fallback.events.push(...globalEvents);
-    globalEvents.length = 0;
-  }
-
-  for (const branch of branchMap.values()) {
-    branch.events.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    branch.toolCount = branch.events.filter((event) => event.type === 'action').length;
-    branch.status = branch.events.some((event) => event.type === 'error')
-      ? 'error'
-      : branch.events.some((event) => /branch completed/i.test(event.content))
-        ? 'completed'
-        : 'active';
-  }
-
-  const roots = [];
-  for (const branch of branchMap.values()) {
-    if (branch.parentId) {
-      const parent = ensureBranch(branch.parentId, { label: branch.parentId });
-      parent.children.push(branch);
-    } else {
-      roots.push(branch);
-    }
-  }
-
-  const sortTree = (branch) => {
-    branch.children.sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id));
-    branch.children.forEach(sortTree);
-  };
-  roots.sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id));
-  roots.forEach(sortTree);
-
-  return {
-    roots,
-    totalBranches: branchMap.size,
-    globalEvents,
-  };
-}
-
-function countBranchTree(branch) {
-  return 1 + branch.children.reduce((sum, child) => sum + countBranchTree(child), 0);
-}
-
-function renderBranchNode(branch) {
-  const detailsOpen = branch.depth <= 1 ? 'open' : '';
-  const eventHtml = branch.events.length
-    ? branch.events.map((event) => `
-        <div class="branch-event branch-event--${escapeHtml(event.type)}">
-          <div class="branch-event__meta">
-            <span class="branch-event__type">${escapeHtml(event.type)}</span>
-            ${event.toolName ? `<span class="tag">${escapeHtml(event.toolName)}</span>` : ''}
-            ${event.step != null ? `<span class="tag">step ${escapeHtml(event.step)}</span>` : ''}
-          </div>
-          <p>${escapeHtml(event.content)}</p>
-        </div>
-      `).join('')
-    : '<p class="mini-list__empty">No branch events recorded.</p>';
-
-  return `
-    <div class="branch-node branch-node--${escapeHtml(branch.status)}" style="--branch-depth:${Number(branch.depth) || 0}">
-      <div class="branch-node__header">
-        <div class="branch-node__heading">
-          <span class="branch-node__id">${escapeHtml(branch.id)}</span>
-          <strong>${escapeHtml(branch.label || branch.id)}</strong>
-        </div>
-        <div class="branch-node__stats">
-          <span class="tag">d${escapeHtml(branch.depth)}</span>
-          <span class="tag">${branch.events.length} event${branch.events.length === 1 ? '' : 's'}</span>
-          <span class="tag">${branch.toolCount} tool${branch.toolCount === 1 ? '' : 's'}</span>
-        </div>
-      </div>
-      <details class="branch-node__details" ${detailsOpen}>
-        <summary>${branch.children.length} child branch${branch.children.length === 1 ? '' : 'es'} · ${branch.status}</summary>
-        <div class="branch-node__events">${eventHtml}</div>
-      </details>
-      ${branch.children.length ? `<div class="branch-node__children">${branch.children.map((child) => renderBranchNode(child)).join('')}</div>` : ''}
-    </div>
-  `;
-}
-
-function renderBranchGraph() {
-  const run = getSelectedCliRun();
-  elements.branchRuns.innerHTML = state.cliRuns.length
-    ? state.cliRuns.slice().reverse().slice(0, 6).map((item) => `
-      <button type="button" class="mini-list__item${item.id === state.selectedCliRunId ? ' is-active' : ''}" data-cli-run-id="${escapeHtml(item.id)}">
-        <span class="mini-list__title">${escapeHtml(truncateText(item.prompt || 'Untitled run', 42))}</span>
-        <span class="mini-list__meta">${escapeHtml(formatTimestamp(item.endTs))} · ${item.branchCount} branch${item.branchCount === 1 ? '' : 'es'} · ${item.traceCount} trace${item.traceCount === 1 ? '' : 's'}</span>
-      </button>
-    `).join('')
-    : '<p class="mini-list__empty">No connected CLI traces yet.</p>';
-
-  if (!run) {
-    elements.branchGraph.innerHTML = '<p class="mini-list__empty">Start the integrated CLI and submit a request to see the branch tree.</p>';
-  } else {
-    const graph = buildBranchGraph(run);
-    const rootCount = graph.roots.length;
-    const maxBranches = graph.roots.reduce((sum, branch) => sum + countBranchTree(branch), 0);
-    elements.branchGraph.innerHTML = `
-      <div class="branch-graph__summary">
-        <div class="branch-graph__prompt">${escapeHtml(truncateText(run.prompt || 'Untitled run', 180))}</div>
-        ${run.answer ? `<div class="branch-graph__answer">${escapeHtml(truncateText(run.answer, 180))}</div>` : ''}
-        <div class="node-meta">
-          <span class="tag">${graph.totalBranches} branch node${graph.totalBranches === 1 ? '' : 's'}</span>
-          <span class="tag">${rootCount} root${rootCount === 1 ? '' : 's'}</span>
-          <span class="tag">${run.traceCount} trace event${run.traceCount === 1 ? '' : 's'}</span>
-          <span class="tag">${maxBranches} total tree node${maxBranches === 1 ? '' : 's'}</span>
-        </div>
-      </div>
-      ${graph.globalEvents.length ? `
-        <details class="branch-global" open>
-          <summary>Global synthesis events</summary>
-          <div class="branch-node__events">
-            ${graph.globalEvents.map((event) => `
-              <div class="branch-event branch-event--${escapeHtml(event.type)}">
-                <div class="branch-event__meta"><span class="branch-event__type">${escapeHtml(event.type)}</span></div>
-                <p>${escapeHtml(event.content)}</p>
-              </div>
-            `).join('')}
-          </div>
-        </details>
-      ` : ''}
-      <div class="branch-tree">
-        ${graph.roots.length ? graph.roots.map((branch) => renderBranchNode(branch)).join('') : '<p class="mini-list__empty">This run did not emit branch metadata.</p>'}
-      </div>
-    `;
-  }
-
-  for (const button of elements.branchRuns.querySelectorAll('[data-cli-run-id]')) {
-    button.addEventListener('click', () => {
-      const runId = button.getAttribute('data-cli-run-id');
-      if (!runId) return;
-      state.selectedCliRunId = runId;
-      renderBranchGraph();
+function buildNodeFromVersion(nodeId, versionObj, markdown, path = '') {
+  if (!versionObj && !markdown) return null;
+  if (markdown) {
+    const parsed = parseMarkdownFile(markdown, path || `${nodeId}.md`);
+    return normalizeNode({
+      ...parsed,
+      id: nodeId,
+      confidence: versionObj?.confidence || parsed.confidence,
+      importance: versionObj?.importance || parsed.importance,
+      version: versionObj?.version || parsed.version,
     });
   }
-}
-
-async function refreshCliConversation() {
-  if (!state.connected) {
-    setCliConversation([]);
-    return;
-  }
-  const response = await fetch('/api/cli/conversation');
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error || 'Failed to load CLI conversation');
-  }
-  setCliConversation(Array.isArray(payload.conversation) ? payload.conversation : []);
-}
-
-function applyFilters() {
-  const query = state.query.trim().toLowerCase();
-  state.filtered = state.nodes.filter((node) => {
-    const haystack = [
-      node.title,
-      node.summary,
-      node.body,
-      node.markdown || '',
-      (node.facts || []).join(' '),
-      (node.relations || []).join(' '),
-      (node.evidence || []).join(' '),
-    ].join(' ').toLowerCase();
-    const matchesQuery = !query || haystack.includes(query);
-    const matchesSource = state.sourceFilter === 'all' || node.source === state.sourceFilter;
-    const matchesOrigin = state.originFilter === 'all' || node.origin === state.originFilter;
-    return matchesQuery && matchesSource && matchesOrigin;
+  return normalizeNode({
+    id: nodeId,
+    title: versionObj?.content?.title || nodeId,
+    summary: versionObj?.content?.summary || 'Summary unavailable.',
+    body: versionObj?.content?.body || '',
+    source: versionObj?.content?.structured_data?.['meta.source'] || 'mempedia',
+    origin: versionObj?.content?.structured_data?.['meta.origin'] || 'agent',
+    confidence: versionObj?.confidence || 0.9,
+    importance: versionObj?.importance || 1,
+    version: versionObj?.version || '',
+    path,
   });
-  if (state.filtered.length > 0 && !state.filtered.find((node) => node.id === state.selectedId)) {
-    state.selectedId = state.filtered[0].id;
-  }
-  render();
-}
-
-function renderFilters() {
-  updateSelect(elements.filterSource, ['all', ...new Set(state.nodes.map((node) => node.source).filter(Boolean))], state.sourceFilter);
-  updateSelect(elements.filterOrigin, ['all', ...new Set(state.nodes.map((node) => node.origin).filter(Boolean))], state.originFilter);
-}
-
-function renderList() {
-  elements.nodeList.innerHTML = '';
-  if (state.filtered.length === 0) {
-    elements.nodeList.innerHTML = '<p class="detail__empty">No nodes match your filters.</p>';
-    elements.heroPreview.textContent = 'No nodes loaded yet.';
-    return;
-  }
-  for (const node of state.filtered) {
-    const graphLinks = (state.canonicalGraph?.edges || []).filter((edge) => edge.source === node.id || edge.target === node.id).length;
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = `node-card${node.id === state.selectedId ? ' active' : ''}`;
-    card.innerHTML = `
-      <h3>${escapeHtml(node.title)}</h3>
-      <p>${escapeHtml(node.summary)}</p>
-      <div class="node-meta">
-        <span class="tag">${escapeHtml(node.source || 'unknown source')}</span>
-        <span class="tag">${escapeHtml(node.origin || 'unknown origin')}</span>
-        <span class="tag">${graphLinks} graph links</span>
-        ${node.version ? `<span class="tag">v ${escapeHtml(shortHash(node.version))}</span>` : ''}
-      </div>
-    `;
-    card.addEventListener('click', () => void selectNode(node.id));
-    elements.nodeList.appendChild(card);
-  }
-}
-
-function renderWorkspaceGlance() {
-  const { habits, behaviorPatterns, nodeConversations, conversations } = state.memoryStream;
-  elements.workspaceGlance.innerHTML = `
-    <div class="glance-card">
-      <strong>${state.nodes.length}</strong>
-      <span>knowledge notes</span>
-    </div>
-    <div class="glance-card">
-      <strong>${habits.length}</strong>
-      <span>preferences & habits</span>
-    </div>
-    <div class="glance-card">
-      <strong>${behaviorPatterns.length}</strong>
-      <span>behavior patterns</span>
-    </div>
-    <div class="glance-card">
-      <strong>${Math.max(nodeConversations.length, conversations.length)}</strong>
-      <span>episodic traces</span>
-    </div>
-  `;
-}
-
-function groupNodesForPageTree(nodes) {
-  const groups = new Map();
-  for (const node of nodes) {
-    const source = String(node.source || 'uncategorized').trim() || 'uncategorized';
-    const origin = String(node.origin || 'notes').trim() || 'notes';
-    if (!groups.has(source)) groups.set(source, new Map());
-    const branchMap = groups.get(source);
-    if (!branchMap.has(origin)) branchMap.set(origin, []);
-    branchMap.get(origin).push(node);
-  }
-  return Array.from(groups.entries())
-    .map(([source, branchMap]) => ({
-      source,
-      branches: Array.from(branchMap.entries())
-        .map(([origin, items]) => ({
-          origin,
-          items: items.slice().sort((a, b) => String(a.title || a.id).localeCompare(String(b.title || b.id))),
-        }))
-        .sort((a, b) => b.items.length - a.items.length || a.origin.localeCompare(b.origin)),
-    }))
-    .sort((a, b) => {
-      if (a.source === state.sourceFilter) return -1;
-      if (b.source === state.sourceFilter) return 1;
-      const aCount = a.branches.reduce((sum, branch) => sum + branch.items.length, 0);
-      const bCount = b.branches.reduce((sum, branch) => sum + branch.items.length, 0);
-      return bCount - aCount || a.source.localeCompare(b.source);
-    });
-}
-
-function renderPageTree() {
-  const groups = groupNodesForPageTree(state.nodes);
-  elements.pageTree.innerHTML = groups.length ? groups.map((group) => {
-    const isCurrentSource = state.sourceFilter === group.source;
-    const totalCount = group.branches.reduce((sum, branch) => sum + branch.items.length, 0);
-    return `
-      <details class="page-tree__group" ${isCurrentSource || state.sourceFilter === 'all' ? 'open' : ''}>
-        <summary class="page-tree__summary">
-          <span class="page-tree__folder">${escapeHtml(group.source)}</span>
-          <span class="page-tree__count">${totalCount}</span>
-        </summary>
-        <div class="page-tree__items">
-          ${group.branches.map((branch) => `
-            <div class="page-tree__branch">
-              <div class="page-tree__branch-title">${escapeHtml(branch.origin)}</div>
-              ${branch.items.map((node) => `
-                <button type="button" class="page-tree__item${node.id === state.selectedId ? ' is-active' : ''}" data-page-node-id="${escapeHtml(node.id)}">
-                  <span class="page-tree__item-title">${escapeHtml(node.title || node.id)}</span>
-                  <span class="page-tree__item-meta">${escapeHtml(shortHash(node.version || node.id))}</span>
-                </button>
-              `).join('')}
-            </div>
-          `).join('')}
-        </div>
-      </details>
-    `;
-  }).join('') : '<p class="mini-list__empty">No pages yet.</p>';
-
-  for (const button of elements.pageTree.querySelectorAll('[data-page-node-id]')) {
-    button.addEventListener('click', () => {
-      const nodeId = button.getAttribute('data-page-node-id');
-      if (nodeId) void selectNode(nodeId);
-    });
-  }
-}
-
-function collectTagEntries() {
-  const tagMap = new Map();
-  const addTag = (kind, value, nodeId) => {
-    const normalized = String(value || '').trim();
-    if (!normalized) return;
-    const key = `${kind}:${normalized}`;
-    if (!tagMap.has(key)) {
-      tagMap.set(key, { kind, value: normalized, count: 0, nodes: new Set() });
-    }
-    const entry = tagMap.get(key);
-    entry.nodes.add(nodeId);
-    entry.count = entry.nodes.size;
-  };
-
-  for (const node of state.nodes) {
-    addTag('source', node.source, node.id);
-    addTag('origin', node.origin, node.id);
-    for (const fact of node.facts || []) {
-      const tag = String(fact).split(':')[0].trim();
-      if (tag) addTag('fact', tag, node.id);
-    }
-    for (const evidence of node.evidence || []) {
-      const tag = String(evidence).split(/[/.]/)[0].trim();
-      if (tag) addTag('evidence', tag, node.id);
-    }
-  }
-
-  return Array.from(tagMap.values())
-    .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind) || a.value.localeCompare(b.value))
-    .slice(0, 18);
-}
-
-function applyTagFilter(kind, value) {
-  if (kind === 'source') {
-    state.sourceFilter = value;
-    elements.filterSource.value = value;
-  } else if (kind === 'origin') {
-    state.originFilter = value;
-    elements.filterOrigin.value = value;
-  } else {
-    state.query = value;
-    elements.searchInput.value = value;
-  }
-  applyFilters();
-}
-
-function renderSidebarPanels() {
-  renderPageTree();
-  const recentNodes = state.recentOpened
-    .map((nodeId) => state.nodes.find((node) => node.id === nodeId))
-    .filter(Boolean)
-    .slice(0, 6);
-  elements.recentList.innerHTML = recentNodes.length
-    ? recentNodes.map((node) => `
-      <button type="button" class="mini-list__item" data-node-id="${escapeHtml(node.id)}">
-        <span class="mini-list__title">${escapeHtml(node.title || node.id)}</span>
-        <span class="mini-list__meta">${escapeHtml(node.source || 'workspace')} · ${escapeHtml(node.origin || 'note')}</span>
-      </button>
-    `).join('')
-    : '<p class="mini-list__empty">Open notes to build a working set.</p>';
-
-  const tags = collectTagEntries();
-  elements.tagsList.innerHTML = tags.length
-    ? tags.map((tag) => `
-      <button type="button" class="tag-chip tag-chip--${escapeHtml(tag.kind)}" data-tag-kind="${escapeHtml(tag.kind)}" data-tag-value="${escapeHtml(tag.value)}">
-        <span>${escapeHtml(tag.value)}</span>
-        <strong>${tag.count}</strong>
-      </button>
-    `).join('')
-    : '<p class="mini-list__empty">No tags yet.</p>';
-
-  const outline = extractOutline(state.editor.body || state.editor.markdown || '', state.editor.title || 'Untitled');
-  elements.outlineList.innerHTML = outline.length
-    ? outline.map((item) => `
-      <div class="mini-list__item" style="padding-left: ${0.75 + (item.level - 1) * 0.75}rem; cursor: default;">
-        <span class="mini-list__title">${escapeHtml(item.title)}</span>
-        <span class="mini-list__meta">H${item.level}</span>
-      </div>
-    `).join('')
-    : '<p class="mini-list__empty">No headings yet.</p>';
-
-  renderBranchGraph();
-
-  for (const button of elements.recentList.querySelectorAll('[data-node-id]')) {
-    button.addEventListener('click', () => {
-      const nodeId = button.getAttribute('data-node-id');
-      if (nodeId) void selectNode(nodeId);
-    });
-  }
-  for (const button of elements.tagsList.querySelectorAll('[data-tag-kind][data-tag-value]')) {
-    button.addEventListener('click', () => {
-      const kind = button.getAttribute('data-tag-kind') || 'fact';
-      const value = button.getAttribute('data-tag-value') || '';
-      applyTagFilter(kind, value);
-    });
-  }
-}
-
-function renderNoteShell() {
-  const node = editorToNode(state.editor);
-  const source = node.source || 'workspace';
-  const breadcrumb = `${source} / ${node.title || 'Untitled'}`;
-  elements.noteBreadcrumb.textContent = breadcrumb;
-  elements.noteShellSummary.textContent = node.summary || 'Human-readable note with structured AI-updatable metadata.';
-  const linkedConversationCount = (state.memoryStream.nodeConversations || []).filter((item) => item.node_id === node.id).length;
-  const graphCount = (state.canonicalGraph.edges || []).filter((edge) => edge.source === node.id || edge.target === node.id).length;
-  elements.noteShellMeta.innerHTML = `
-    <span class="tag">${escapeHtml(node.id || 'unsaved note')}</span>
-    <span class="tag">${escapeHtml(node.origin || 'human')}</span>
-    <span class="tag">${graphCount} graph link${graphCount === 1 ? '' : 's'}</span>
-    <span class="tag">${linkedConversationCount} memory trace${linkedConversationCount === 1 ? '' : 's'}</span>
-    ${node.version ? `<span class="tag">v ${escapeHtml(shortHash(node.version))}</span>` : ''}
-  `;
-}
-
-function renderLibraryView() {
-  const isKnowledge = state.libraryView === 'knowledge';
-  const isMemory = state.libraryView === 'memory';
-  const isActivity = state.libraryView === 'activity';
-  elements.nodeList.classList.toggle('is-hidden', !isKnowledge);
-  elements.memoryList.classList.toggle('is-hidden', !isMemory);
-  elements.activityList.classList.toggle('is-hidden', !isActivity);
-  for (const [key, button] of Object.entries(elements.viewButtons)) {
-    const active = key === state.libraryView;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-selected', String(active));
-  }
-}
-
-function renderMemoryList() {
-  const { habits, behaviorPatterns, nodeConversations, conversations } = state.memoryStream;
-  const conversationMap = new Map((conversations || []).map((item) => [item.id, item]));
-  const recentConversations = (nodeConversations || []).slice().reverse().slice(0, 8);
-  elements.memoryList.innerHTML = `
-    <section class="library-section">
-      <h3>Preferences & habits</h3>
-      ${habits.length ? habits.slice().reverse().slice(0, 6).map((item) => `
-        <article class="memory-card">
-          <div class="memory-card__title">${escapeHtml(item.topic)}</div>
-          <p>${escapeHtml(truncateText(item.summary || item.details, 110))}</p>
-          <div class="node-meta"><span class="tag">${escapeHtml(item.source || 'habit')}</span><span class="tag">${escapeHtml(formatTimestamp(item.timestamp))}</span></div>
-        </article>
-      `).join('') : '<p class="detail__empty">No preference memory yet.</p>'}
-    </section>
-    <section class="library-section">
-      <h3>Behavior patterns</h3>
-      ${behaviorPatterns.length ? behaviorPatterns.slice().reverse().slice(0, 6).map((item) => `
-        <article class="memory-card">
-          <div class="memory-card__title">${escapeHtml(item.pattern_key)}</div>
-          <p>${escapeHtml(truncateText(item.summary || item.details, 110))}</p>
-          <div class="node-meta"><span class="tag">${escapeHtml(item.source || 'pattern')}</span><span class="tag">${escapeHtml(formatTimestamp(item.timestamp))}</span></div>
-        </article>
-      `).join('') : '<p class="detail__empty">No behavior patterns yet.</p>'}
-    </section>
-    <section class="library-section">
-      <h3>Recent situational memory</h3>
-      ${recentConversations.length ? recentConversations.map((item) => {
-        const conversation = conversationMap.get(item.conversation_id) || {};
-        return `
-          <article class="memory-card memory-card--linked" data-node-jump="${escapeHtml(item.node_id)}">
-            <div class="memory-card__title">${escapeHtml(item.node_id)}</div>
-            <p>${escapeHtml(truncateText(conversation.input || conversation.answer || item.reason || '', 120))}</p>
-            <div class="node-meta"><span class="tag">${escapeHtml(item.reason || 'conversation')}</span><span class="tag">${escapeHtml(formatTimestamp(item.ts || conversation.timestamp))}</span></div>
-          </article>
-        `;
-      }).join('') : '<p class="detail__empty">No conversation-linked memory yet.</p>'}
-    </section>
-  `;
-  for (const card of elements.memoryList.querySelectorAll('[data-node-jump]')) {
-    card.addEventListener('click', () => {
-      const nodeId = card.getAttribute('data-node-jump');
-      if (nodeId) void selectNode(nodeId);
-    });
-  }
-}
-
-function renderActivityList() {
-  const rows = [
-    ...(state.memoryStream.agentActions || []).map((item) => ({
-      kind: 'action',
-      ts: item.timestamp,
-      title: item.action,
-      detail: item.node_id,
-      meta: item.reason || item.source || '',
-    })),
-    ...(state.memoryStream.accessLogs || []).map((item) => ({
-      kind: 'access',
-      ts: item.timestamp,
-      title: 'node_access',
-      detail: item.node_id,
-      meta: item.agent_id || '',
-    })),
-  ].sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
-
-  elements.activityList.innerHTML = rows.length ? rows.slice(0, 20).map((item) => `
-    <article class="memory-card">
-      <div class="memory-card__title">${escapeHtml(item.title)}</div>
-      <p>${escapeHtml(item.detail)}</p>
-      <div class="node-meta"><span class="tag">${escapeHtml(item.kind)}</span><span class="tag">${escapeHtml(formatTimestamp(item.ts ? new Date(Number(item.ts) * 1000).toISOString() : ''))}</span></div>
-      ${item.meta ? `<div class="memory-card__meta">${escapeHtml(truncateText(item.meta, 120))}</div>` : ''}
-    </article>
-  `).join('') : '<p class="detail__empty">No agent activity yet.</p>';
-}
-
-function renderContextMemory() {
-  if (!state.selectedId) {
-    elements.contextMemory.innerHTML = '<p class="detail__empty">Select a note to inspect linked episodic memory.</p>';
-    return;
-  }
-  const links = (state.memoryStream.nodeConversations || []).filter((item) => item.node_id === state.selectedId);
-  const conversationMap = new Map((state.memoryStream.conversations || []).map((item) => [item.id, item]));
-  const habitMatches = (state.memoryStream.habits || []).filter((item) => {
-    const haystack = `${item.topic || ''} ${item.summary || ''} ${item.details || ''}`.toLowerCase();
-    return haystack.includes(String(state.selectedId).toLowerCase()) || haystack.includes(String(state.editor.title || '').toLowerCase());
-  }).slice(0, 4);
-  const patternMatches = (state.memoryStream.behaviorPatterns || []).filter((item) => {
-    const haystack = `${item.pattern_key || ''} ${item.summary || ''} ${item.details || ''}`.toLowerCase();
-    return haystack.includes(String(state.editor.title || '').toLowerCase());
-  }).slice(0, 4);
-
-  elements.contextMemory.innerHTML = `
-    <section class="library-section">
-      <h4>Linked conversations</h4>
-      ${links.length ? links.slice().reverse().map((item) => {
-        const conversation = conversationMap.get(item.conversation_id) || {};
-        return `
-          <article class="memory-card">
-            <div class="memory-card__title">${escapeHtml(item.conversation_id)}</div>
-            <p>${escapeHtml(truncateText(conversation.input || conversation.answer || item.reason || '', 160))}</p>
-            <div class="node-meta"><span class="tag">${escapeHtml(item.reason || 'conversation')}</span><span class="tag">${escapeHtml(formatTimestamp(item.ts || conversation.timestamp))}</span></div>
-          </article>
-        `;
-      }).join('') : '<p class="detail__empty">No linked conversations for this note.</p>'}
-    </section>
-    <section class="library-section library-section--split">
-      <div>
-        <h4>Preference cues</h4>
-        ${habitMatches.length ? habitMatches.map((item) => `<article class="memory-card"><div class="memory-card__title">${escapeHtml(item.topic)}</div><p>${escapeHtml(truncateText(item.summary || item.details, 120))}</p></article>`).join('') : '<p class="detail__empty">No related preference memory.</p>'}
-      </div>
-      <div>
-        <h4>Behavior cues</h4>
-        ${patternMatches.length ? patternMatches.map((item) => `<article class="memory-card"><div class="memory-card__title">${escapeHtml(item.pattern_key)}</div><p>${escapeHtml(truncateText(item.summary || item.details, 120))}</p></article>`).join('') : '<p class="detail__empty">No related behavior memory.</p>'}
-      </div>
-    </section>
-  `;
-}
-
-function renderStructuredSection(title, items, emptyText) {
-  return `
-    <div class="detail__section">
-      <h4>${title}</h4>
-      <div class="detail__content">${items.length ? `<ul class="detail__list">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : escapeHtml(emptyText)}</div>
-    </div>
-  `;
-}
-
-function buildGraphDataset() {
-  const graph = state.canonicalGraph || createEmptyGraph();
-  const includeSelectedNeighborhood = state.graphScope === 'selected' && state.selectedId;
-  const included = new Set();
-  if (includeSelectedNeighborhood) {
-    included.add(state.selectedId);
-  } else {
-    for (const node of state.filtered) included.add(node.id);
-  }
-
-  if (includeSelectedNeighborhood) {
-    for (const edge of graph.edges || []) {
-      if (edge.source === state.selectedId || edge.target === state.selectedId) {
-        included.add(edge.source);
-        included.add(edge.target);
-      }
-    }
-  }
-
-  let nodes = (graph.nodes || []).filter((node) => included.has(node.id));
-  let edges = (graph.edges || []).filter((edge) => included.has(edge.source) && included.has(edge.target));
-
-  if (!includeSelectedNeighborhood) {
-    const connectedIds = new Set(nodes.map((node) => node.id));
-    for (const edge of graph.edges || []) {
-      if (connectedIds.has(edge.source) || connectedIds.has(edge.target)) {
-        connectedIds.add(edge.source);
-        connectedIds.add(edge.target);
-      }
-    }
-    nodes = (graph.nodes || []).filter((node) => connectedIds.has(node.id));
-    edges = (graph.edges || []).filter((edge) => connectedIds.has(edge.source) && connectedIds.has(edge.target));
-  }
-
-  if (state.graphScope === 'filtered' && nodes.length > 24) {
-    const allowed = new Set(nodes.slice(0, 24).map((node) => node.id));
-    nodes = nodes.filter((node) => allowed.has(node.id));
-    edges = edges.filter((edge) => allowed.has(edge.source) && allowed.has(edge.target));
-  }
-
-  const uiNodeMap = new Map(state.nodes.map((node) => [node.id, node]));
-  nodes = nodes.map((node) => {
-    const uiNode = uiNodeMap.get(node.id);
-    return uiNode ? { ...node, ...uiNode, external: node.external } : node;
-  });
-
-  return { nodes, edges };
-}
-
-function layoutGraph(nodes, edges) {
-  const width = 960;
-  const height = 420;
-  const positions = new Map();
-  if (!nodes.length) return { width, height, positions };
-
-  const selectedId = state.selectedId;
-  const selectedNode = nodes.find((node) => node.id === selectedId) || nodes[0];
-  const neighbors = new Set();
-  for (const edge of edges) {
-    if (edge.source === selectedNode.id) neighbors.add(edge.target);
-    if (edge.target === selectedNode.id) neighbors.add(edge.source);
-  }
-
-  const primary = nodes.filter((node) => node.id === selectedNode.id || neighbors.has(node.id));
-  const secondary = nodes.filter((node) => !primary.some((item) => item.id === node.id));
-
-  positions.set(selectedNode.id, { x: width / 2, y: height / 2 });
-
-  const primaryOthers = primary.filter((node) => node.id !== selectedNode.id);
-  const primaryRadius = Math.min(145, 80 + primaryOthers.length * 12);
-  primaryOthers.forEach((node, index) => {
-    const angle = (-Math.PI / 2) + (index / Math.max(primaryOthers.length, 1)) * Math.PI * 2;
-    positions.set(node.id, {
-      x: width / 2 + Math.cos(angle) * primaryRadius,
-      y: height / 2 + Math.sin(angle) * primaryRadius,
-    });
-  });
-
-  const secondaryRadius = Math.min(205, primaryRadius + 80);
-  secondary.forEach((node, index) => {
-    const angle = (-Math.PI / 2) + (index / Math.max(secondary.length, 1)) * Math.PI * 2;
-    const wobble = index % 2 === 0 ? 18 : -18;
-    positions.set(node.id, {
-      x: width / 2 + Math.cos(angle) * secondaryRadius,
-      y: height / 2 + Math.sin(angle) * (secondaryRadius - 22) + wobble,
-    });
-  });
-
-  return { width, height, positions };
-}
-
-function renderGraph() {
-  const { nodes, edges } = buildGraphDataset();
-  if (!nodes.length) {
-    elements.graphSummary.textContent = 'No graph data yet.';
-    elements.graphView.innerHTML = `
-      <rect x="0" y="0" width="960" height="420" rx="18" class="graph-bg"></rect>
-      <text x="480" y="210" text-anchor="middle" class="graph-empty">Load or create nodes to visualize relationships.</text>
-    `;
-    return;
-  }
-
-  const { positions } = layoutGraph(nodes, edges);
-  const selectedId = state.selectedId;
-  const neighborIds = new Set();
-  for (const edge of edges) {
-    if (edge.source === selectedId) neighborIds.add(edge.target);
-    if (edge.target === selectedId) neighborIds.add(edge.source);
-  }
-
-  elements.graphSummary.textContent = `${nodes.length} nodes · ${edges.length} relations · scope: ${state.graphScope === 'selected' ? 'selected node' : 'filtered result set'}`;
-
-  const edgeMarkup = edges.map((edge) => {
-    const source = positions.get(edge.source);
-    const target = positions.get(edge.target);
-    if (!source || !target) return '';
-    const midX = (source.x + target.x) / 2;
-    const midY = (source.y + target.y) / 2;
-    const active = edge.source === selectedId || edge.target === selectedId;
-    return `
-      <g class="graph-edge${active ? ' is-active' : ''}">
-        <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"></line>
-        <text x="${midX}" y="${midY - 6}" text-anchor="middle">${escapeHtml(edge.label)}</text>
-      </g>
-    `;
-  }).join('');
-
-  const nodeMarkup = nodes.map((node) => {
-    const position = positions.get(node.id);
-    if (!position) return '';
-    const isSelected = node.id === selectedId;
-    const isNeighbor = neighborIds.has(node.id);
-    const classes = [
-      'graph-node',
-      isSelected ? 'is-selected' : '',
-      isNeighbor ? 'is-neighbor' : '',
-      node.external ? 'is-external' : '',
-    ].filter(Boolean).join(' ');
-    return `
-      <g class="${classes}" data-node-id="${escapeHtml(node.id)}" transform="translate(${position.x}, ${position.y})">
-        <circle r="${isSelected ? 26 : isNeighbor ? 21 : 18}"></circle>
-        <text class="graph-node__title" text-anchor="middle" y="4">${escapeHtml(node.title.slice(0, 20))}</text>
-        <text class="graph-node__meta" text-anchor="middle" y="36">${escapeHtml(node.id.slice(0, 24))}</text>
-      </g>
-    `;
-  }).join('');
-
-  elements.graphView.innerHTML = `
-    <rect x="0" y="0" width="960" height="420" rx="18" class="graph-bg"></rect>
-    ${edgeMarkup}
-    ${nodeMarkup}
-  `;
-
-  for (const element of elements.graphView.querySelectorAll('[data-node-id]')) {
-    element.addEventListener('click', () => {
-      const nodeId = element.getAttribute('data-node-id');
-      if (nodeId) void selectNode(nodeId);
-    });
-  }
-}
-
-function renderRichText(text) {
-  const lines = String(text || '').split(/\r?\n/);
-  const blocks = [];
-  let listItems = [];
-  const flushList = () => {
-    if (!listItems.length) return;
-    blocks.push(`<ul class="detail__list">${listItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`);
-    listItems = [];
-  };
-  for (const rawLine of lines) {
-    const trimmed = rawLine.trim();
-    if (!trimmed) {
-      flushList();
-      continue;
-    }
-    if (/^[-*+]\s+/.test(trimmed)) {
-      listItems.push(trimmed.replace(/^[-*+]\s+/, ''));
-      continue;
-    }
-    flushList();
-    if (trimmed.startsWith('### ')) blocks.push(`<h5>${escapeHtml(trimmed.slice(4))}</h5>`);
-    else if (trimmed.startsWith('## ')) blocks.push(`<h4>${escapeHtml(trimmed.slice(3))}</h4>`);
-    else if (trimmed.startsWith('# ')) blocks.push(`<h3>${escapeHtml(trimmed.slice(2))}</h3>`);
-    else blocks.push(`<p>${escapeHtml(trimmed)}</p>`);
-  }
-  flushList();
-  return blocks.join('') || '<p>No narrative yet.</p>';
-}
-
-function renderDetail() {
-  const node = editorToNode(state.editor);
-  if (!node.id) {
-    elements.nodeDetail.innerHTML = '<p class="detail__empty">Select a node to inspect its metadata and content.</p>';
-    elements.heroPreview.textContent = 'Import or search to see details here.';
-    return;
-  }
-  const graphRelations = (state.canonicalGraph?.edges || [])
-    .filter((edge) => edge.source === node.id || edge.target === node.id)
-    .map((edge) => {
-      if (edge.source === node.id) {
-        return `→ ${edge.target} (${edge.label})`;
-      }
-      return `← ${edge.source} (${edge.label})`;
-    });
-  elements.heroPreview.textContent = node.summary;
-  elements.nodeDetail.innerHTML = `
-    <div class="detail__header">
-      <h3 class="detail__title">${escapeHtml(node.title)}</h3>
-      <p class="detail__summary">${escapeHtml(node.summary)}</p>
-      <div class="node-meta">
-        <span class="tag">source: ${escapeHtml(node.source || 'unknown')}</span>
-        <span class="tag">origin: ${escapeHtml(node.origin || 'unknown')}</span>
-        <span class="tag">confidence: ${escapeHtml(String(node.confidence || '0.9'))}</span>
-        <span class="tag">importance: ${escapeHtml(String(node.importance || '1.0'))}</span>
-        ${state.editor.path ? `<span class="tag">${escapeHtml(state.editor.path)}</span>` : ''}
-      </div>
-    </div>
-    <div class="detail__section">
-      <h4>Narrative</h4>
-      <div class="detail__content detail__content--rich">${renderRichText(node.body || `# ${node.title}`)}</div>
-    </div>
-    ${renderStructuredSection('Graph Links (index)', graphRelations, 'No canonical graph links found.')}
-    ${renderStructuredSection('Facts', node.facts, 'No facts extracted.')}
-    ${renderStructuredSection('Markdown Relations', node.relations, 'No markdown relation notes found.')}
-    ${renderStructuredSection('Evidence', node.evidence, 'No evidence attached.')}
-  `;
-}
-
-function renderWorkspaceMeta() {
-  elements.workspaceStatus.textContent = state.connected
-    ? `Mode: connected workspace${state.memoryRoot ? ` · ${state.memoryRoot}` : ''}`
-    : 'Mode: standalone viewer';
-}
-
-function renderEditorChrome() {
-  const editor = state.editor;
-  elements.autoSaveToggle.checked = state.autoSave;
-  elements.saveNode.disabled = editor.saving || !editor.nodeId.trim();
-  elements.reloadNode.disabled = state.loadingNode || !editor.nodeId.trim();
-  if (editor.lastError) {
-    elements.editorStatus.textContent = editor.lastError;
-    elements.editorStatus.dataset.state = 'error';
-    return;
-  }
-  if (editor.saving) {
-    elements.editorStatus.textContent = 'Saving markdown into the graph...';
-    elements.editorStatus.dataset.state = 'saving';
-    return;
-  }
-  if (!state.connected) {
-    elements.editorStatus.textContent = 'Open the integrated UI from codecli to enable graph sync editing.';
-    elements.editorStatus.dataset.state = 'idle';
-    return;
-  }
-  if (editor.dirty) {
-    elements.editorStatus.textContent = 'Unsaved changes.';
-    elements.editorStatus.dataset.state = 'dirty';
-    return;
-  }
-  if (editor.lastSavedAt) {
-    elements.editorStatus.textContent = `Saved ${editor.lastSavedAt}${editor.version ? ` · version ${shortHash(editor.version)}` : ''}`;
-    elements.editorStatus.dataset.state = 'saved';
-    return;
-  }
-  elements.editorStatus.textContent = 'Connected. Select a node or create a new one.';
-  elements.editorStatus.dataset.state = 'idle';
-}
-
-function syncEditorToDom() {
-  const editor = state.editor;
-  elements.fields.nodeId.value = editor.nodeId;
-  elements.fields.title.value = editor.title;
-  elements.fields.summary.value = editor.summary;
-  elements.fields.source.value = editor.source;
-  elements.fields.origin.value = editor.origin;
-  elements.fields.confidence.value = editor.confidence;
-  elements.fields.importance.value = editor.importance;
-  elements.fields.body.value = editor.body;
-  elements.fields.factsText.value = editor.factsText;
-  elements.fields.relationsText.value = editor.relationsText;
-  elements.fields.evidenceText.value = editor.evidenceText;
-  elements.graphLinks.value = editor.graphLinksText;
-  elements.editorMarkdown.value = editor.markdown || buildMarkdownFromEditor(editor);
-}
-
-function syncDraftNode() {
-  const node = editorToNode(state.editor);
-  if (!node.id) return;
-  const index = state.nodes.findIndex((item) => item.id === node.id);
-  if (index >= 0) state.nodes[index] = { ...state.nodes[index], ...node };
-  else state.nodes.unshift(node);
-  state.selectedId = node.id;
-}
-
-function updateEditorField(field, value) {
-  state.editor[field] = value;
-  state.editor.markdown = buildMarkdownFromEditor(state.editor);
-  state.editor.dirty = true;
-  state.editor.lastError = '';
-  elements.editorMarkdown.value = state.editor.markdown;
-  syncDraftNode();
-  applyFilters();
-  scheduleAutoSave();
-}
-
-function updateGraphLinksField(value) {
-  state.editor.graphLinksText = value;
-  state.editor.dirty = true;
-  state.editor.lastError = '';
-  render();
-  scheduleAutoSave();
-}
-
-function loadEditorFromNode(node) {
-  state.editor = createEditorFromNode(node);
-  state.editor.markdown = buildMarkdownFromEditor(state.editor);
-  syncEditorToDom();
-  render();
 }
 
 function buildNodesFromMempedia(stateJson, versionMap, markdownMap) {
   const nodes = [];
   const heads = stateJson?.heads || {};
   for (const [nodeId, versionHash] of Object.entries(heads)) {
-    const markdownFile = Object.keys(markdownMap).find((name) => name.startsWith(`${nodeId}-`));
-    const node = buildNodeFromVersion(nodeId, versionMap[versionHash], markdownMap[markdownFile], markdownFile || '');
+    const markdownName = Object.keys(markdownMap).find((name) => name.startsWith(`${nodeId}-`) || name === `${nodeId}.md`);
+    const node = buildNodeFromVersion(nodeId, versionMap[versionHash], markdownMap[markdownName], markdownName || `${nodeId}.md`);
     if (node) nodes.push(node);
   }
+
   for (const [fileName, markdown] of Object.entries(markdownMap)) {
     const nodeId = fileName.replace(/-.+\.md$/, '').replace(/\.md$/, '');
-    if (!nodes.find((node) => node.id === nodeId)) {
-      nodes.push(parseMarkdownFile(markdown, fileName));
-    }
+    if (!nodes.some((node) => node.id === nodeId)) nodes.push(parseMarkdownFile(markdown, fileName));
   }
+
   return nodes;
 }
 
-function buildNodeFromVersion(nodeId, versionObj, markdown, path = '') {
-  if (!versionObj) return null;
-  if (markdown) {
-    const parsed = parseMarkdownFile(markdown, path || `${nodeId}.md`);
-    return {
-      ...parsed,
-      id: nodeId,
-      version: versionObj.version || parsed.version || '',
-      confidence: versionObj.confidence || parsed.confidence || '0.9',
-      importance: versionObj.importance || parsed.importance || '1.0',
-    };
+function buildNodesFromSnapshot(payload) {
+  const versionMap = Object.fromEntries(payload.versions || []);
+  const markdownByNode = Object.fromEntries(payload.markdownByNode || []);
+  const nodes = [];
+  const heads = payload.snapshot?.heads || {};
+
+  for (const [nodeId, versionHash] of Object.entries(heads)) {
+    const entry = markdownByNode[nodeId];
+    const node = buildNodeFromVersion(nodeId, versionMap[versionHash], entry?.markdown, entry?.path || `${nodeId}.md`);
+    if (node) nodes.push(node);
   }
-  return {
-    id: nodeId,
-    title: versionObj.content?.title || nodeId,
-    summary: versionObj.content?.summary || 'Summary unavailable.',
-    body: versionObj.content?.body || '',
-    source: versionObj.content?.structured_data?.['meta.source'] || 'mempedia',
-    origin: versionObj.content?.structured_data?.['meta.origin'] || 'agent',
-    facts: [],
-    relations: [],
-    evidence: [],
-    highlights: [],
-    markdown: '',
-    version: versionObj.version || '',
-    path,
-    confidence: versionObj.confidence || '0.9',
-    importance: versionObj.importance || '1.0',
-  };
+
+  for (const [nodeId, entry] of Object.entries(markdownByNode)) {
+    if (!nodes.some((node) => node.id === nodeId)) nodes.push(parseMarkdownFile(entry.markdown, entry.path || `${nodeId}.md`));
+  }
+
+  return nodes;
 }
 
 function buildCanonicalGraph(heads = {}, versionMap = {}, knownNodes = []) {
-  const knownNodeMap = new Map(knownNodes.map((node) => [node.id, node]));
   const nodeMap = new Map();
   const edgeMap = new Map();
+  const knownMap = new Map(knownNodes.map((node) => [node.id, node]));
 
-  const ensureNode = (nodeId, seed = null, external = false) => {
+  const ensureNode = (nodeId, seed = {}, external = false) => {
     if (!nodeId) return null;
     const existing = nodeMap.get(nodeId);
     if (existing) {
-      if (seed) {
-        existing.title = seed.title || existing.title;
-        existing.summary = seed.summary || existing.summary;
-        existing.source = seed.source || existing.source;
-        existing.origin = seed.origin || existing.origin;
-      }
-      if (!external) existing.external = false;
+      existing.external = existing.external && external;
       return existing;
     }
     const created = {
       id: nodeId,
-      title: seed?.title || nodeId,
-      summary: seed?.summary || '',
-      source: seed?.source || '',
-      origin: seed?.origin || '',
+      title: seed.title || nodeId,
+      summary: seed.summary || '',
+      source: seed.source || '',
+      origin: seed.origin || '',
       external,
     };
     nodeMap.set(nodeId, created);
     return created;
   };
 
-  for (const node of knownNodes) {
-    ensureNode(node.id, node, false);
-  }
+  for (const node of knownNodes) ensureNode(node.id, node, false);
 
-  for (const [nodeId, versionHash] of Object.entries(heads || {})) {
+  for (const [nodeId, versionHash] of Object.entries(heads)) {
     const versionObj = versionMap[versionHash];
-    const knownNode = knownNodeMap.get(nodeId);
-    ensureNode(nodeId, knownNode || {
+    const base = knownMap.get(nodeId) || {
       title: versionObj?.content?.title || nodeId,
       summary: versionObj?.content?.summary || '',
       source: versionObj?.content?.structured_data?.['meta.source'] || '',
       origin: versionObj?.content?.structured_data?.['meta.origin'] || '',
-    }, false);
-
-    const links = Array.isArray(versionObj?.content?.links) ? versionObj.content.links : [];
-    for (const link of links) {
+    };
+    ensureNode(nodeId, base, false);
+    for (const link of Array.isArray(versionObj?.content?.links) ? versionObj.content.links : []) {
       const target = String(link?.target || '').trim();
       if (!target) continue;
-      const knownTarget = knownNodeMap.get(target);
-      ensureNode(target, knownTarget || {
-        title: knownTarget?.title || target,
-        summary: knownTarget?.summary || '',
-        source: knownTarget?.source || '',
-        origin: knownTarget?.origin || '',
-      }, !Object.prototype.hasOwnProperty.call(heads || {}, target));
-
+      ensureNode(target, knownMap.get(target) || { title: target }, !heads[target]);
       const label = String(link?.label || 'related').trim() || 'related';
       const weight = Number(link?.weight);
-      const edgeKey = `${nodeId}__${target}__${label}`;
-      if (!edgeMap.has(edgeKey)) {
-        edgeMap.set(edgeKey, {
-          id: edgeKey,
+      const key = `${nodeId}__${target}__${label}`;
+      if (!edgeMap.has(key)) {
+        edgeMap.set(key, {
+          id: key,
           source: nodeId,
           target,
           label,
@@ -1619,273 +614,1007 @@ function buildCanonicalGraph(heads = {}, versionMap = {}, knownNodes = []) {
     }
   }
 
-  return {
-    nodes: Array.from(nodeMap.values()),
-    edges: Array.from(edgeMap.values()),
-  };
+  const markdownGraph = buildGraphFromNodes(knownNodes);
+  for (const node of markdownGraph.nodes) ensureNode(node.id, node, node.external);
+  for (const edge of markdownGraph.edges) {
+    const key = `${edge.source}__${edge.target}__${edge.label}`;
+    if (!edgeMap.has(key)) edgeMap.set(key, edge);
+  }
+
+  return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()) };
 }
 
-function buildNodesFromSnapshot(payload) {
-  const versionMap = Object.fromEntries(payload.versions || []);
-  const markdownByNode = Object.fromEntries(payload.markdownByNode || []);
-  const nodes = [];
-  const heads = payload.snapshot?.heads || {};
-  for (const [nodeId, versionHash] of Object.entries(heads)) {
-    const markdownEntry = markdownByNode[nodeId];
-    const node = buildNodeFromVersion(nodeId, versionMap[versionHash], markdownEntry?.markdown, markdownEntry?.path || `${nodeId}.md`);
-    if (node) nodes.push(node);
-  }
-  for (const [nodeId, entry] of Object.entries(markdownByNode)) {
-    if (!nodes.find((node) => node.id === nodeId)) {
-      nodes.push(parseMarkdownFile(entry.markdown, entry.path || `${nodeId}.md`));
+function buildGraphFromNodes(nodes) {
+  const nodeMap = new Map();
+  const edgeMap = new Map();
+
+  const ensureNode = (id, seed = {}, external = false) => {
+    if (!id) return;
+    if (nodeMap.has(id)) {
+      const current = nodeMap.get(id);
+      current.external = current.external && external;
+      return;
+    }
+    nodeMap.set(id, {
+      id,
+      title: seed.title || id,
+      summary: seed.summary || '',
+      source: seed.source || '',
+      origin: seed.origin || '',
+      external,
+    });
+  };
+
+  for (const node of nodes) ensureNode(node.id, node, false);
+
+  for (const node of nodes) {
+    for (const relationLine of node.relations || []) {
+      const relation = parseRelationEntry(relationLine);
+      if (!relation) continue;
+      ensureNode(relation.target, { title: relation.target }, !nodes.some((item) => item.id === relation.target));
+      const key = `${node.id}__${relation.target}__${relation.label}`;
+      if (!edgeMap.has(key)) {
+        edgeMap.set(key, {
+          id: key,
+          source: node.id,
+          target: relation.target,
+          label: relation.label,
+          weight: relation.weight,
+        });
+      }
     }
   }
-  return nodes;
+
+  return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()) };
 }
 
-async function loadFiles(files) {
-  const nodes = await Promise.all(Array.from(files).map((file) => file.text().then((text) => parseMarkdownFile(text, file.name))));
-  state.canonicalGraph = createEmptyGraph();
-  setMemoryStream(createEmptyMemoryStream());
-  setCliConversation([]);
+function extractOutline(body = '', fallbackTitle = 'Untitled') {
+  const items = [];
+  for (const line of String(body || '').split(/\r?\n/)) {
+    const heading = line.trim().match(/^(#{1,3})\s+(.+)$/);
+    if (heading) items.push({ level: heading[1].length, title: heading[2].trim() });
+  }
+  return items.length ? items : [{ level: 1, title: fallbackTitle }];
+}
+
+function generateMarkdown(node) {
+  const facts = node.facts.length ? `\n## Facts\n${node.facts.map((item) => `- ${item}`).join('\n')}\n` : '';
+  const relations = node.relations.length ? `\n## Relations\n${node.relations.map((item) => `- ${item}`).join('\n')}\n` : '';
+  const evidence = node.evidence.length ? `\n## Evidence\n${node.evidence.map((item) => `- ${item}`).join('\n')}\n` : '';
+  return [
+    '---',
+    `node_id: "${node.id}"`,
+    node.version ? `version: "${node.version}"` : null,
+    `confidence: ${formatNumber(node.confidence, 2)}`,
+    `importance: ${formatNumber(node.importance, 2)}`,
+    `title: "${String(node.title).replaceAll('"', '\\"')}"`,
+    `source: "${String(node.source).replaceAll('"', '\\"')}"`,
+    `origin: "${String(node.origin).replaceAll('"', '\\"')}"`,
+    '---',
+    `# ${node.title}`,
+    '',
+    node.body || node.summary,
+    facts,
+    relations,
+    evidence,
+  ].filter(Boolean).join('\n');
+}
+
+function getSelectedNode() {
+  return state.nodes.find((node) => node.id === state.selectedId) || null;
+}
+
+function getBaseGraph() {
+  if (state.canonicalGraph.nodes.length || state.canonicalGraph.edges.length) return state.canonicalGraph;
+  return buildGraphFromNodes(state.nodes);
+}
+
+function getGraphDegreeMap(graph) {
+  const map = new Map(graph.nodes.map((node) => [node.id, 0]));
+  for (const edge of graph.edges) {
+    map.set(edge.source, (map.get(edge.source) || 0) + 1);
+    map.set(edge.target, (map.get(edge.target) || 0) + 1);
+  }
+  return map;
+}
+
+function getVisibleGraph() {
+  const base = getBaseGraph();
+  if (!base.nodes.length) return createEmptyGraph();
+
+  const selectedNode = getSelectedNode();
+  const filteredIds = new Set(state.filtered.map((node) => node.id));
+  const focusIds = new Set();
+
+  if (state.graphScope === 'selected' && selectedNode) {
+    focusIds.add(selectedNode.id);
+    for (const edge of base.edges) {
+      if (edge.source === selectedNode.id || edge.target === selectedNode.id) {
+        focusIds.add(edge.source);
+        focusIds.add(edge.target);
+      }
+    }
+  } else {
+    for (const id of filteredIds) focusIds.add(id);
+    if (!focusIds.size) {
+      const degreeMap = getGraphDegreeMap(base);
+      for (const node of [...base.nodes].sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0)).slice(0, 10)) {
+        focusIds.add(node.id);
+      }
+    }
+    for (const edge of base.edges) {
+      if (focusIds.has(edge.source) || focusIds.has(edge.target)) {
+        focusIds.add(edge.source);
+        focusIds.add(edge.target);
+      }
+    }
+  }
+
+  const nodes = base.nodes.filter((node) => focusIds.has(node.id)).slice(0, 18);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = base.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+  return { nodes, edges };
+}
+
+function computeGraphLayout(graph) {
+  const width = 960;
+  const height = 620;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const positions = new Map();
+  const degreeMap = getGraphDegreeMap(graph);
+  const selectedNode = getSelectedNode();
+
+  if (!graph.nodes.length) return positions;
+
+  if (state.graphScope === 'selected' && selectedNode && graph.nodes.some((node) => node.id === selectedNode.id)) {
+    positions.set(selectedNode.id, { x: centerX, y: centerY });
+    const neighbors = graph.nodes.filter((node) => node.id !== selectedNode.id);
+    neighbors.forEach((node, index) => {
+      const angle = (-Math.PI / 2) + ((Math.PI * 2) / Math.max(neighbors.length, 1)) * index;
+      const radius = 200 + (index % 2) * 40;
+      positions.set(node.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      });
+    });
+    return positions;
+  }
+
+  const ordered = [...graph.nodes].sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0));
+  const center = ordered.shift();
+  if (center) positions.set(center.id, { x: centerX, y: centerY });
+
+  ordered.forEach((node, index) => {
+    const ring = index < 6 ? 0 : 1;
+    const ringItems = ring === 0 ? ordered.slice(0, Math.min(6, ordered.length)) : ordered.slice(6);
+    const localIndex = ring === 0 ? index : index - 6;
+    const angle = (-Math.PI / 2) + ((Math.PI * 2) / Math.max(ringItems.length, 1)) * localIndex;
+    const radius = ring === 0 ? 180 : 280;
+    positions.set(node.id, {
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius,
+    });
+  });
+
+  return positions;
+}
+
+function collectTags(node) {
+  if (!node) return [];
+  const tags = new Set([node.source, node.origin]);
+  for (const fact of node.facts) {
+    const key = String(fact).split(/[:=]/)[0]?.trim();
+    if (key) tags.add(key);
+  }
+  for (const relation of node.relations) {
+    const parsed = parseRelationEntry(relation);
+    if (parsed?.label) tags.add(parsed.label);
+  }
+  return [...tags].filter(Boolean).slice(0, 16);
+}
+
+function degreeForNode(nodeId) {
+  const base = getBaseGraph();
+  let count = 0;
+  for (const edge of base.edges) {
+    if (edge.source === nodeId || edge.target === nodeId) count += 1;
+  }
+  return count;
+}
+
+function applyFilters(renderNow = true) {
+  const query = state.query.trim().toLowerCase();
+  state.filtered = state.nodes.filter((node) => {
+    const matchesSource = state.sourceFilter === 'all' || node.source === state.sourceFilter;
+    const matchesOrigin = state.originFilter === 'all' || node.origin === state.originFilter;
+    if (!matchesSource || !matchesOrigin) return false;
+    if (!query) return true;
+    const haystack = [node.id, node.title, node.summary, node.body, ...node.facts, ...node.relations, ...node.evidence].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+
+  if (!state.filtered.some((node) => node.id === state.selectedId)) {
+    state.selectedId = state.filtered[0]?.id || state.nodes[0]?.id || null;
+  }
+
+  if (renderNow) render();
+}
+
+function setNodes(nodes, options = {}) {
+  state.nodes = nodes.map(normalizeNode).sort((a, b) => (b.importance - a.importance) || a.title.localeCompare(b.title));
+  state.selectedId = options.selectedId || state.selectedId || state.nodes[0]?.id || null;
+  state.selectedBranchId = null;
+  state.lastLoadedAt = Date.now();
+  applyFilters(false);
+  render();
+}
+
+function createMemorySaveCards(run) {
+  const cards = [];
+  if (run.bestBranch?.saveRecommended) {
+    cards.push({
+      title: 'Async save recommended',
+      copy: `Branch ${run.bestBranch.id} found reusable structure around “${run.node.title}”. Queue a save for the synthesis summary and linked graph context.`,
+      chips: ['durable insight', 'non-blocking', 'branch-owned'],
+    });
+  }
+
+  cards.push({
+    title: 'Branch synthesis output',
+    copy: run.synthesis,
+    chips: ['completed branches', `${run.branches.length} child paths`, `best: ${run.bestBranch?.label || 'n/a'}`],
+  });
+
+  if (state.memoryStream.behaviorPatterns.length) {
+    const pattern = state.memoryStream.behaviorPatterns[0];
+    cards.push({
+      title: 'Loaded memory pattern',
+      copy: pattern.summary || pattern.details || 'Behavior pattern loaded from the memory index.',
+      chips: ['memory index', 'behavior pattern'],
+    });
+  }
+
+  return cards;
+}
+
+function buildStrategyRun(node) {
+  if (!node) {
+    return {
+      node: null,
+      root: null,
+      branches: [],
+      bestBranch: null,
+      synthesis: 'Select a node to see how the Branching ReAct planner would fan out the reasoning paths.',
+    };
+  }
+
+  const relations = node.relations.map(parseRelationEntry).filter(Boolean);
+  const evidenceCount = node.evidence.length;
+  const factCount = node.facts.length;
+  const searchConfidence = Math.min(0.97, 0.62 + factCount * 0.04 + (state.query ? 0.08 : 0.04));
+  const traverseConfidence = Math.min(0.96, 0.56 + relations.length * 0.09 + (degreeForNode(node.id) > 2 ? 0.07 : 0));
+  const historyConfidence = Math.min(0.95, 0.52 + evidenceCount * 0.1 + (node.version ? 0.07 : 0));
+
+  const root = {
+    id: 'B0',
+    label: 'Root loop',
+    goal: `Resolve the user request around ${node.title}`,
+    steps: [
+      { kind: 'thought', title: 'Establish objective', detail: `The active focus is ${node.title}. Preserve graph structure and choose the next highest-yield action.` },
+      { kind: 'branch', title: 'Fork into material strategies', detail: 'Search-first, graph-traversal, and history-verification are distinct enough to deserve separate child loops.' },
+    ],
+  };
+
+  const branches = [
+    {
+      id: 'B0.1',
+      parentId: 'B0',
+      label: 'Search-first',
+      confidence: searchConfidence,
+      verdict: searchConfidence >= 0.82 ? 'Strong entry path' : 'Good broad recall',
+      saveRecommended: factCount + evidenceCount >= 5,
+      steps: [
+        { kind: 'thought', title: 'Start with recall', detail: 'Query ambiguity is best handled by broad retrieval before committing to one interpretation.' },
+        { kind: 'action', title: 'Call mempedia_search_hybrid', detail: `query="${truncateText(`${node.title} ${node.summary}`, 80)}", limit=10` },
+        { kind: 'observation', title: 'Inspect top hits', detail: `${Math.max(4, factCount + relations.length + 2)} likely matches cluster around ${node.title}.` },
+        { kind: 'action', title: 'Call mempedia_read', detail: `Open ${node.id} and the highest-ranked companion node.` },
+        { kind: 'final', title: 'Finish branch', detail: 'Use when the question needs broad recall and then quick confirmation.' },
+      ],
+    },
+    {
+      id: 'B0.2',
+      parentId: 'B0',
+      label: 'Graph-traverse',
+      confidence: traverseConfidence,
+      verdict: traverseConfidence >= 0.82 ? 'Best structural path' : 'Useful for neighbors',
+      saveRecommended: relations.length >= 3,
+      steps: [
+        { kind: 'thought', title: 'Exploit topology', detail: 'The selected node already exposes labeled relations, so graph adjacency can reduce search noise.' },
+        { kind: 'action', title: 'Call mempedia_traverse', detail: `start_node="${node.id}", mode="bfs", depth_limit=1` },
+        { kind: 'observation', title: 'Collect neighbor evidence', detail: `${Math.max(1, relations.length)} first-hop links expose tool order, schema coverage, or branch synthesis context.` },
+        { kind: 'action', title: 'Call mempedia_read', detail: 'Open the most informative neighbor and compare relation labels.' },
+        { kind: 'final', title: 'Finish branch', detail: 'Use when the answer depends on dependencies, cluster shape, or edge labels.' },
+      ],
+    },
+    {
+      id: 'B0.3',
+      parentId: 'B0',
+      label: 'History-verify',
+      confidence: historyConfidence,
+      verdict: historyConfidence >= 0.82 ? 'Best for drift checks' : 'Good validation path',
+      saveRecommended: evidenceCount >= 2,
+      steps: [
+        { kind: 'thought', title: 'Check temporal confidence', detail: 'Evidence and version identifiers imply the user may care about whether the fact is still current.' },
+        { kind: 'action', title: 'Call mempedia_history', detail: `node_id="${node.id}", limit=5` },
+        { kind: 'observation', title: 'Measure evolution', detail: `${Math.max(2, evidenceCount + 1)} change points suggest where the explanation stabilized or drifted.` },
+        { kind: 'final', title: 'Finish branch', detail: 'Use when version drift matters more than raw recall.' },
+      ],
+    },
+  ];
+
+  const bestBranch = [...branches].sort((a, b) => b.confidence - a.confidence)[0];
+  const synthesis = `Prefer ${bestBranch.label.toLowerCase()} for “${node.title}” because its confidence is ${formatNumber(bestBranch.confidence, 2)}. Keep ${branches
+    .filter((branch) => branch.id !== bestBranch.id)
+    .map((branch) => branch.label.toLowerCase())
+    .join(' and ')} as validation or fallback lanes, then synthesize the confirmed findings into one answer.`;
+
+  return { node, root, branches, bestBranch, synthesis };
+}
+
+function renderMetrics(run) {
+  const base = getBaseGraph();
+  const externalCount = base.nodes.filter((node) => node.external).length;
+  const relationLabels = new Set(base.edges.map((edge) => edge.label));
+  const evidenceCount = state.filtered.reduce((sum, node) => sum + node.evidence.length, 0);
+  const averageDegree = base.nodes.length ? ((base.edges.length * 2) / base.nodes.length) : 0;
+  const cards = [
+    { label: 'Visible nodes', value: state.filtered.length, detail: `${state.nodes.length} total loaded in workspace scope.` },
+    { label: 'Graph edges', value: base.edges.length, detail: `${relationLabels.size} relation labels mapped into the knowledge graph.` },
+    { label: 'Average degree', value: formatNumber(averageDegree, 1), detail: `${externalCount} external references extend beyond the local node set.` },
+    { label: 'Evidence lines', value: evidenceCount, detail: 'Structured evidence remains visible without opening raw markdown.' },
+    { label: 'Branch width', value: strategyGuide.budgets.width, detail: `Documented maximum child strategies per fork; depth cap ${strategyGuide.budgets.depth}.` },
+    { label: 'Best lane', value: run.bestBranch ? run.bestBranch.label : 'None', detail: run.bestBranch ? `${formatNumber(run.bestBranch.confidence, 2)} confidence for the selected node.` : 'Select a node to rank branch options.' },
+  ];
+
+  elements.metricsGrid.innerHTML = cards.map((card) => `
+    <article class="metric-card">
+      <div class="metric-card__label">${escapeHtml(card.label)}</div>
+      <div class="metric-card__value">${escapeHtml(card.value)}</div>
+      <div class="metric-card__detail">${escapeHtml(card.detail)}</div>
+    </article>
+  `).join('');
+}
+
+function renderLegend() {
+  const cards = [
+    { title: 'Selected node', copy: 'Bright cyan nodes are the current inspection anchor. The surrounding slice is centered on its relation neighborhood.' },
+    { title: 'External reference', copy: 'Muted nodes come from relation targets not fully loaded into the current memory set.' },
+    { title: 'Branch heuristics', copy: 'The strategy theatre ranks search-first, graph-traverse, and history-verify based on facts, relations, evidence, and graph degree.' },
+  ];
+
+  elements.legend.innerHTML = cards.map((card) => `
+    <article class="legend-card">
+      <div class="legend-card__title">${escapeHtml(card.title)}</div>
+      <div class="legend-card__copy">${escapeHtml(card.copy)}</div>
+    </article>
+  `).join('');
+}
+
+function renderFilters() {
+  const sources = ['all', ...new Set(state.nodes.map((node) => node.source).filter(Boolean))];
+  const origins = ['all', ...new Set(state.nodes.map((node) => node.origin).filter(Boolean))];
+
+  elements.filterSource.innerHTML = sources.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value === 'all' ? 'All' : value)}</option>`).join('');
+  elements.filterSource.value = state.sourceFilter;
+  elements.filterOrigin.innerHTML = origins.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value === 'all' ? 'All' : value)}</option>`).join('');
+  elements.filterOrigin.value = state.originFilter;
+  elements.searchInput.value = state.query;
+  elements.graphScope.value = state.graphScope;
+}
+
+function renderNodeList() {
+  if (!state.filtered.length) {
+    elements.nodeList.innerHTML = '<div class="empty-state">No nodes match the current filters. Clear the query or load a different dataset.</div>';
+    return;
+  }
+
+  elements.nodeList.innerHTML = state.filtered.map((node) => `
+    <article class="node-card ${node.id === state.selectedId ? 'is-active' : ''}" data-node-id="${escapeHtml(node.id)}">
+      <div class="node-card__head">
+        <div class="node-card__title">${escapeHtml(node.title)}</div>
+        <div class="node-card__score">${formatNumber(node.importance, 2)}</div>
+      </div>
+      <div class="node-card__summary">${escapeHtml(truncateText(node.summary, 140))}</div>
+      <div class="node-card__meta">
+        <span class="chip chip--primary">${escapeHtml(node.source)}</span>
+        <span class="chip chip--accent">${escapeHtml(node.origin)}</span>
+        <span class="chip chip--success">degree ${degreeForNode(node.id)}</span>
+      </div>
+    </article>
+  `).join('');
+
+  for (const card of elements.nodeList.querySelectorAll('[data-node-id]')) {
+    card.addEventListener('click', () => {
+      state.selectedId = card.getAttribute('data-node-id');
+      state.selectedBranchId = null;
+      render();
+    });
+  }
+}
+
+function renderGraph() {
+  const graph = getVisibleGraph();
+  const selectedNode = getSelectedNode();
+  const degreeMap = getGraphDegreeMap(graph);
+  const positions = computeGraphLayout(graph);
+  const selectedId = selectedNode?.id;
+
+  const summary = selectedNode
+    ? `Focused on ${selectedNode.title}. ${graph.nodes.length} nodes and ${graph.edges.length} edges are visible in the current ${state.graphScope === 'selected' ? 'neighborhood' : 'filtered slice'}.`
+    : `Showing ${graph.nodes.length} nodes and ${graph.edges.length} edges from the current dataset.`;
+  elements.graphSummary.textContent = summary;
+
+  if (!graph.nodes.length) {
+    elements.graphView.innerHTML = '';
+    elements.graphInsights.innerHTML = '<div class="empty-state">Load a dataset to render the graph stage.</div>';
+    return;
+  }
+
+  const svgEdges = graph.edges.map((edge) => {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    if (!source || !target) return '';
+    const midX = (source.x + target.x) / 2;
+    const midY = (source.y + target.y) / 2;
+    const weight = Number(edge.weight);
+    return `
+      <line class="graph-edge ${Number.isFinite(weight) && weight >= 0.8 ? 'graph-edge--strong' : ''}" x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"></line>
+      <text class="graph-edge-label" x="${midX}" y="${midY - 6}" text-anchor="middle">${escapeHtml(edge.label)}</text>
+    `;
+  }).join('');
+
+  const svgNodes = graph.nodes.map((node) => {
+    const position = positions.get(node.id);
+    if (!position) return '';
+    const degree = degreeMap.get(node.id) || 0;
+    const radius = node.id === selectedId ? 28 : Math.max(16, Math.min(24, 14 + degree * 2));
+    const fill = node.id === selectedId
+      ? 'url(#selectedGradient)'
+      : node.external
+        ? 'rgba(146, 179, 215, 0.22)'
+        : 'rgba(90, 209, 255, 0.18)';
+    const stroke = node.id === selectedId
+      ? '#9be7ff'
+      : node.external
+        ? 'rgba(146, 179, 215, 0.45)'
+        : 'rgba(90, 209, 255, 0.6)';
+    return `
+      <g class="graph-node ${node.id === selectedId ? 'is-active' : ''}" data-node-id="${escapeHtml(node.id)}" transform="translate(${position.x}, ${position.y})">
+        <circle r="${radius}" fill="${fill}" stroke="${stroke}"></circle>
+        <text text-anchor="middle" y="4">${escapeHtml(truncateText(node.title, 16))}</text>
+      </g>
+    `;
+  }).join('');
+
+  elements.graphView.innerHTML = `
+    <defs>
+      <linearGradient id="selectedGradient" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#9be7ff"></stop>
+        <stop offset="100%" stop-color="#6c8dff"></stop>
+      </linearGradient>
+    </defs>
+    ${svgEdges}
+    ${svgNodes}
+  `;
+
+  for (const node of elements.graphView.querySelectorAll('[data-node-id]')) {
+    node.addEventListener('click', () => {
+      state.selectedId = node.getAttribute('data-node-id');
+      state.selectedBranchId = null;
+      render();
+    });
+  }
+
+  const hubNode = [...graph.nodes].sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0))[0];
+  const relationCounts = {};
+  for (const edge of graph.edges) relationCounts[edge.label] = (relationCounts[edge.label] || 0) + 1;
+  const topRelation = Object.entries(relationCounts).sort((a, b) => b[1] - a[1])[0];
+
+  elements.graphInsights.innerHTML = [
+    {
+      title: 'Hub node',
+      copy: hubNode ? `${hubNode.title} carries ${degreeMap.get(hubNode.id) || 0} visible connections in the current slice.` : 'No hub identified.',
+    },
+    {
+      title: 'Top relation label',
+      copy: topRelation ? `${topRelation[0]} appears ${topRelation[1]} times in the active slice.` : 'No relation labels found.',
+    },
+    {
+      title: 'Graph scope',
+      copy: state.graphScope === 'selected' ? 'Selected node scope highlights immediate reasoning context.' : 'Filtered graph scope surfaces cluster-level structure.',
+    },
+    {
+      title: 'Structural takeaway',
+      copy: selectedNode ? `Use the graph-traverse branch when ${selectedNode.title} behaves like a hub or bridge node.` : 'Select a node to derive branch guidance from topology.',
+    },
+  ].map((item) => `
+    <article class="insight-card">
+      <div class="card-title">${escapeHtml(item.title)}</div>
+      <div class="insight-card__copy">${escapeHtml(item.copy)}</div>
+    </article>
+  `).join('');
+}
+
+function renderInspector(run) {
+  const node = getSelectedNode();
+  if (!node) {
+    elements.heroPreview.innerHTML = '<div class="empty-state">Select a node to inspect its summary, graph context, and markdown projection.</div>';
+    elements.nodeDetail.innerHTML = '';
+    elements.markdownPreview.textContent = '';
+    return;
+  }
+
+  elements.heroPreview.innerHTML = `
+    <div class="hero-preview__title">${escapeHtml(node.title)}</div>
+    <div class="hero-preview__copy">${escapeHtml(node.summary)}</div>
+    <div class="chip-row">
+      <span class="chip chip--primary">${escapeHtml(node.source)}</span>
+      <span class="chip chip--accent">${escapeHtml(node.origin)}</span>
+      <span class="chip chip--success">confidence ${formatNumber(node.confidence, 2)}</span>
+      <span class="chip chip--warning">importance ${formatNumber(node.importance, 2)}</span>
+    </div>
+  `;
+
+  const sections = [
+    {
+      title: 'Graph role',
+      body: `${node.title} has ${degreeForNode(node.id)} visible graph connections. ${run.bestBranch ? `${run.bestBranch.label} is currently the highest-confidence reasoning path.` : ''}`,
+      list: node.relations.slice(0, 6),
+    },
+    {
+      title: 'Facts',
+      body: 'Structured facts are already normalized for retrieval and inspection.',
+      list: node.facts,
+    },
+    {
+      title: 'Evidence',
+      body: 'Evidence lines are the best trigger for a history-verification branch.',
+      list: node.evidence,
+    },
+  ];
+
+  elements.nodeDetail.innerHTML = sections.map((section) => `
+    <article class="detail-card">
+      <div class="detail-card__title">${escapeHtml(section.title)}</div>
+      <div class="detail-card__copy">${escapeHtml(section.body)}</div>
+      ${section.list.length ? `<ul class="detail-card__list">${section.list.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : '<div class="detail-card__copy">No items available.</div>'}
+    </article>
+  `).join('');
+
+  elements.markdownPreview.textContent = generateMarkdown(node);
+}
+
+function renderStrategyGuide(run) {
+  elements.strategyLoop.innerHTML = strategyGuide.loopModes.map((item) => `
+    <article class="loop-card">
+      <div class="chip chip--${escapeHtml(item.accent)}">${escapeHtml(item.title)}</div>
+      <div class="detail-card__copy">${escapeHtml(item.summary)}</div>
+      <div class="detail-card__copy">${escapeHtml(item.detail)}</div>
+    </article>
+  `).join('');
+
+  elements.toolOrder.innerHTML = strategyGuide.toolOrder.map((tool) => `
+    <article class="tool-card">
+      <div class="node-card__head">
+        <span class="tool-card__order">${tool.order}</span>
+        <div class="tool-card__title">${escapeHtml(tool.name)}</div>
+      </div>
+      <div class="tool-card__copy">${escapeHtml(tool.purpose)}</div>
+      <div class="tool-card__copy">${escapeHtml(tool.usage)}</div>
+    </article>
+  `).join('');
+
+  if (!run.node) {
+    elements.branchRuns.innerHTML = '<div class="empty-state">Select a node to project branch alternatives.</div>';
+    elements.branchGraph.innerHTML = '';
+    elements.activityList.innerHTML = '';
+    elements.memoryList.innerHTML = '';
+    return;
+  }
+
+  const activeBranchId = state.selectedBranchId || run.bestBranch?.id || run.branches[0]?.id;
+  state.selectedBranchId = activeBranchId;
+  const activeBranch = run.branches.find((branch) => branch.id === activeBranchId) || run.bestBranch;
+
+  elements.branchRuns.innerHTML = run.branches.map((branch) => `
+    <article class="branch-summary ${branch.id === activeBranchId ? 'is-active' : ''}" data-branch-id="${escapeHtml(branch.id)}">
+      <div class="branch-summary__title">${escapeHtml(branch.label)}</div>
+      <div class="branch-summary__copy">${escapeHtml(branch.verdict)}</div>
+      <div class="branch-summary__meta">
+        <span class="chip chip--accent">${escapeHtml(branch.id)}</span>
+        <span class="chip chip--primary">${formatNumber(branch.confidence, 2)} confidence</span>
+        <span class="chip chip--${branch.saveRecommended ? 'success' : 'warning'}">${branch.saveRecommended ? 'save-worthy' : 'validation only'}</span>
+      </div>
+    </article>
+  `).join('');
+
+  for (const card of elements.branchRuns.querySelectorAll('[data-branch-id]')) {
+    card.addEventListener('click', () => {
+      state.selectedBranchId = card.getAttribute('data-branch-id');
+      render();
+    });
+  }
+
+  elements.branchGraph.innerHTML = `
+    <div class="branch-tree">
+      <article class="branch-node">
+        <div class="branch-node__title">${escapeHtml(run.root.label)} · ${escapeHtml(run.root.id)}</div>
+        <div class="branch-node__copy">${escapeHtml(run.root.goal)}</div>
+        <div class="branch-children">
+          ${run.branches.map((branch) => `
+            <article class="branch-node">
+              <div class="branch-node__title">${escapeHtml(branch.label)} · ${escapeHtml(branch.id)}</div>
+              <div class="branch-node__copy">${escapeHtml(branch.steps[0].detail)}</div>
+              <div class="branch-node__meta">
+                <span class="chip chip--primary">${formatNumber(branch.confidence, 2)}</span>
+                <span class="chip chip--accent">${escapeHtml(branch.verdict)}</span>
+              </div>
+            </article>
+          `).join('')}
+        </div>
+      </article>
+    </div>
+  `;
+
+  elements.activityList.innerHTML = activeBranch.steps.map((step) => `
+    <article class="timeline-step timeline-step--${escapeHtml(step.kind)}">
+      <div class="branch-node__title">${escapeHtml(step.title)}</div>
+      <div class="timeline-step__copy">${escapeHtml(step.detail)}</div>
+      <div class="timeline-step__meta">
+        <span class="chip chip--${step.kind === 'final' ? 'success' : step.kind === 'action' ? 'warning' : step.kind === 'save' ? 'accent' : 'primary'}">${escapeHtml(step.kind)}</span>
+        <span class="chip chip--accent">${escapeHtml(activeBranch.id)}</span>
+      </div>
+    </article>
+  `).join('');
+
+  elements.memoryList.innerHTML = createMemorySaveCards(run).map((card) => `
+    <article class="memory-card">
+      <div class="memory-card__title">${escapeHtml(card.title)}</div>
+      <div class="memory-card__copy">${escapeHtml(card.copy)}</div>
+      <div class="memory-card__meta">
+        ${card.chips.map((chip) => `<span class="chip chip--accent">${escapeHtml(chip)}</span>`).join('')}
+      </div>
+    </article>
+  `).join('');
+}
+
+function renderSchema(node, run) {
+  const base = getBaseGraph();
+  const sources = {};
+  const origins = {};
+  for (const item of state.nodes) {
+    sources[item.source] = (sources[item.source] || 0) + 1;
+    origins[item.origin] = (origins[item.origin] || 0) + 1;
+  }
+  const topSource = Object.entries(sources).sort((a, b) => b[1] - a[1])[0];
+  const topOrigin = Object.entries(origins).sort((a, b) => b[1] - a[1])[0];
+
+  elements.workspaceGlance.innerHTML = [
+    {
+      title: 'Frontmatter coverage',
+      copy: `${state.nodes.length} nodes expose stable identifiers, source attribution, and confidence metadata in markdown projection form.`,
+      meta: ['node_id', 'confidence', 'importance', 'source', 'origin'],
+    },
+    {
+      title: 'Dominant source',
+      copy: topSource ? `${topSource[0]} contributes ${topSource[1]} visible nodes.` : 'No source metadata loaded.',
+      meta: topOrigin ? [`top origin: ${topOrigin[0]}`] : [],
+    },
+    {
+      title: 'Graph shape',
+      copy: `${base.nodes.length} graph nodes and ${base.edges.length} edges are available for traversal and synthesis.`,
+      meta: [`branch depth ${strategyGuide.budgets.depth}`, `branch width ${strategyGuide.budgets.width}`],
+    },
+    {
+      title: 'Selection fit',
+      copy: node ? `${node.title} maps cleanly to facts, relations, evidence, and markdown body.` : 'Select a node to inspect schema fit.',
+      meta: run.bestBranch ? [run.bestBranch.label, `${formatNumber(run.bestBranch.confidence, 2)} confidence`] : [],
+    },
+  ].map((card) => `
+    <article class="schema-card">
+      <div class="schema-card__title">${escapeHtml(card.title)}</div>
+      <div class="schema-card__copy">${escapeHtml(card.copy)}</div>
+      <div class="schema-card__meta">
+        ${card.meta.map((value) => `<span class="chip chip--primary">${escapeHtml(value)}</span>`).join('')}
+      </div>
+    </article>
+  `).join('');
+
+  elements.pageTree.innerHTML = [
+    { title: '1. Markdown note', copy: 'Human-readable note with body text remains the editing surface.' },
+    { title: '2. Frontmatter', copy: 'Stable node identity, version, confidence, importance, source, and origin.' },
+    { title: '3. Facts section', copy: 'Bullet facts are normalized into structured keys for search and inspection.' },
+    { title: '4. Relations section', copy: 'Relation bullets become graph links with target, label, and optional weight.' },
+    { title: '5. Evidence section', copy: 'Evidence bullets remain visible for operators and trigger history-aware reasoning.' },
+    { title: '6. Graph + CLI', copy: 'The UI renders structure while CodeCLI uses the same graph for branching decisions.' },
+  ].map((item) => `
+    <article class="pipeline-card">
+      <div class="pipeline-card__title">${escapeHtml(item.title)}</div>
+      <div class="pipeline-card__copy">${escapeHtml(item.copy)}</div>
+    </article>
+  `).join('');
+
+  const tags = collectTags(node);
+  elements.tagsList.innerHTML = tags.length
+    ? tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')
+    : '<div class="empty-state">Tags appear here from source, origin, fact keys, and relation labels.</div>';
+
+  const outline = node ? extractOutline(node.body || node.summary, node.title) : [];
+  elements.outlineList.innerHTML = node ? `
+    <article class="outline-card">
+      <div class="outline-card__title">Outline</div>
+      <div class="outline-card__copy">This shows how the selected node reads as a human document.</div>
+      <ol class="outline-list">
+        ${outline.map((item) => `<li>${escapeHtml(item.title)}</li>`).join('')}
+      </ol>
+    </article>
+  ` : '<div class="empty-state">Select a node to inspect its document outline.</div>';
+
+  const contextCards = [];
+  if (node) {
+    contextCards.push({
+      title: 'Branch synthesis',
+      copy: run.synthesis,
+      meta: [run.bestBranch?.label || 'no branch', `degree ${degreeForNode(node.id)}`],
+    });
+  }
+
+  if (state.memoryStream.habits.length) {
+    const habit = state.memoryStream.habits[0];
+    contextCards.push({
+      title: 'Loaded habit',
+      copy: habit.summary || habit.details || 'User habit loaded from memory stream.',
+      meta: ['memory stream', 'habit'],
+    });
+  }
+
+  if (!contextCards.length) {
+    contextCards.push({
+      title: 'No external memory stream',
+      copy: 'When a connected workspace or local memory folder is available, habit and behavior pattern summaries will appear here.',
+      meta: ['standalone mode'],
+    });
+  }
+
+  elements.contextMemory.innerHTML = contextCards.map((card) => `
+    <article class="context-card">
+      <div class="context-card__title">${escapeHtml(card.title)}</div>
+      <div class="context-card__copy">${escapeHtml(card.copy)}</div>
+      <div class="context-card__meta">
+        ${card.meta.map((value) => `<span class="chip chip--accent">${escapeHtml(value)}</span>`).join('')}
+      </div>
+    </article>
+  `).join('');
+}
+
+function render() {
+  const node = getSelectedNode();
+  const run = buildStrategyRun(node);
+  renderFilters();
+  renderLegend();
+  renderMetrics(run);
+  renderNodeList();
+  renderGraph();
+  renderInspector(run);
+  renderStrategyGuide(run);
+  renderSchema(node, run);
+
+  updateStatus(
+    `${state.filtered.length} visible nodes · ${getBaseGraph().edges.length} graph edges`,
+    `${state.workspaceLabel}${state.lastLoadedAt ? ` · updated ${formatTimestamp(state.lastLoadedAt)}` : ''}`,
+  );
+}
+
+async function readJsonlOptional(handle, name) {
+  try {
+    const fileHandle = await handle.getFileHandle(name);
+    const text = await fileHandle.getFile().then((file) => file.text());
+    return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+async function getOptionalDirectory(handle, name) {
+  try {
+    return await handle.getDirectoryHandle(name);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMemoryRoot(dirHandle) {
+  const candidates = [];
+  candidates.push(dirHandle);
+  const memory = await getOptionalDirectory(dirHandle, 'memory');
+  if (memory) candidates.push(memory);
+  const dotMempedia = await getOptionalDirectory(dirHandle, '.mempedia');
+  if (dotMempedia) {
+    candidates.push(dotMempedia);
+    const nestedMemory = await getOptionalDirectory(dotMempedia, 'memory');
+    if (nestedMemory) candidates.push(nestedMemory);
+  }
+
+  for (const candidate of candidates) {
+    const hasIndex = await getOptionalDirectory(candidate, 'index');
+    const hasObjects = await getOptionalDirectory(candidate, 'objects');
+    if (hasIndex || hasObjects) return candidate;
+  }
+  return dirHandle;
+}
+
+async function scanMarkdownFiles(dirHandle, prefix = '') {
+  const map = {};
+  for await (const [name, handle] of dirHandle.entries()) {
+    if (handle.kind === 'file' && /\.(md|markdown)$/i.test(name)) {
+      map[prefix ? `${prefix}/${name}` : name] = await handle.getFile().then((file) => file.text());
+      continue;
+    }
+    if (handle.kind === 'directory') {
+      const nested = await scanMarkdownFiles(handle, prefix ? `${prefix}/${name}` : name);
+      Object.assign(map, nested);
+    }
+  }
+  return map;
+}
+
+async function loadFiles(fileList) {
+  const nodes = await Promise.all(Array.from(fileList).map((file) => file.text().then((text) => parseMarkdownFile(text, file.name))));
+  state.connected = false;
+  state.canonicalGraph = buildGraphFromNodes(nodes);
+  state.memoryStream = createEmptyMemoryStream();
+  state.workspaceLabel = 'Markdown import';
+  setWorkspaceMode('Imported markdown', 'Static markdown import loaded without live backend sync.');
   setNodes(nodes, { selectedId: nodes[0]?.id || null });
-  if (nodes[0]) loadEditorFromNode(nodes[0]);
 }
 
 async function loadMempediaFolder(dirHandle) {
   try {
-    state.mempediaHandle = dirHandle;
-    elements.status.textContent = 'Loading .mempedia folder...';
+    const memoryRoot = await resolveMemoryRoot(dirHandle);
+    state.mempediaHandle = memoryRoot;
+    state.connected = false;
+    setWorkspaceMode('Local folder', 'Browsing local memory files through the File System Access API.');
+    updateStatus('Loading local Mempedia folder...');
+
     let stateJson = null;
-    let indexHandle = null;
-    const localMemoryStream = createEmptyMemoryStream();
-    try {
-      indexHandle = await dirHandle.getDirectoryHandle('index');
-      const stateFile = await indexHandle.getFileHandle('state.json');
-      stateJson = JSON.parse(await stateFile.getFile().then((file) => file.text()));
-
-      const readJsonlOptional = async (name) => {
-        try {
-          const handle = await indexHandle.getFileHandle(name);
-          const text = await handle.getFile().then((file) => file.text());
-          return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-        } catch {
-          return [];
-        }
-      };
-
-      localMemoryStream.habits = await readJsonlOptional('user_habits.jsonl');
-      localMemoryStream.behaviorPatterns = await readJsonlOptional('behavior_patterns.jsonl');
-      localMemoryStream.nodeConversations = await readJsonlOptional('node_conversations.jsonl');
-      try {
-        const conversationsHandle = await indexHandle.getDirectoryHandle('conversations');
-        for await (const [name, fileHandle] of conversationsHandle.entries()) {
-          if (!name.endsWith('.json')) continue;
-          try {
-            const parsed = JSON.parse(await fileHandle.getFile().then((file) => file.text()));
-            if (parsed?.id) {
-              localMemoryStream.conversations.push({
-                id: parsed.id,
-                timestamp: parsed.timestamp,
-                input: parsed.input,
-                answer: parsed.answer,
-              });
-            }
-          } catch {}
-        }
-      } catch {}
-    } catch (error) {
-      console.warn('Could not read index/state.json', error);
-    }
     const versionMap = {};
-    try {
-      const objectsHandle = await dirHandle.getDirectoryHandle('objects');
-      for await (const [, bucketHandle] of objectsHandle.entries()) {
-        if (bucketHandle.kind !== 'directory') continue;
-        for await (const [fileName, fileHandle] of bucketHandle.entries()) {
+    const memoryStream = createEmptyMemoryStream();
+    const indexHandle = await getOptionalDirectory(memoryRoot, 'index');
+    if (indexHandle) {
+      try {
+        const stateFile = await indexHandle.getFileHandle('state.json');
+        stateJson = JSON.parse(await stateFile.getFile().then((file) => file.text()));
+      } catch {}
+      memoryStream.habits = await readJsonlOptional(indexHandle, 'user_habits.jsonl');
+      memoryStream.behaviorPatterns = await readJsonlOptional(indexHandle, 'behavior_patterns.jsonl');
+      memoryStream.nodeConversations = await readJsonlOptional(indexHandle, 'node_conversations.jsonl');
+      memoryStream.agentActions = await readJsonlOptional(indexHandle, 'agent_actions.log');
+      memoryStream.accessLogs = await readJsonlOptional(indexHandle, 'access.log');
+    }
+
+    const objectsHandle = await getOptionalDirectory(memoryRoot, 'objects');
+    if (objectsHandle) {
+      for await (const [, bucket] of objectsHandle.entries()) {
+        if (bucket.kind !== 'directory') continue;
+        for await (const [fileName, fileHandle] of bucket.entries()) {
           if (!fileName.endsWith('.json')) continue;
           versionMap[fileName.replace('.json', '')] = JSON.parse(await fileHandle.getFile().then((file) => file.text()));
         }
       }
-    } catch (error) {
-      console.warn('Could not read objects/', error);
     }
-    const markdownMap = {};
-    try {
-      const knowledgeHandle = await dirHandle.getDirectoryHandle('knowledge');
-      const nodesHandle = await knowledgeHandle.getDirectoryHandle('nodes');
-      for await (const [name, fileHandle] of nodesHandle.entries()) {
-        if (!name.endsWith('.md')) continue;
-        markdownMap[name] = await fileHandle.getFile().then((file) => file.text());
-      }
-    } catch (error) {
-      console.warn('Could not read knowledge/nodes/', error);
-    }
-    const nodes = buildNodesFromMempedia(stateJson, versionMap, markdownMap);
-    state.canonicalGraph = buildCanonicalGraph(stateJson?.heads || {}, versionMap, nodes);
-    setMemoryStream(localMemoryStream);
-    setCliConversation([]);
+
+    const knowledgeRoot = (await getOptionalDirectory(memoryRoot, 'knowledge')) || memoryRoot;
+    const nodesHandle = knowledgeRoot === memoryRoot ? knowledgeRoot : (await getOptionalDirectory(knowledgeRoot, 'nodes')) || knowledgeRoot;
+    const markdownMap = await scanMarkdownFiles(nodesHandle);
+    const nodes = stateJson ? buildNodesFromMempedia(stateJson, versionMap, markdownMap) : Object.entries(markdownMap).map(([name, markdown]) => parseMarkdownFile(markdown, name));
+
+    state.memoryStream = memoryStream;
+    state.workspaceLabel = 'Local Mempedia folder';
+    state.canonicalGraph = stateJson ? buildCanonicalGraph(stateJson?.heads || {}, versionMap, nodes) : buildGraphFromNodes(nodes);
     setNodes(nodes, { selectedId: nodes[0]?.id || null });
-    if (nodes[0]) loadEditorFromNode(nodes[0]);
-    elements.status.textContent = `${nodes.length} nodes loaded from .mempedia`;
   } catch (error) {
     console.error(error);
-    elements.status.textContent = 'Error loading folder. Check browser console.';
+    updateStatus('Failed to load local Mempedia folder.', 'Check browser console or try selecting the memory root again.');
   }
 }
 
 async function refreshWorkspace() {
-  const [memoryResponse] = await Promise.all([
-    fetch('/api/memory/snapshot'),
-    refreshCliConversation().catch((error) => {
-      console.warn('Failed to refresh CLI conversation', error);
-      setCliConversation([]);
-    }),
-  ]);
-  const payload = await memoryResponse.json();
-  if (!memoryResponse.ok || !payload.ok) {
-    throw new Error(payload.error || 'Failed to load workspace snapshot');
-  }
-  state.memoryRoot = payload.memoryRoot || null;
+  const response = await fetch('/api/memory/snapshot');
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) throw new Error(payload.error || 'Failed to refresh connected workspace');
+
   const versionMap = Object.fromEntries(payload.versions || []);
   const nodes = buildNodesFromSnapshot(payload);
+  state.connected = true;
+  state.memoryRoot = payload.memoryRoot || null;
+  state.memoryStream = {
+    habits: payload.habits || [],
+    behaviorPatterns: payload.behaviorPatterns || [],
+    nodeConversations: payload.nodeConversations || [],
+    conversations: payload.conversations || [],
+    agentActions: payload.agentActions || [],
+    accessLogs: payload.accessLogs || [],
+  };
+  state.workspaceLabel = payload.memoryRoot ? `Connected workspace · ${payload.memoryRoot}` : 'Connected workspace';
   state.canonicalGraph = buildCanonicalGraph(payload.snapshot?.heads || {}, versionMap, nodes);
-  setMemoryStream(payload);
+  setWorkspaceMode('Connected workspace', 'Live snapshot loaded from the integrated UI bridge.');
   setNodes(nodes, { selectedId: state.selectedId || nodes[0]?.id || null });
-  const selected = nodes.find((node) => node.id === state.selectedId) || nodes[0];
-  if (selected) loadEditorFromNode(selected);
 }
 
 async function bootstrapConnectedWorkspace() {
   try {
     const response = await fetch('/api/cli/status');
     const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.error || 'No connected workspace');
+    if (!response.ok || !payload.ok) throw new Error(payload.error || 'Not connected');
     state.connected = true;
     state.memoryRoot = payload.memoryRoot || null;
+    setWorkspaceMode('Connected workspace', 'Live Mempedia snapshot and CodeCLI bridge are available.');
     await refreshWorkspace();
   } catch {
     state.connected = false;
-    render();
+    setWorkspaceMode('Standalone mode', 'Load a local folder or use the demo graph.');
+    loadDemo();
   }
 }
 
-async function selectNode(nodeId, options = {}) {
-  state.selectedId = nodeId;
-  rememberRecentNode(nodeId);
-  const localNode = state.nodes.find((node) => node.id === nodeId);
-  if (localNode) loadEditorFromNode(localNode);
-  else render();
-  if (options.fetchRemote === false || !state.connected) return;
-  state.loadingNode = true;
-  renderEditorChrome();
-  try {
-    const response = await fetch(`/api/memory/node?node_id=${encodeURIComponent(nodeId)}`);
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.error || 'Failed to open node');
-    if (!payload.markdown) return;
-    const freshNode = parseMarkdownFile(payload.markdown, payload.path || `${nodeId}.md`);
-    freshNode.version = payload.version || freshNode.version;
-    freshNode.path = payload.path || freshNode.path;
-    const index = state.nodes.findIndex((node) => node.id === nodeId);
-    if (index >= 0) state.nodes[index] = { ...state.nodes[index], ...freshNode };
-    else state.nodes.unshift(freshNode);
-    if (state.selectedId === nodeId) loadEditorFromNode(freshNode);
-    applyFilters();
-  } catch (error) {
-    state.editor.lastError = error.message || String(error);
-    render();
-  } finally {
-    state.loadingNode = false;
-  }
+function loadDemo() {
+  state.connected = false;
+  state.memoryRoot = null;
+  state.memoryStream = {
+    habits: [{ summary: 'Operator repeatedly inspects graph structure before editing markdown bodies.' }],
+    behaviorPatterns: [{ summary: 'Branching explanations are easier to validate when relation labels stay visible next to the graph.' }],
+    nodeConversations: [],
+    conversations: [],
+    agentActions: [],
+    accessLogs: [],
+  };
+  state.workspaceLabel = 'Bundled focus demo';
+  state.canonicalGraph = buildGraphFromNodes(demoNodes);
+  setWorkspaceMode('Demo mode', 'A curated graph highlighting Mempedia structure and CodeCLI branching strategy is loaded.');
+  setNodes(demoNodes, { selectedId: demoNodes[0].id });
 }
 
-function scheduleAutoSave() {
-  if (!state.connected || !state.autoSave || !state.editor.nodeId.trim()) return;
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => {
-    void saveCurrentNode(false).catch((error) => {
-      state.editor.lastError = error.message || String(error);
-      state.editor.saving = false;
-      render();
-    });
-  }, 1200);
-}
-
-async function saveCurrentNode(manual = true) {
-  if (!state.connected) {
-    state.editor.lastError = 'Graph sync is only available in the integrated UI.';
-    render();
-    return;
-  }
-  const nodeId = state.editor.nodeId.trim();
-  if (!nodeId) {
-    state.editor.lastError = 'Node ID is required before saving.';
-    render();
-    return;
-  }
-  clearTimeout(state.saveTimer);
-  state.editor.saving = true;
-  state.editor.lastError = '';
-  state.editor.markdown = buildMarkdownFromEditor(state.editor);
-  render();
-  const response = await fetch('/api/memory/node/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      node_id: nodeId,
-      markdown: state.editor.markdown,
-      agent_id: 'ui-editor',
-      reason: manual ? 'manual ui editor save' : 'ui autosave sync',
-      source: 'mempedia-ui',
-      confidence: Number(state.editor.confidence),
-      importance: Number(state.editor.importance),
-      graph_links: parseGraphLinksText(state.editor.graphLinksText),
-    }),
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || 'Failed to save node');
-  }
-  if (payload.snapshot) {
-    const versionMap = Object.fromEntries(payload.snapshot.versions || []);
-    const nodes = buildNodesFromSnapshot(payload.snapshot);
-    state.memoryRoot = payload.snapshot.memoryRoot || state.memoryRoot;
-    state.canonicalGraph = buildCanonicalGraph(payload.snapshot.snapshot?.heads || {}, versionMap, nodes);
-    setMemoryStream(payload.snapshot);
-    setNodes(nodes, { selectedId: nodeId });
-  }
-  const opened = payload.opened || {};
-  if (opened.markdown) {
-    const freshNode = parseMarkdownFile(opened.markdown, opened.path || `${nodeId}.md`);
-    freshNode.version = opened.version || freshNode.version;
-    freshNode.path = opened.path || freshNode.path;
-    state.selectedId = freshNode.id;
-    loadEditorFromNode(freshNode);
-  }
-  state.editor.dirty = false;
-  state.editor.saving = false;
-  state.editor.lastSavedAt = new Date().toLocaleTimeString();
-  state.editor.version = opened.version || state.editor.version;
-  state.editor.path = opened.path || state.editor.path;
+function clearAll() {
+  state.nodes = [];
+  state.filtered = [];
+  state.selectedId = null;
+  state.selectedBranchId = null;
+  state.query = '';
+  state.sourceFilter = 'all';
+  state.originFilter = 'all';
+  state.graphScope = 'selected';
+  state.canonicalGraph = createEmptyGraph();
+  state.memoryStream = createEmptyMemoryStream();
+  state.workspaceLabel = 'Standalone viewer';
+  state.lastLoadedAt = null;
   render();
 }
 
-function render() {
-  renderFilters();
-  renderWorkspaceMeta();
-  renderWorkspaceGlance();
-  renderSidebarPanels();
-  renderLibraryView();
-  renderList();
-  renderMemoryList();
-  renderActivityList();
-  renderGraph();
-  renderEditorChrome();
-  renderNoteShell();
-  renderDetail();
-  renderContextMemory();
-  elements.status.textContent = `${state.filtered.length} nodes loaded`;
+function exportJson() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    workspaceLabel: state.workspaceLabel,
+    nodes: state.filtered,
+    graph: getVisibleGraph(),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'mempedia-graph-view.json';
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 elements.searchInput.addEventListener('input', (event) => {
@@ -1908,122 +1637,47 @@ elements.graphScope.addEventListener('change', (event) => {
   render();
 });
 
-for (const [view, button] of Object.entries(elements.viewButtons)) {
-  button.addEventListener('click', () => {
-    state.libraryView = view;
-    render();
-  });
-}
+elements.loadDemo.addEventListener('click', () => {
+  loadDemo();
+});
 
 elements.loadFolder.addEventListener('click', async () => {
   try {
     const dirHandle = await window.showDirectoryPicker();
     await loadMempediaFolder(dirHandle);
   } catch (error) {
-    if (error.name !== 'AbortError') {
+    if (error?.name !== 'AbortError') {
       console.error(error);
-      elements.status.textContent = 'Failed to open folder. Check browser console.';
+      updateStatus('Opening local folder failed.', 'Check browser permissions or retry selecting the memory root.');
     }
   }
 });
 
 elements.refreshWorkspace.addEventListener('click', async () => {
   if (!state.connected) {
-    elements.editorStatus.textContent = 'Not connected. Use Open .mempedia Folder for local browsing or start the integrated UI.';
+    updateStatus('No connected workspace is available.', 'Start the integrated UI bridge or open a local folder instead.');
     return;
   }
   try {
     await refreshWorkspace();
   } catch (error) {
-    state.editor.lastError = error.message || String(error);
-    render();
+    console.error(error);
+    updateStatus('Refresh failed.', error.message || 'Unable to refresh the connected workspace.');
   }
-});
-
-elements.loadDemo.addEventListener('click', () => {
-  state.canonicalGraph = createEmptyGraph();
-  setMemoryStream({
-    habits: [{ topic: 'likes_cat_topics', summary: 'The user enjoys cat-related knowledge and examples.', details: 'Observed from repeated cat prompts.', source: 'demo', timestamp: Date.now() }],
-    behaviorPatterns: [{ pattern_key: 'asks_followup_examples', summary: 'Prefers concrete follow-up examples after a high-level explanation.', details: 'Often asks for UI behavior after architecture discussion.', source: 'demo', timestamp: Date.now() }],
-    nodeConversations: [],
-    conversations: [],
-    agentActions: [],
-    accessLogs: [],
-  });
-  setCliConversation([]);
-  setNodes(demoNodes, { selectedId: demoNodes[0]?.id || null });
-  if (demoNodes[0]) loadEditorFromNode(demoNodes[0]);
-});
-
-elements.clearAll.addEventListener('click', () => {
-  state.canonicalGraph = createEmptyGraph();
-  setMemoryStream(createEmptyMemoryStream());
-  setCliConversation([]);
-  state.recentOpened = [];
-  setNodes([], { selectedId: null });
-  state.query = '';
-  elements.searchInput.value = '';
-  state.editor = createEmptyEditor();
-  syncEditorToDom();
-  render();
-});
-
-elements.exportJson.addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(state.filtered, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'mempedia_nodes.json';
-  link.click();
-  URL.revokeObjectURL(url);
-});
-
-elements.newNode.addEventListener('click', () => {
-  const draftId = `new_node_${Date.now()}`;
-  state.selectedId = draftId;
-  rememberRecentNode(draftId);
-  state.editor = createEmptyEditor({
-    nodeId: draftId,
-    title: 'New Node',
-    origin: state.connected ? 'ui-editor' : 'human',
-  });
-  state.editor.markdown = buildMarkdownFromEditor(state.editor);
-  syncEditorToDom();
-  render();
-});
-
-elements.saveNode.addEventListener('click', async () => {
-  try {
-    await saveCurrentNode(true);
-  } catch (error) {
-    state.editor.lastError = error.message || String(error);
-    state.editor.saving = false;
-    render();
-  }
-});
-
-elements.reloadNode.addEventListener('click', async () => {
-  if (!state.editor.nodeId.trim()) return;
-  await selectNode(state.editor.nodeId.trim(), { fetchRemote: state.connected });
-});
-
-elements.autoSaveToggle.addEventListener('change', (event) => {
-  state.autoSave = event.target.checked;
-  renderEditorChrome();
 });
 
 elements.fileInput.addEventListener('change', (event) => {
-  if (!event.target.files) return;
+  if (!event.target.files?.length) return;
   void loadFiles(event.target.files);
 });
 
-elements.graphLinks.addEventListener('input', (event) => updateGraphLinksField(event.target.value));
+elements.clearAll.addEventListener('click', () => {
+  clearAll();
+});
 
-for (const [field, element] of Object.entries(elements.fields)) {
-  element.addEventListener('input', (event) => updateEditorField(field, event.target.value));
-}
+elements.exportJson.addEventListener('click', () => {
+  exportJson();
+});
 
-setNodes([]);
-syncEditorToDom();
 render();
 void bootstrapConnectedWorkspace();

@@ -27,6 +27,30 @@ interface LocalSkill {
   name: string;
   description: string;
   content: string;
+  source?: 'local' | 'remote';
+  location?: string;
+  repository?: string;
+}
+
+interface GitHubCodeSearchItem {
+  path?: string;
+  html_url?: string;
+  url?: string;
+  repository?: {
+    full_name?: string;
+    html_url?: string;
+  };
+}
+
+interface GitHubCodeSearchResponse {
+  items?: GitHubCodeSearchItem[];
+  message?: string;
+}
+
+interface GitHubContentResponse {
+  content?: string;
+  encoding?: string;
+  download_url?: string;
 }
 
 interface WebConversationItem {
@@ -65,6 +89,7 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   }, projectRoot));
   const [backgroundTasks, setBackgroundTasks] = useState<string[]>([]);
   const [skills, setSkills] = useState<LocalSkill[]>([]);
+  const [remoteSkills, setRemoteSkills] = useState<LocalSkill[]>([]);
   const [activeSkill, setActiveSkill] = useState<LocalSkill | null>(null);
   const [uiUrl, setUiUrl] = useState<string | null>(null);
   const uiServerRef = useRef<http.Server | null>(null);
@@ -113,18 +138,12 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
           continue;
         }
         const raw = fs.readFileSync(skillPath, 'utf-8');
-        const frontmatter = raw.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
-        const body = frontmatter ? raw.slice(frontmatter[0].length).trim() : raw.trim();
-        const meta = frontmatter ? frontmatter[1] : '';
-        const name = meta.match(/name:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || entry.name;
-        const description = meta.match(/description:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || 'No description';
-        parsed.push({
-          name,
-          description,
-          content: body
-        });
+        parsed.push(parseSkillMarkdown(raw, entry.name, {
+          source: 'local',
+          location: normalizePath(path.relative(projectRoot, skillPath))
+        }));
       }
-      setSkills(parsed.sort((a, b) => a.name.localeCompare(b.name)));
+      setSkills(sortSkills(parsed));
     };
     loadSkills();
   }, [projectRoot]);
@@ -277,6 +296,114 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   };
 
   const normalizePath = (target: string) => target.replace(/\\/g, '/');
+
+  const parseSkillMarkdown = (raw: string, fallbackName: string, extra: Partial<LocalSkill> = {}): LocalSkill => {
+    const frontmatter = raw.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
+    const body = frontmatter ? raw.slice(frontmatter[0].length).trim() : raw.trim();
+    const meta = frontmatter ? frontmatter[1] : '';
+    const name = meta.match(/name:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || fallbackName;
+    const description = meta.match(/description:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || 'No description';
+    return {
+      name,
+      description,
+      content: body,
+      ...extra,
+    };
+  };
+
+  const sortSkills = (items: LocalSkill[]) => [...items].sort((a, b) => a.name.localeCompare(b.name));
+
+  const mergeSkills = (...groups: LocalSkill[][]) => {
+    const merged = new Map<string, LocalSkill>();
+    for (const group of groups) {
+      for (const skill of group) {
+        const key = `${skill.source || 'local'}::${skill.location || skill.name}`;
+        if (!merged.has(key)) {
+          merged.set(key, skill);
+        }
+      }
+    }
+    return sortSkills([...merged.values()]);
+  };
+
+  const availableSkills = () => mergeSkills(skills, remoteSkills);
+
+  const formatSkillLabel = (skill: LocalSkill) => {
+    const source = skill.source === 'remote' ? `remote${skill.repository ? `:${skill.repository}` : ''}` : 'local';
+    return `${skill.name} [${source}]`;
+  };
+
+  const findSkill = (targetName: string) => {
+    const normalized = targetName.trim().toLowerCase();
+    return availableSkills().find((skill) => {
+      const name = skill.name.toLowerCase();
+      const repository = skill.repository?.toLowerCase() || '';
+      return name === normalized || name.endsWith(`/${normalized}`) || name.includes(normalized) || repository.includes(normalized);
+    });
+  };
+
+  const githubHeaders = () => {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'mempedia-codecli',
+    };
+    const token = process.env.GITHUB_TOKEN?.trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
+  const fetchJson = async <T,>(url: string): Promise<T> => {
+    const response = await fetch(url, { headers: githubHeaders() });
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      const rateLimited = response.status === 403 ? ' GitHub API rate limit may apply; set GITHUB_TOKEN to raise it.' : '';
+      throw new Error(`HTTP ${response.status} ${response.statusText}.${rateLimited}${detail ? ` ${detail}` : ''}`.trim());
+    }
+    return response.json() as Promise<T>;
+  };
+
+  const fetchText = async (url: string) => {
+    const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' } });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+    return response.text();
+  };
+
+  const searchOnlineSkills = async (searchQuery: string) => {
+    const query = searchQuery.trim();
+    if (!query) return [];
+    const searchUrl = `https://api.github.com/search/code?q=${encodeURIComponent(`${query} filename:SKILL.md`)}&per_page=8`;
+    const searchResponse = await fetchJson<GitHubCodeSearchResponse>(searchUrl);
+    const items = Array.isArray(searchResponse.items) ? searchResponse.items : [];
+    const loaded = await Promise.all(items.map(async (item) => {
+      if (!item.url) {
+        return null;
+      }
+      try {
+        const contentResponse = await fetchJson<GitHubContentResponse>(item.url);
+        let markdown = '';
+        if (contentResponse.encoding === 'base64' && typeof contentResponse.content === 'string') {
+          markdown = Buffer.from(contentResponse.content.replace(/\s+/g, ''), 'base64').toString('utf-8');
+        } else if (contentResponse.download_url) {
+          markdown = await fetchText(contentResponse.download_url);
+        }
+        if (!markdown.trim()) {
+          return null;
+        }
+        return parseSkillMarkdown(markdown, item.path || 'remote-skill', {
+          source: 'remote',
+          repository: item.repository?.full_name,
+          location: item.html_url || item.repository?.html_url || item.url,
+        });
+      } catch {
+        return null;
+      }
+    }));
+    return mergeSkills(loaded.filter((skill): skill is LocalSkill => Boolean(skill)));
+  };
 
   const formatPromptWithSkill = (query: string, oneShotSkill?: LocalSkill | null) => {
     const skillToUse = oneShotSkill || activeSkill;
@@ -575,7 +702,7 @@ ${query}`
     if (trimmed === '/help') {
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'info',
-        content: 'Commands: /help | /clear | /skills | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
+        content: 'Commands: /help | /clear | /skills | /skills search <query> | /skills clear-remote | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
       }]);
       return;
     }
@@ -610,13 +737,64 @@ ${query}`
       return;
     }
 
-    if (trimmed === '/skills') {
-      const lines = skills.length > 0
-        ? skills.map((s) => `${activeSkill?.name === s.name ? '* ' : '- '}${s.name}: ${s.description}`).join('\n')
-        : 'No local skills found under ./skills';
+    if (trimmed.startsWith('/skills')) {
+      const parts = trimmed.split(/\s+/).slice(1);
+      if (parts.length === 0) {
+        const listedSkills = availableSkills();
+        const lines = listedSkills.length > 0
+          ? listedSkills.map((s) => `${activeSkill?.name === s.name ? '* ' : '- '}${formatSkillLabel(s)}: ${s.description}`).join('\n')
+          : 'No local skills found under ./skills. Use /skills search <query> to search GitHub.';
+        setHistory((prev: HistoryItem[]) => [...prev, {
+          type: 'info',
+          content: `Available skills:\n${lines}`
+        }]);
+        return;
+      }
+      const action = parts[0];
+      if (action === 'search') {
+        const searchQuery = parts.slice(1).join(' ').trim();
+        if (!searchQuery) {
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: 'Usage: /skills search <query>'
+          }]);
+          return;
+        }
+        setStatus(`Searching online skills for ${searchQuery}...`);
+        try {
+          const found = await searchOnlineSkills(searchQuery);
+          setRemoteSkills((prev) => mergeSkills(prev, found));
+          const lines = found.length > 0
+            ? found.map((skill) => `- ${formatSkillLabel(skill)}: ${skill.description}`).join('\n')
+            : 'No remote skills matched this query.';
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `Remote skill search for "${searchQuery}":\n${lines}`
+          }]);
+          setStatus('Ready');
+        } catch (error: any) {
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `Remote skill search failed: ${error.message}`
+          }]);
+          setStatus('Error');
+        }
+        return;
+      }
+      if (action === 'clear-remote') {
+        if (activeSkill?.source === 'remote') {
+          setActiveSkill(null);
+        }
+        setRemoteSkills([]);
+        setHistory((prev: HistoryItem[]) => [...prev, {
+          type: 'info',
+          content: 'Remote skill cache cleared.'
+        }]);
+        return;
+      }
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'info',
-        content: `Available skills:\n${lines}`
+        content: 'Usage: /skills | /skills search <query> | /skills clear-remote'
       }]);
       return;
     }
@@ -639,11 +817,11 @@ ${query}`
         }]);
         return;
       }
-      const selected = skills.find((s) => s.name === targetName || s.name.endsWith(`/${targetName}`) || s.name.includes(targetName));
+      const selected = findSkill(targetName);
       if (!selected) {
         setHistory((prev: HistoryItem[]) => [...prev, {
           type: 'info',
-          content: `Skill not found: ${targetName}`
+          content: `Skill not found: ${targetName}. Use /skills or /skills search <query>.`
         }]);
         return;
       }
@@ -652,12 +830,12 @@ ${query}`
         setActiveSkill(selected);
         setHistory((prev: HistoryItem[]) => [...prev, {
           type: 'info',
-          content: `Skill activated: ${selected.name}`
+          content: `Skill activated: ${formatSkillLabel(selected)}`
         }]);
         return;
       }
       setIsProcessing(true);
-      setHistory((prev: HistoryItem[]) => [...prev, { type: 'user', content: query }]);
+      setHistory((prev: HistoryItem[]) => [...prev, { type: 'user', content: task }]);
       setInput('');
       setStatus(`Running with skill ${selected.name}...`);
       try {
@@ -720,7 +898,7 @@ ${query}`
   return (
     <Box flexDirection="column" padding={1}>
       <Text color="green" bold>Mempedia CodeCLI (Branching ReAct Agent)</Text>
-      <Text color="dim">Skill: {activeSkill ? activeSkill.name : 'none'} | Use /skills to list</Text>
+      <Text color="dim">Skill: {activeSkill ? formatSkillLabel(activeSkill) : 'none'} | Use /skills or /skills search</Text>
       <Text color="dim">UI: {uiUrl || 'stopped'} | /ui start to launch mempedia-ui</Text>
       <Box flexDirection="column" marginY={1}>
         {history.map((item, index) => (

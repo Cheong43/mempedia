@@ -55,17 +55,41 @@ export const TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'mempedia_save',
-      description: 'Save or update knowledge/interaction in mempedia.',
+      description: 'Save or update knowledge in mempedia using structured fields. Prefer title, summary, body, facts, evidence, and relations instead of markdown sections.',
       parameters: {
         type: 'object',
         properties: {
           node_id: { type: 'string', description: 'The ID of the node (unique)' },
-          title: { type: 'string', description: 'Title of the node' },
-          content: { type: 'string', description: 'Markdown content' },
-          tags: { type: 'string', description: 'Comma-separated tags' },
-          links: { type: 'array', items: { type: 'string' }, description: 'List of node_ids to link to' },
+          title: { type: 'string', description: 'Human-readable title of the node' },
+          summary: { type: 'string', description: 'Short summary for retrieval and display' },
+          body: { type: 'string', description: 'Main narrative body text; plain text or markdown body is fine, but do not encode facts/evidence as section bullets here' },
+          facts: {
+            type: 'object',
+            description: 'Structured facts as key-value pairs',
+            additionalProperties: { type: 'string' },
+          },
+          evidence: {
+            type: 'array',
+            description: 'Evidence strings stored in structured fields',
+            items: { type: 'string' },
+          },
+          relations: {
+            type: 'array',
+            description: 'Graph relations to other nodes',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string', description: 'Target node id or keyword' },
+                label: { type: 'string', description: 'Optional relation label' },
+                weight: { type: 'number', description: 'Optional relation weight' },
+              },
+              required: ['target'],
+            },
+          },
+          source: { type: 'string', description: 'Optional source tag for this save' },
+          content: { type: 'string', description: 'Legacy markdown content. Supported for compatibility, but structured fields are preferred.' },
         },
-        required: ['node_id', 'content'],
+        required: ['node_id'],
       },
     },
   },

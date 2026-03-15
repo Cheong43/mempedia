@@ -81,14 +81,41 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'mempedia_save',
-      description: 'Save or update knowledge/interaction in mempedia.',
+      description: 'Save or update knowledge in mempedia using structured fields. Prefer title, summary, body, facts, evidence, and relations instead of markdown sections.',
       parameters: {
         type: 'object',
         properties: {
           node_id: { type: 'string', description: 'The ID of the node (unique)' },
-          content: { type: 'string', description: 'Markdown content' },
+          title: { type: 'string', description: 'Human-readable title of the node' },
+          summary: { type: 'string', description: 'Short summary for retrieval and display' },
+          body: { type: 'string', description: 'Main narrative body text; do not encode facts or evidence as markdown sections here' },
+          facts: {
+            type: 'object',
+            description: 'Structured facts as key-value pairs',
+            additionalProperties: { type: 'string' },
+          },
+          evidence: {
+            type: 'array',
+            description: 'Evidence strings stored in structured fields',
+            items: { type: 'string' },
+          },
+          relations: {
+            type: 'array',
+            description: 'Graph relations to other nodes',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string', description: 'Target node id or keyword' },
+                label: { type: 'string', description: 'Optional relation label' },
+                weight: { type: 'number', description: 'Optional relation weight' },
+              },
+              required: ['target'],
+            },
+          },
+          source: { type: 'string', description: 'Optional source tag for this save' },
+          content: { type: 'string', description: 'Legacy markdown content. Supported for compatibility, but structured fields are preferred.' },
         },
-        required: ['node_id', 'content'],
+        required: ['node_id'],
       },
     },
   },
@@ -404,6 +431,24 @@ interface MemorySaveJob {
   savePatterns: boolean;
   saveAtomic: boolean;
   branchId?: string;
+}
+
+interface StructuredRelationInput {
+  target: string;
+  label?: string;
+  weight?: number;
+}
+
+interface StructuredSavePayload {
+  requestedNodeId: string;
+  title: string;
+  summary: string;
+  body: string;
+  facts: Record<string, string>;
+  evidence: string[];
+  relations: StructuredRelationInput[];
+  source: string;
+  comparableText: string;
 }
 
 type ChatClient = {
@@ -907,6 +952,214 @@ export class Agent {
     return '';
   }
 
+  private parseStructuredRelation(value: unknown): StructuredRelationInput | null {
+    if (!value) {
+      return null;
+    }
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      const target = typeof record.target === 'string' ? record.target.trim() : '';
+      if (!target) {
+        return null;
+      }
+      const label = typeof record.label === 'string' && record.label.trim() ? record.label.trim() : undefined;
+      const weight = Number(record.weight);
+      return {
+        target,
+        label,
+        weight: Number.isFinite(weight) ? weight : undefined,
+      };
+    }
+    const raw = String(value).trim().replace(/^[-*+]\s+/, '');
+    if (!raw) {
+      return null;
+    }
+    if (raw.includes('|')) {
+      const parts = raw.split('|').map((part) => part.trim());
+      const target = parts[0];
+      if (!target) {
+        return null;
+      }
+      const label = parts[1] || undefined;
+      const weight = Number(parts[2]);
+      return {
+        target,
+        label,
+        weight: Number.isFinite(weight) ? weight : undefined,
+      };
+    }
+    const fnStyle = raw.match(/^(.*?)\((.*)\)$/);
+    if (fnStyle) {
+      const target = fnStyle[1].trim();
+      if (!target) {
+        return null;
+      }
+      let label: string | undefined;
+      let weight: number | undefined;
+      for (const part of fnStyle[2].split(',')) {
+        const [key, rawValue] = part.split('=').map((item) => item?.trim());
+        if (!key || !rawValue) {
+          continue;
+        }
+        if (key === 'label') {
+          label = rawValue;
+        }
+        if (key === 'weight') {
+          const parsed = Number(rawValue);
+          if (Number.isFinite(parsed)) {
+            weight = parsed;
+          }
+        }
+      }
+      return { target, label, weight };
+    }
+    return { target: raw };
+  }
+
+  private normalizeStructuredRelations(value: unknown): StructuredRelationInput[] {
+    const input = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n/) : [];
+    const seen = new Set<string>();
+    const out: StructuredRelationInput[] = [];
+    for (const item of input) {
+      const parsed = this.parseStructuredRelation(item);
+      if (!parsed) {
+        continue;
+      }
+      const key = `${this.toSlug(parsed.target)}__${this.toSlug(parsed.label || 'related')}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      out.push(parsed);
+    }
+    return out;
+  }
+
+  private normalizeStructuredFacts(value: unknown): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+        const factKey = String(key || '').trim();
+        const factValue = typeof raw === 'string' ? raw.trim() : String(raw ?? '').trim();
+        if (factKey && factValue) {
+          out[factKey] = factValue;
+        }
+      }
+      return out;
+    }
+    const lines = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n/) : [];
+    for (const item of lines) {
+      const raw = String(item || '').trim().replace(/^[-*+]\s+/, '');
+      if (!raw) {
+        continue;
+      }
+      const match = raw.match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+      if (!match) {
+        continue;
+      }
+      const key = match[1].trim();
+      const factValue = match[2].trim();
+      if (key && factValue) {
+        out[key] = factValue;
+      }
+    }
+    return out;
+  }
+
+  private normalizeStructuredEvidence(value: unknown): string[] {
+    const input = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n/) : [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of input) {
+      const evidence = String(item || '').trim().replace(/^[-*+]\s+/, '');
+      if (!evidence) {
+        continue;
+      }
+      const key = evidence.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      out.push(evidence);
+    }
+    return out;
+  }
+
+  private normalizeStructuredSectionName(name: string): 'facts' | 'relations' | 'evidence' | null {
+    const lower = name.trim().toLowerCase();
+    if (['facts', 'fact', 'claims', 'claim'].includes(lower)) {
+      return 'facts';
+    }
+    if (['relations', 'relation', 'links', 'link', 'related', 'related nodes', 'connections'].includes(lower)) {
+      return 'relations';
+    }
+    if (['evidence', 'sources', 'source'].includes(lower)) {
+      return 'evidence';
+    }
+    return null;
+  }
+
+  private extractStructuredSaveSections(body: string): {
+    narrative: string;
+    facts: Record<string, string>;
+    evidence: string[];
+    relations: StructuredRelationInput[];
+  } {
+    const facts: Record<string, string> = {};
+    const evidence: string[] = [];
+    const relations: StructuredRelationInput[] = [];
+    const narrative: string[] = [];
+    let current: 'facts' | 'relations' | 'evidence' | null = null;
+
+    for (const rawLine of body.split(/\r?\n/)) {
+      const trimmed = rawLine.trim();
+      const heading = trimmed.match(/^#{2,3}\s+(.+)$/);
+      if (heading) {
+        const section = this.normalizeStructuredSectionName(heading[1]);
+        if (section) {
+          current = section;
+          continue;
+        }
+        current = null;
+        narrative.push(rawLine);
+        continue;
+      }
+
+      if (current === 'facts') {
+        const match = trimmed.replace(/^[-*+]\s+/, '').match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+        if (match) {
+          facts[match[1].trim()] = match[2].trim();
+        }
+        continue;
+      }
+
+      if (current === 'relations') {
+        const relation = this.parseStructuredRelation(trimmed);
+        if (relation) {
+          relations.push(relation);
+        }
+        continue;
+      }
+
+      if (current === 'evidence') {
+        const item = trimmed.replace(/^[-*+]\s+/, '').trim();
+        if (item) {
+          evidence.push(item);
+        }
+        continue;
+      }
+
+      narrative.push(rawLine);
+    }
+
+    return {
+      narrative: narrative.join('\n').trim(),
+      facts,
+      evidence: this.normalizeStructuredEvidence(evidence),
+      relations: this.normalizeStructuredRelations(relations),
+    };
+  }
+
   private normalizeTextForSimilarity(value: string): string[] {
     return String(value || '')
       .toLowerCase()
@@ -933,46 +1186,80 @@ export class Agent {
     return shared / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
   }
 
-  private applyNodeIdToMarkdown(markdown: string, nodeId: string, titleHint: string): string {
-    const trimmed = markdown.trim();
-    const { frontmatter, body } = this.parseFrontmatter(trimmed);
-    const title = frontmatter.title?.trim() || titleHint.trim() || this.extractMarkdownTitle(trimmed) || nodeId;
-    const summary = frontmatter.summary?.trim();
-    const frontmatterLines = [
-      '---',
-      `node_id: "${this.yamlEscape(nodeId)}"`,
-      `title: "${this.yamlEscape(title)}"`,
-      summary ? `summary: "${this.yamlEscape(summary)}"` : null,
-      '---',
-      '',
-    ].filter(Boolean);
-    const nextBody = body.trim() || trimmed;
-    return `${frontmatterLines.join('\n')}${nextBody.endsWith('\n') ? nextBody : `${nextBody}\n`}`;
+  private buildStructuredSavePayload(rawArgs: Record<string, unknown>): StructuredSavePayload {
+    const requestedNodeId = String(rawArgs.node_id || '').trim();
+    const explicitFacts = this.normalizeStructuredFacts(rawArgs.facts);
+    const explicitEvidence = this.normalizeStructuredEvidence(rawArgs.evidence);
+    const explicitRelations = this.normalizeStructuredRelations(rawArgs.relations);
+    const legacyContent = typeof rawArgs.content === 'string' ? rawArgs.content.trim() : '';
+
+    let title = typeof rawArgs.title === 'string' ? rawArgs.title.trim() : '';
+    let summary = typeof rawArgs.summary === 'string' ? rawArgs.summary.trim() : '';
+    let body = typeof rawArgs.body === 'string' ? rawArgs.body.trim() : '';
+    let facts: Record<string, string> = { ...explicitFacts };
+    let evidence = [...explicitEvidence];
+    let relations = [...explicitRelations];
+
+    if (legacyContent) {
+      const { frontmatter, body: markdownBody } = this.parseFrontmatter(legacyContent);
+      const structured = this.extractStructuredSaveSections(markdownBody);
+      title = title || frontmatter.title?.trim() || this.extractMarkdownTitle(legacyContent) || '';
+      summary = summary || frontmatter.summary?.trim() || this.firstSentence(structured.narrative || markdownBody) || '';
+      body = body || structured.narrative || markdownBody.trim();
+      facts = { ...structured.facts, ...facts };
+      evidence = this.normalizeStructuredEvidence([...structured.evidence, ...evidence]);
+      relations = this.normalizeStructuredRelations([...structured.relations, ...relations]);
+    }
+
+    title = title || requestedNodeId || this.firstSentence(body) || 'Untitled';
+    summary = summary || this.firstSentence(body) || title;
+    body = body || summary;
+
+    const comparableText = [
+      title,
+      summary,
+      body,
+      ...Object.entries(facts).map(([key, value]) => `${key}: ${value}`),
+      ...evidence,
+      ...relations.map((relation) => `${relation.target} ${relation.label || 'related'} ${relation.weight ?? ''}`.trim()),
+    ].filter(Boolean).join('\n');
+
+    return {
+      requestedNodeId,
+      title,
+      summary,
+      body,
+      facts,
+      evidence,
+      relations,
+      source: typeof rawArgs.source === 'string' && rawArgs.source.trim() ? rawArgs.source.trim() : 'agent',
+      comparableText,
+    };
   }
 
-  private deriveSaveNodeId(requestedNodeId: string, markdown: string): string {
+  private deriveSaveNodeId(requestedNodeId: string, payload: StructuredSavePayload): string {
     const requested = requestedNodeId.trim();
     if (requested) {
       return requested;
     }
-    const title = this.extractMarkdownTitle(markdown);
-    const slug = this.toSlug(title || this.firstSentence(markdown) || 'saved_note');
+    const slug = this.toSlug(payload.title || this.firstSentence(payload.body) || payload.summary || 'saved_note');
     if (slug.includes('dir') || slug.includes('directory') || slug.includes('structure') || slug.includes('source')) {
       return `kg_code_${slug}`;
     }
     return `kg_doc_${slug}`;
   }
 
-  private async guardedMempediaSave(requestedNodeId: string, markdown: string): Promise<Record<string, unknown>> {
-    const originalNodeId = this.deriveSaveNodeId(requestedNodeId, markdown);
-    const title = this.extractMarkdownTitle(markdown) || originalNodeId;
+  private async guardedMempediaSave(rawArgs: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const payload = this.buildStructuredSavePayload(rawArgs);
+    const originalNodeId = this.deriveSaveNodeId(payload.requestedNodeId, payload);
+    const title = payload.title || originalNodeId;
     let resolvedNodeId = originalNodeId;
     let redirected = false;
     let redirectReason = '';
 
     const titleAlignment = this.lexicalOverlapScore(originalNodeId.replace(/_/g, ' '), title);
-    if (requestedNodeId.trim() && titleAlignment < 0.18) {
-      resolvedNodeId = this.deriveSaveNodeId('', markdown);
+    if (payload.requestedNodeId.trim() && titleAlignment < 0.18) {
+      resolvedNodeId = this.deriveSaveNodeId('', payload);
       redirected = resolvedNodeId !== originalNodeId;
       redirectReason = `save redirected from ${originalNodeId} to ${resolvedNodeId} because requested node id does not align with markdown title`;
     }
@@ -985,11 +1272,11 @@ export class Agent {
       });
       if ((existing as any)?.kind === 'markdown' && typeof (existing as any)?.markdown === 'string') {
         const existingMarkdown = String((existing as any).markdown || '');
-        const overlap = this.lexicalOverlapScore(markdown, existingMarkdown);
+        const overlap = this.lexicalOverlapScore(payload.comparableText, existingMarkdown);
         const titleSlug = this.toSlug(title);
         const idLooksAligned = resolvedNodeId.includes(titleSlug) || titleSlug.includes(this.toSlug(resolvedNodeId));
         if (overlap < 0.16 && !idLooksAligned) {
-          resolvedNodeId = this.deriveSaveNodeId('', markdown);
+          resolvedNodeId = this.deriveSaveNodeId('', payload);
           redirected = resolvedNodeId !== originalNodeId;
           redirectReason = `save redirected from ${originalNodeId} to ${resolvedNodeId} due to low content overlap (${overlap.toFixed(2)})`;
         }
@@ -998,21 +1285,26 @@ export class Agent {
       // missing node is acceptable; keep original node id
     }
 
-    const normalizedMarkdown = this.applyNodeIdToMarkdown(markdown, resolvedNodeId, title);
     const result = await this.mempedia.send({
-      action: 'agent_upsert_markdown',
+      action: 'ingest',
       node_id: resolvedNodeId,
-      markdown: normalizedMarkdown,
-      confidence: 1.0,
-      importance: 1.0,
+      title: title,
+      text: payload.body,
+      summary: payload.summary,
+      facts: Object.keys(payload.facts).length > 0 ? payload.facts : undefined,
+      relations: payload.relations.length > 0 ? payload.relations : undefined,
+      evidence: payload.evidence.length > 0 ? payload.evidence : undefined,
+      source: payload.source,
       agent_id: 'mempedia-codecli',
       reason: redirected ? `Branching ReAct task completion (${redirectReason})` : 'Branching ReAct task completion',
-      source: 'agent',
+      confidence: 1.0,
+      importance: 1.0,
     });
 
     return {
-      requested_node_id: requestedNodeId || originalNodeId,
+      requested_node_id: payload.requestedNodeId || originalNodeId,
       resolved_node_id: resolvedNodeId,
+      stored_mode: 'structured_fields',
       redirected,
       redirect_reason: redirectReason || undefined,
       result,
@@ -1549,11 +1841,6 @@ export class Agent {
             fallbackPayload.atomic_knowledge.length > 0
           ) {
             payload = fallbackPayload;
-            this.appendMemoryLog(runId, 'memory_extract_fallback_used', {
-              habits: payload.user_habits_env.length,
-              patterns: payload.behavior_patterns.length,
-              atomic: payload.atomic_knowledge.length
-            });
           }
         }
         this.appendMemoryLog(runId, 'memory_extract_done', {
@@ -1570,27 +1857,27 @@ export class Agent {
             this.memoryActionTimeoutMs,
             `memory action ${action.action}`
           );
-          const runAction = async (stage: string, action: ToolAction) => {
-            const stageStartedAt = Date.now();
-            const nodeId = (action as any).node_id;
-            this.appendMemoryLog(runId, `${stage}_started`, {
-              action: action.action,
-              node_id: typeof nodeId === 'string' ? nodeId : null
-            });
-            const result = await sendWithTimeout(action);
-            if (result && (result as any).kind === 'error') {
-              this.appendMemoryLog(runId, `${stage}_error`, {
-                action: action.action,
-                node_id: typeof nodeId === 'string' ? nodeId : null,
-                message: (result as any).message || 'unknown error'
-              });
-            }
-            this.appendMemoryLog(runId, `${stage}_done`, {
+        const runAction = async (stage: string, action: ToolAction) => {
+          const stageStartedAt = Date.now();
+          const nodeId = (action as any).node_id;
+          this.appendMemoryLog(runId, `${stage}_started`, {
+            action: action.action,
+            node_id: typeof nodeId === 'string' ? nodeId : null
+          });
+          const result = await sendWithTimeout(action);
+          if (result && (result as any).kind === 'error') {
+            this.appendMemoryLog(runId, `${stage}_error`, {
               action: action.action,
               node_id: typeof nodeId === 'string' ? nodeId : null,
-              elapsed_ms: Date.now() - stageStartedAt
+              message: (result as any).message || 'unknown error'
             });
-          };
+          }
+          this.appendMemoryLog(runId, `${stage}_done`, {
+            action: action.action,
+            node_id: typeof nodeId === 'string' ? nodeId : null,
+            elapsed_ms: Date.now() - stageStartedAt
+          });
+        };
         const linkedNodes = new Set<string>();
 
         if (payload.user_habits_env.length > 0) {
@@ -1638,23 +1925,29 @@ export class Agent {
           }
           for (const [nodeId, item] of atomicMap) {
             const resolvedRelations = await this.resolveRelationTargets(item.relations || []);
-            const relatedMarkdown = resolvedRelations.length > 0
-              ? resolvedRelations
-                  .map((rel) => rel.target ? `- [[${rel.target}]]` : `- ${rel.label}`)
-                  .join('\n')
-              : '- None';
             const evolutionSection = item.evolution && item.evolution.trim().length > 0
               ? item.evolution
               : '暂无';
             const descriptionSection = item.description && item.description.trim().length > 0
               ? item.description
               : item.summary;
-            const frontmatter = `---\nsummary: \"${this.yamlEscape(item.summary)}\"\n---\n\n`;
-            const markdown = `${frontmatter}# ${item.keyword}\n\n## Summary\n\n${item.summary}\n\n## Description\n\n${descriptionSection}\n\n## Evolution\n\n${evolutionSection}\n\n## Related\n\n${relatedMarkdown}\n\n## Updated at\n\n${nowIso}\n\n## Type\n\natomic_knowledge`;
             await runAction('atomic_upsert', {
-              action: 'agent_upsert_markdown',
+              action: 'ingest',
               node_id: nodeId,
-              markdown,
+              title: item.keyword,
+              text: `${descriptionSection}\n\nEvolution\n${evolutionSection}`,
+              summary: item.summary,
+              facts: {
+                type: 'atomic_knowledge',
+                updated_at: nowIso,
+              },
+              relations: resolvedRelations
+                .filter((rel) => rel.target)
+                .map((rel) => ({ target: rel.target as string, label: 'related', weight: 0.8 })),
+              evidence: [
+                `conversation:${conversationId}`,
+                `memory_run:${runId}`,
+              ],
               confidence: 0.98,
               importance: 1.9,
               agent_id: 'mempedia-codecli',
@@ -1820,7 +2113,7 @@ Rules:
 4. Never create more than ${this.branchMaxWidth} child branches in one step.
 5. Prefer mempedia_search_hybrid for high-recall retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
 6. When you finish, return kind="final" with a direct user-facing answer.
-7. Consider mempedia_save only for atomic reusable knowledge, not transient chatter.
+7. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
 8. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
 9. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
 10. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
@@ -2007,7 +2300,7 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
           const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
           result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
         } else if (fnName === 'mempedia_save') {
-          const res = await this.guardedMempediaSave(String(args.node_id || ''), String(args.content || ''));
+          const res = await this.guardedMempediaSave(args as Record<string, unknown>);
           result = JSON.stringify(res);
         } else if (fnName === 'queue_memory_save') {
           const reason = String(args.reason || '').trim();

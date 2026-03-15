@@ -74,6 +74,12 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
    ```
    Set any timeout to a positive value only when you need forced fail-fast behavior.
 
+   Optional GitHub token for online skill search:
+   ```
+   GITHUB_TOKEN=your_github_token_here
+   ```
+   This is not required, but it raises the GitHub API rate limit for `/skills search <query>`.
+
    Branching ReAct loop controls:
    ```
    REACT_BRANCH_MAX_DEPTH=2
@@ -94,6 +100,8 @@ npm start
 - `codecli` can load local skills from `../skills/*/SKILL.md` (Claude-style frontmatter + markdown body).
 - Runtime commands:
   - `/skills` list local skills
+   - `/skills search <query>` search public GitHub `SKILL.md` files and cache matches for activation
+   - `/skills clear-remote` clear cached remote search results
   - `/skill <name>` activate a skill for subsequent turns
   - `/skill off` disable active skill
   - `/skill <name> <task>` run one task with a skill (one-shot)
@@ -103,6 +111,7 @@ npm start
   - `/help` show command list
   - `/clear` clear current screen history
 - When a skill is active, its description and body are injected into the request prompt so the agent follows that skill behavior.
+- Remote skill search uses the GitHub code search API and treats matching `SKILL.md` files the same way as local skills once cached.
 - Integrated UI features:
   - Embedded CLI dialogue window inside `mempedia-ui`
   - Trace visualization for thought/action/observation flow
