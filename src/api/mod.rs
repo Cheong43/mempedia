@@ -741,9 +741,9 @@ impl MemoryEngine {
         let mut content = parse_markdown(markdown);
         // Honour explicit project/parent_node/node_type arguments, falling back
         // to values already embedded in the markdown frontmatter.
-        if project.is_some() { content.project = project; }
-        if parent_node.is_some() { content.parent_node = parent_node; }
-        if node_type.is_some() { content.node_type = node_type; }
+        if let Some(p) = project { content.project = Some(p); }
+        if let Some(p) = parent_node { content.parent_node = Some(p); }
+        if let Some(t) = node_type { content.node_type = Some(t); }
 
         let (linked_body, auto_links) = self.auto_wikilink_markdown_body(node_id, &content.body)?;
         if linked_body != content.body {
@@ -903,9 +903,9 @@ impl MemoryEngine {
             }
         }
         // Apply explicit overrides from the action arguments.
-        if project.is_some() { content.project = project; }
-        if parent_node.is_some() { content.parent_node = parent_node; }
-        if node_type.is_some() { content.node_type = node_type; }
+        if let Some(p) = project { content.project = Some(p); }
+        if let Some(p) = parent_node { content.parent_node = Some(p); }
+        if let Some(t) = node_type { content.node_type = Some(t); }
 
         content
             .structured_data
@@ -1090,9 +1090,9 @@ impl MemoryEngine {
         let mut content = normalize_content(content);
         // Apply project-hierarchy fields. Values from explicit arguments take
         // precedence over those parsed from the markdown frontmatter.
-        if project.is_some() { content.project = project; }
-        if parent_node.is_some() { content.parent_node = parent_node; }
-        if node_type.is_some() { content.node_type = node_type; }
+        if let Some(p) = project { content.project = Some(p); }
+        if let Some(p) = parent_node { content.parent_node = Some(p); }
+        if let Some(t) = node_type { content.node_type = Some(t); }
 
         content
             .structured_data
@@ -2476,8 +2476,13 @@ impl MemoryEngine {
     }
 
     fn ensure_markdown_projection(&mut self) -> MemoryResult<()> {
-        for (node_id, version_id) in &self.heads.clone() {
-            let project = self.node_project_index.get(node_id).map(|s| s.as_str());
+        let heads_snapshot: Vec<(String, String)> = self
+            .heads
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (node_id, version_id) in &heads_snapshot {
+            let project = self.node_project_index.get(node_id.as_str()).map(|s| s.as_str());
             if self.storage.read_markdown_node(node_id, project)?.is_some() {
                 continue;
             }
