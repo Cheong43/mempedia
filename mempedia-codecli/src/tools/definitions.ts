@@ -55,7 +55,7 @@ export const TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'mempedia_save',
-      description: 'Save or update knowledge in mempedia using structured fields. Prefer title, summary, body, facts, evidence, and relations instead of markdown sections.',
+      description: 'Save or update knowledge in mempedia using structured fields. Preserve original meaning, respect facts, and be detailed. Prefer title, summary, body, facts, evidence, and relations instead of markdown sections.',
       parameters: {
         type: 'object',
         properties: {
@@ -87,6 +87,9 @@ export const TOOLS: ChatCompletionTool[] = [
             },
           },
           source: { type: 'string', description: 'Optional source tag for this save' },
+          project: { type: 'string', description: 'Project (domain/category) this node belongs to. Nodes within the same project are grouped together.' },
+          parent_node: { type: 'string', description: 'Parent node id for hierarchical (Notion-like) page nesting within a project.' },
+          node_type: { type: 'string', description: 'Semantic type of this node: "index", "concept", "process", "reference", "decision", "glossary", etc.' },
           content: { type: 'string', description: 'Legacy markdown content. Supported for compatibility, but structured fields are preferred.' },
         },
         required: ['node_id'],
@@ -122,6 +125,49 @@ export const TOOLS: ChatCompletionTool[] = [
           limit: { type: 'number', description: 'Max number of versions (optional)' },
         },
         required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_create_project',
+      description: 'Create or update a project (domain/knowledge-base category). Projects group related knowledge nodes and store them in a dedicated directory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'Unique project identifier (snake_case recommended)' },
+          name: { type: 'string', description: 'Human-readable project name' },
+          description: { type: 'string', description: 'Detailed description of the project scope and purpose' },
+          owner: { type: 'string', description: 'Optional owner or team responsible for this project' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional classification tags' },
+        },
+        required: ['project_id', 'name', 'description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_list_projects',
+      description: 'List all projects (knowledge-base domains/categories) with their metadata.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_list_project_nodes',
+      description: 'List all node ids that belong to a specific project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'The project id to list nodes for' },
+        },
+        required: ['project_id'],
       },
     },
   },
