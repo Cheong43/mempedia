@@ -1,0 +1,341 @@
+# Instincts generated from https://github.com/Cheong43/mempedia
+# Generated: 2026-03-17T04:19:54.925Z
+# Version: 2.0
+
+---
+id: mempedia-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Commit Length
+
+## Action
+
+Write moderate-length commit messages (~50 characters)
+
+## Evidence
+
+- Average commit message length: 62 chars
+- Based on 28 commits
+
+---
+id: mempedia-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: mempedia-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: mempedia-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: mempedia-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: api, core, decay, graph, markdown
+
+---
+id: mempedia-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: mempedia-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: mempedia-workflow-database-migration
+trigger: "when modifying the database schema or adding tables"
+confidence: 0.75
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Database Migration
+
+## Action
+
+Follow the database-migration workflow:
+1. Create migration file
+2. Update schema definitions
+3. Generate/update types
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~5x per month
+- Files: **/types.ts
+
+---
+id: mempedia-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~16x per month
+- Files: mempedia-codecli/node_modules/@cspotcode/source-map-support/*, mempedia-codecli/node_modules/@jridgewell/sourcemap-codec/src/*, mempedia-codecli/node_modules/@types/node-fetch/*
+
+---
+id: mempedia-workflow-refactoring
+trigger: "when refactoring code"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Refactoring
+
+## Action
+
+Follow the refactoring workflow:
+1. Ensure tests pass before refactor
+2. Refactor code structure
+3. Verify tests still pass
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~9x per month
+- Files: src/**/*
+
+---
+id: mempedia-workflow-add-or-update-knowledge-graph-nodes
+trigger: "when doing add or update knowledge graph nodes"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Add Or Update Knowledge Graph Nodes
+
+## Action
+
+Follow the add-or-update-knowledge-graph-nodes workflow:
+1. Create or update markdown files in .mempedia/memory/knowledge/nodes/
+2. Update .mempedia/memory/index/heads.json, nodes.json, and state.json to reflect new/updated nodes
+3. Optionally update .mempedia/memory/objects/ for new node objects
+4. Update documentation (README, SKILL.md) if schema/fields change
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: .mempedia/memory/knowledge/nodes/*.md, .mempedia/memory/index/heads.json, .mempedia/memory/index/nodes.json
+
+---
+id: mempedia-workflow-refactor-or-expand-runtime-architecture
+trigger: "when doing refactor or expand runtime architecture"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Refactor Or Expand Runtime Architecture
+
+## Action
+
+Follow the refactor-or-expand-runtime-architecture workflow:
+1. Edit or add files in mempedia-codecli/src/runtime/ (agent, governance, tools, types, etc)
+2. Edit mempedia-codecli/src/agent/index.ts
+3. Update or add types in mempedia-codecli/src/runtime/agent/types.ts and related type files
+4. Update mempedia-codecli/src/runtime/index.ts
+5. Update or add documentation (README, strategy docs)
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: mempedia-codecli/src/runtime/**/*.ts, mempedia-codecli/src/agent/index.ts, mempedia-codecli/README.md
+
+---
+id: mempedia-workflow-feature-development-with-docs-and-ui
+trigger: "when doing feature development with docs and ui"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Feature Development With Docs And Ui
+
+## Action
+
+Follow the feature-development-with-docs-and-ui workflow:
+1. Edit or add implementation files (e.g., src/api/mod.rs, src/core/mod.rs, src/storage/mod.rs, mempedia-codecli/src/agent/index.ts, etc)
+2. Update or add UI files (mempedia-ui/index.html, script.js, styles.css, or mempedia-codecli/src/components/App.tsx)
+3. Update documentation (README.md, SKILL.md, strategy docs)
+4. Optionally update memory index or data files if feature affects knowledge graph
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/api/mod.rs, src/core/mod.rs, src/storage/mod.rs
+
+---
+id: mempedia-workflow-api-action-consolidation-or-renaming
+trigger: "when doing api action consolidation or renaming"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Api Action Consolidation Or Renaming
+
+## Action
+
+Follow the api-action-consolidation-or-renaming workflow:
+1. Edit src/api/mod.rs to merge, rename, or update API actions
+2. Update documentation (readme.md, SKILL.md)
+3. Update agent configuration files (skills/*/agents/*.yaml)
+4. Update .gitignore if needed for new/removed data
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/api/mod.rs, readme.md, skills/*/SKILL.md
+
+---
+id: mempedia-workflow-ui-web-interface-update
+trigger: "when doing ui web interface update"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Ui Web Interface Update
+
+## Action
+
+Follow the ui-web-interface-update workflow:
+1. Edit or add mempedia-ui/index.html, script.js, styles.css (or M2W-UI equivalents)
+2. Update documentation (readme.md)
+3. Optionally update SKILL.md if UI relates to agent skills
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: mempedia-ui/index.html, mempedia-ui/script.js, mempedia-ui/styles.css
+
