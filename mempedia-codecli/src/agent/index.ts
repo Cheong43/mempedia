@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { z } from 'zod';
+import { createRuntime, RuntimeHandle } from '../runtime/index.js';
 
 dotenv.config();
 
@@ -490,6 +491,8 @@ export class Agent {
   private readonly branchMaxWidth: number;
   private readonly branchMaxSteps: number;
   private readonly branchMaxCompleted: number;
+  /** Governed runtime handle — routes mempedia actions through policy + guards. */
+  private readonly runtimeHandle: RuntimeHandle;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.openai = config.hmacAccessKey && config.hmacSecretKey
@@ -549,6 +552,10 @@ export class Agent {
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
     this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
     this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
+
+    // Bootstrap the governed runtime.  The MempediaClient is shared so the
+    // runtime re-uses the already-started process connection.
+    this.runtimeHandle = createRuntime({ projectRoot, agentId: 'agent-main' }, this.mempedia);
   }
 
   onBackgroundTask(callback: (task: string, status: 'started' | 'completed') => void) {
@@ -567,7 +574,9 @@ export class Agent {
   }
 
   async sendMempediaAction(action: ToolAction) {
-    return this.mempedia.send(action);
+    // Route through the governed runtime so that every UI-driven mempedia
+    // operation is subject to policy evaluation, guard checks, and audit logging.
+    return this.runtimeHandle.sendMempediaAction(action);
   }
 
   stop() {
