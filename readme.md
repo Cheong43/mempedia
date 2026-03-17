@@ -1,12 +1,11 @@
 # Mempedia (Rust)
 
-A lightweight long-term memory engine for AI agents:
-- Append-only history
-- Immutable versions
-- Node/Version DAG
-- Filesystem storage (no external database)
-- Markdown projection for local KB files
-- Agent-governed markdown upsert with audit log
+A lightweight long-term memory engine for AI agents with a 4-layer knowledge architecture:
+
+1. **Core Knowledge** – hierarchical, graph-indexed nodes (Wikipedia-style); human-readable markdown projections; supports document import via `import-doc` CLI command
+2. **Episodic Memory** – time-ordered scene records with BM25 keyword retrieval; importance decays over time; links back to core-knowledge nodes updated during the episode
+3. **User Preferences** – single per-project markdown config file capturing habits, preferences, and personal info
+4. **Agent Skills** – individual markdown skill files with BM25 fast retrieval; no graph indexing needed
 
 Use cases: projects that need traceable, forkable, mergeable, and explainable structured memory, rather than plain-text RAG retrieval.
 
@@ -72,6 +71,22 @@ cargo test
 find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 ```
 
+#### 1.5 Import Documents into Core Knowledge (import-doc)
+
+```bash
+# Import a single markdown file
+node mempedia-codecli/src/index.tsx import-doc --file /path/to/doc.md
+
+# Import with explicit node id and title
+node mempedia-codecli/src/index.tsx import-doc --file /path/to/doc.md --node-id my_doc --title "My Document"
+
+# Import all markdown files in a directory (non-recursive)
+node mempedia-codecli/src/index.tsx import-doc --dir /path/to/docs
+
+# Import recursively
+node mempedia-codecli/src/index.tsx import-doc --dir /path/to/docs --recursive
+```
+
 ### 2. Core Model in 5 Minutes
 
 #### 2.1 Node and Version
@@ -98,23 +113,29 @@ Each `NodeVersion` has `parents: Vec<VersionId>`, enabling:
 ```text
 data/
   index/
-    state.json      # index snapshot (heads + nodes)
-    heads.json      # compatibility/readable copy
-    nodes.json      # compatibility/readable copy
-    access.log      # optional access log
-    agent_actions.log # autonomous agent update audit
+    state.json            # index snapshot (heads + nodes)
+    heads.json            # compatibility/readable copy
+    nodes.json            # compatibility/readable copy
+    access.log            # optional access log
+    agent_actions.log     # autonomous agent update audit
   objects/
     <hash_prefix>/
       <version_hash>.json
   knowledge/
     nodes/
       <sanitized_node_id>-<hash8>.md
+  episodic/               # Layer 2: Episodic memory
+    memories.jsonl        # append-only list of EpisodicMemoryRecord (BM25 indexed)
+  preferences.md          # Layer 3: User preferences (single markdown file)
+  skills/                 # Layer 4: Agent skills
+    <skill_id>-<hash8>.md # One file per skill (frontmatter + markdown body)
 ```
 
 Notes:
 - `version_hash = blake3(serialized_node_version)`
 - Objects are bucketed by hash prefix
 - Index files are atomically written (`tmp + rename + fsync`)
+- Episodic memories are stored chronologically in JSONL; importance decays over time
 
 ### 4. Rust API
 

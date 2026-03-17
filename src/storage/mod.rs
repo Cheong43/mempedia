@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    AccessLog, AccessStats, AgentActionLog, BehaviorPatternRecord, MemoryError, MemoryResult,
-    Node, NodeVersion, UserHabitEnv,
+    AccessLog, AccessStats, AgentActionLog, BehaviorPatternRecord, EpisodicMemoryRecord,
+    MemoryError, MemoryResult, Node, NodeVersion, SkillRecord, UserHabitEnv,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -45,6 +45,8 @@ impl FileStorage {
         fs::create_dir_all(self.index_dir())?;
         fs::create_dir_all(self.objects_dir())?;
         fs::create_dir_all(self.knowledge_nodes_dir())?;
+        fs::create_dir_all(self.episodic_dir())?;
+        fs::create_dir_all(self.skills_dir())?;
         Ok(())
     }
 
@@ -117,6 +119,28 @@ impl FileStorage {
         let safe_name = sanitize_node_id(node_id);
         self.knowledge_nodes_dir()
             .join(format!("{safe_name}-{}.md", &digest[..8]))
+    }
+
+    fn episodic_dir(&self) -> PathBuf {
+        self.root.join("episodic")
+    }
+
+    fn episodic_memories_path(&self) -> PathBuf {
+        self.episodic_dir().join("memories.jsonl")
+    }
+
+    fn preferences_path(&self) -> PathBuf {
+        self.root.join("preferences.md")
+    }
+
+    fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    fn skill_path(&self, skill_id: &str) -> PathBuf {
+        let safe = sanitize_node_id(skill_id);
+        let digest = blake3::hash(skill_id.as_bytes()).to_hex();
+        self.skills_dir().join(format!("{safe}-{}.md", &digest[..8]))
     }
 
     pub fn load_index_snapshot(&self) -> MemoryResult<IndexSnapshot> {
@@ -311,6 +335,140 @@ impl FileStorage {
         let content = fs::read_to_string(&path)?;
         Ok(Some((path, content)))
     }
+
+    // ── Episodic memory ──────────────────────────────────────────────────────
+
+    pub fn append_episodic_memory(&self, record: &EpisodicMemoryRecord) -> MemoryResult<()> {
+        let line = serde_json::to_string(record)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.episodic_memories_path())?;
+        writeln!(f, "{line}")?;
+        f.sync_all()?;
+        Ok(())
+    }
+
+    /// Return up to `limit` episodic memories, newest first.
+    /// If `before_ts` is provided, only records with timestamp < before_ts are returned.
+    pub fn list_episodic_memories(
+        &self,
+        limit: usize,
+        before_ts: Option<u64>,
+    ) -> MemoryResult<Vec<EpisodicMemoryRecord>> {
+        let path = self.episodic_memories_path();
+        if !path.exists() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let text = fs::read_to_string(path)?;
+        let mut records: Vec<EpisodicMemoryRecord> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(rec) = serde_json::from_str::<EpisodicMemoryRecord>(trimmed) {
+                if let Some(ts) = before_ts {
+                    if rec.timestamp >= ts {
+                        continue;
+                    }
+                }
+                records.push(rec);
+            }
+        }
+        // Sort newest first
+        records.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        if records.len() > limit {
+            records.truncate(limit);
+        }
+        Ok(records)
+    }
+
+    // ── User preferences ─────────────────────────────────────────────────────
+
+    pub fn read_user_preferences(&self) -> MemoryResult<String> {
+        let path = self.preferences_path();
+        if !path.exists() {
+            return Ok(String::new());
+        }
+        Ok(fs::read_to_string(path)?)
+    }
+
+    pub fn write_user_preferences(&self, content: &str) -> MemoryResult<()> {
+        let path = self.preferences_path();
+        let tmp = path.with_extension("tmp");
+        self.atomic_write_bytes(path, &tmp, content.as_bytes())
+    }
+
+    // ── Agent skills ─────────────────────────────────────────────────────────
+
+    pub fn upsert_skill(
+        &self,
+        skill_id: &str,
+        title: &str,
+        content: &str,
+        tags: &[String],
+        updated_at: u64,
+    ) -> MemoryResult<PathBuf> {
+        let frontmatter = format!(
+            "---\nskill_id: \"{}\"\ntitle: \"{}\"\ntags: [{}]\nupdated_at: {}\n---\n\n",
+            skill_id.replace('"', "\\\""),
+            title.replace('"', "\\\""),
+            tags.iter()
+                .map(|t| format!("\"{}\"", t.replace('"', "\\\"")))
+                .collect::<Vec<_>>()
+                .join(", "),
+            updated_at,
+        );
+        let full = format!("{frontmatter}{content}");
+        let path = self.skill_path(skill_id);
+        let tmp = path.with_extension("tmp");
+        self.atomic_write_bytes(path.clone(), &tmp, full.as_bytes())?;
+        Ok(path)
+    }
+
+    pub fn read_skill(&self, skill_id: &str) -> MemoryResult<Option<SkillRecord>> {
+        let path = self.skill_path(skill_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(path)?;
+        Ok(Some(parse_skill_file(skill_id, &text)))
+    }
+
+    pub fn list_skills(&self) -> MemoryResult<Vec<SkillRecord>> {
+        let dir = self.skills_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut skills = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(&path) {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("skill");
+                // Derive skill_id: strip the trailing -<hash8> suffix added by skill_path().
+                let skill_id = if let Some(pos) = stem.rfind('-') {
+                    if stem.len() - pos - 1 == 8 {
+                        &stem[..pos]
+                    } else {
+                        stem
+                    }
+                } else {
+                    stem
+                };
+                skills.push(parse_skill_file(skill_id, &text));
+            }
+        }
+        skills.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(skills)
+    }
 }
 
 fn sync_parent_dir(path: &Path) -> MemoryResult<()> {
@@ -363,5 +521,63 @@ fn sanitize_node_id(node_id: &str) -> String {
         "node".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// Parse a skill markdown file (with optional YAML frontmatter) into a `SkillRecord`.
+fn parse_skill_file(skill_id: &str, text: &str) -> SkillRecord {
+    let fm_match = text.match_indices("---").collect::<Vec<_>>();
+    if fm_match.len() >= 2 && fm_match[0].0 == 0 {
+        let fm_end = fm_match[1].0 + 3;
+        let frontmatter = &text[3..fm_match[1].0];
+        let body = text[fm_end..].trim_start().to_string();
+
+        let mut title = skill_id.to_string();
+        let mut tags: Vec<String> = Vec::new();
+        let mut updated_at: u64 = 0;
+        let mut parsed_skill_id = skill_id.to_string();
+
+        for line in frontmatter.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("skill_id:") {
+                parsed_skill_id = val.trim().trim_matches('"').to_string();
+            } else if let Some(val) = line.strip_prefix("title:") {
+                title = val.trim().trim_matches('"').to_string();
+            } else if let Some(val) = line.strip_prefix("updated_at:") {
+                updated_at = val.trim().parse().unwrap_or(0);
+            } else if let Some(val) = line.strip_prefix("tags:") {
+                // Parse simple inline array: ["a", "b"]
+                let inner = val.trim().trim_start_matches('[').trim_end_matches(']');
+                tags = inner
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+        }
+
+        SkillRecord {
+            id: if parsed_skill_id.is_empty() { skill_id.to_string() } else { parsed_skill_id },
+            title,
+            content: body,
+            tags,
+            updated_at,
+        }
+    } else {
+        // No frontmatter – derive title from first heading
+        let title = text
+            .lines()
+            .find_map(|line| {
+                let l = line.trim();
+                if l.starts_with("# ") { Some(l[2..].trim().to_string()) } else { None }
+            })
+            .unwrap_or_else(|| skill_id.to_string());
+        SkillRecord {
+            id: skill_id.to_string(),
+            title,
+            content: text.to_string(),
+            tags: Vec::new(),
+            updated_at: 0,
+        }
     }
 }
