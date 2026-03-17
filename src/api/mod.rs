@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::core::{
-    AccessLog, AccessStats, AgentActionLog, ExploreBudgetItem, ExploreCandidate, Link, MemoryError,
-    MemoryResult, Node, NodeContent, NodeHistoryItem, NodePatch, NodeVersion, SearchHit,
+    AccessLog, AccessStats, AgentActionLog, EpisodicMemoryRecord, ExploreBudgetItem,
+    ExploreCandidate, Link, MemoryError, MemoryResult, Node, NodeContent, NodeHistoryItem,
+    NodePatch, NodeVersion, SearchHit, SkillSearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
@@ -30,6 +31,10 @@ pub struct MemoryEngine {
     auto_promotion: AutoPromotionConfig,
     agent_governance: AgentGovernanceConfig,
     retrieval_config: RetrievalConfig,
+    /// BM25 index over episodic memory summaries and tags.
+    episodic_bm25: Bm25Index,
+    /// BM25 index over agent-skill content.
+    skills_bm25: Bm25Index,
 }
 
 pub type SharedMemoryEngine = Arc<RwLock<MemoryEngine>>;
@@ -361,6 +366,79 @@ pub enum ToolAction {
         node_id: String,
         limit: Option<usize>,
     },
+    /// Record a user habit / environment preference (replaces legacy per-node approach).
+    RecordUserHabit {
+        topic: String,
+        summary: String,
+        details: String,
+        agent_id: String,
+        source: String,
+    },
+    /// Record a reusable agent behaviour pattern.
+    RecordBehaviorPattern {
+        pattern_key: String,
+        summary: String,
+        details: String,
+        #[serde(default)]
+        applicable_plan: Option<String>,
+        agent_id: String,
+        source: String,
+    },
+    // ── Layer 2: Episodic memory ────────────────────────────────────────────
+    /// Append a new episodic memory record.
+    RecordEpisodic {
+        scene_type: String,
+        summary: String,
+        #[serde(default)]
+        raw_conversation_id: Option<String>,
+        #[serde(default)]
+        importance: Option<f32>,
+        #[serde(default)]
+        core_knowledge_nodes: Option<Vec<String>>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        #[serde(default)]
+        agent_id: Option<String>,
+    },
+    /// BM25 keyword search over episodic memory records.
+    SearchEpisodic {
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// List recent episodic memory records in reverse-chronological order.
+    ListEpisodic {
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        before_ts: Option<u64>,
+    },
+    // ── Layer 3: User preferences ───────────────────────────────────────────
+    /// Read the project-scoped user-preferences markdown file.
+    ReadUserPreferences {},
+    /// Overwrite the project-scoped user-preferences markdown file.
+    UpdateUserPreferences {
+        content: String,
+    },
+    // ── Layer 4: Agent skills ───────────────────────────────────────────────
+    /// Create or replace an agent skill stored as a markdown file.
+    UpsertSkill {
+        skill_id: String,
+        title: String,
+        content: String,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+    },
+    /// BM25 keyword search over skill files.
+    SearchSkills {
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Read a single skill by id.
+    ReadSkill {
+        skill_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,6 +485,26 @@ pub enum ToolResponse {
         node_id: String,
         items: Vec<NodeHistoryItem>,
     },
+    /// Episodic memory search / list results.
+    EpisodicResults {
+        memories: Vec<EpisodicMemoryRecord>,
+    },
+    /// Content of the user-preferences markdown file.
+    UserPreferences {
+        content: String,
+    },
+    /// A single skill record.
+    SkillResult {
+        skill_id: String,
+        title: String,
+        content: String,
+        tags: Vec<String>,
+        updated_at: u64,
+    },
+    /// Skill search results (BM25 hits).
+    SkillResults {
+        results: Vec<SkillSearchHit>,
+    },
     Error {
         message: String,
     },
@@ -430,6 +528,8 @@ impl MemoryEngine {
             auto_promotion: AutoPromotionConfig::default(),
             agent_governance: AgentGovernanceConfig::default(),
             retrieval_config,
+            episodic_bm25: Bm25Index::default(),
+            skills_bm25: Bm25Index::default(),
         };
         engine.rebuild_index()?;
         engine.ensure_markdown_projection()?;
@@ -1881,6 +1981,179 @@ impl MemoryEngine {
             ToolAction::NodeHistory { node_id, limit } => self
                 .node_history(&node_id, limit.unwrap_or(30))
                 .map(|items| ToolResponse::History { node_id, items }),
+            // ── User habits / behavior patterns ─────────────────────────────
+            ToolAction::RecordUserHabit {
+                topic,
+                summary,
+                details,
+                agent_id,
+                source,
+            } => {
+                use crate::core::UserHabitEnv;
+                self.storage
+                    .append_user_habit(&UserHabitEnv {
+                        topic,
+                        summary,
+                        details,
+                        timestamp: now_ts(),
+                        agent_id,
+                        source,
+                    })
+                    .map(|_| ToolResponse::NodeList { nodes: Vec::new() })
+            }
+            ToolAction::RecordBehaviorPattern {
+                pattern_key,
+                summary,
+                details,
+                applicable_plan,
+                agent_id,
+                source,
+            } => {
+                use crate::core::BehaviorPatternRecord;
+                self.storage
+                    .append_behavior_pattern(&BehaviorPatternRecord {
+                        pattern_key,
+                        summary,
+                        details,
+                        applicable_plan,
+                        timestamp: now_ts(),
+                        agent_id,
+                        source,
+                    })
+                    .map(|_| ToolResponse::NodeList { nodes: Vec::new() })
+            }
+            // ── Episodic memory ──────────────────────────────────────────────
+            ToolAction::RecordEpisodic {
+                scene_type,
+                summary,
+                raw_conversation_id,
+                importance,
+                core_knowledge_nodes,
+                tags,
+                agent_id,
+            } => {
+                let id = {
+                    let ts = now_ts();
+                    // Include summary content (not just its length) to reduce collision risk
+                    // when multiple episodes are recorded at the same millisecond.
+                    let hash_input = format!("{ts}:{scene_type}:{}", &summary[..summary.len().min(64)]);
+                    let h = blake3::hash(hash_input.as_bytes()).to_hex();
+                    format!("ep_{ts}_{}", &h[..8])
+                };
+                let record = EpisodicMemoryRecord {
+                    id,
+                    timestamp: now_ts(),
+                    scene_type,
+                    summary,
+                    raw_conversation_id,
+                    importance: importance.unwrap_or(1.0),
+                    core_knowledge_nodes: core_knowledge_nodes.unwrap_or_default(),
+                    tags: tags.unwrap_or_default(),
+                    agent_id,
+                };
+                self.storage
+                    .append_episodic_memory(&record)
+                    .and_then(|_| {
+                        self.rebuild_episodic_bm25()?;
+                        Ok(ToolResponse::EpisodicResults {
+                            memories: vec![record],
+                        })
+                    })
+            }
+            ToolAction::SearchEpisodic { query, limit } => {
+                let limit = limit.unwrap_or(10);
+                let hits = search_bm25_simple(&query, limit, &self.episodic_bm25);
+                self.storage
+                    .list_episodic_memories(200, None)
+                    .map(|memories| {
+                        let hit_ids: std::collections::HashSet<&str> =
+                            hits.iter().map(|h| h.node_id.as_str()).collect();
+                        let mut results: Vec<EpisodicMemoryRecord> = memories
+                            .into_iter()
+                            .filter(|m| hit_ids.contains(m.id.as_str()))
+                            .collect();
+                        // Keep ordering by BM25 score
+                        results.sort_by(|a, b| {
+                            let sa = hits.iter().find(|h| h.node_id == a.id).map(|h| h.score).unwrap_or(0.0);
+                            let sb = hits.iter().find(|h| h.node_id == b.id).map(|h| h.score).unwrap_or(0.0);
+                            sb.total_cmp(&sa).then_with(|| b.timestamp.cmp(&a.timestamp))
+                        });
+                        if results.len() > limit {
+                            results.truncate(limit);
+                        }
+                        ToolResponse::EpisodicResults { memories: results }
+                    })
+            }
+            ToolAction::ListEpisodic { limit, before_ts } => self
+                .storage
+                .list_episodic_memories(limit.unwrap_or(20), before_ts)
+                .map(|memories| ToolResponse::EpisodicResults { memories }),
+            // ── User preferences ─────────────────────────────────────────────
+            ToolAction::ReadUserPreferences {} => self
+                .storage
+                .read_user_preferences()
+                .map(|content| ToolResponse::UserPreferences { content }),
+            ToolAction::UpdateUserPreferences { content } => self
+                .storage
+                .write_user_preferences(&content)
+                .map(|_| ToolResponse::UserPreferences { content }),
+            // ── Agent skills ─────────────────────────────────────────────────
+            ToolAction::UpsertSkill {
+                skill_id,
+                title,
+                content,
+                tags,
+            } => {
+                let ts = now_ts();
+                let tags = tags.unwrap_or_default();
+                self.storage
+                    .upsert_skill(&skill_id, &title, &content, &tags, ts)
+                    .and_then(|_| {
+                        self.rebuild_skills_bm25()?;
+                        Ok(ToolResponse::SkillResult {
+                            skill_id,
+                            title,
+                            content,
+                            tags,
+                            updated_at: ts,
+                        })
+                    })
+            }
+            ToolAction::SearchSkills { query, limit } => {
+                let limit = limit.unwrap_or(10);
+                let hits = search_bm25_simple(&query, limit, &self.skills_bm25);
+                self.storage.list_skills().map(|skills| {
+                    let mut results: Vec<SkillSearchHit> = hits
+                        .iter()
+                        .filter_map(|h| {
+                            skills.iter().find(|s| s.id == h.node_id).map(|s| SkillSearchHit {
+                                skill_id: s.id.clone(),
+                                title: s.title.clone(),
+                                score: h.score,
+                            })
+                        })
+                        .collect();
+                    results.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.skill_id.cmp(&b.skill_id)));
+                    if results.len() > limit {
+                        results.truncate(limit);
+                    }
+                    ToolResponse::SkillResults { results }
+                })
+            }
+            ToolAction::ReadSkill { skill_id } => {
+                self.storage.read_skill(&skill_id).map(|opt| match opt {
+                    Some(s) => ToolResponse::SkillResult {
+                        skill_id: s.id,
+                        title: s.title,
+                        content: s.content,
+                        tags: s.tags,
+                        updated_at: s.updated_at,
+                    },
+                    None => ToolResponse::Error {
+                        message: format!("skill {skill_id} not found"),
+                    },
+                })
+            }
         };
 
         result.unwrap_or_else(|err| ToolResponse::Error {
@@ -1922,6 +2195,99 @@ impl MemoryEngine {
             &self.heads,
             self.retrieval_config.vector_dim,
         )?;
+        self.rebuild_episodic_bm25()?;
+        self.rebuild_skills_bm25()?;
+        Ok(())
+    }
+
+    fn rebuild_episodic_bm25(&mut self) -> MemoryResult<()> {
+        let memories = self.storage.list_episodic_memories(usize::MAX, None)?;
+        let mut postings: HashMap<String, HashMap<String, f32>> = HashMap::new();
+        let mut doc_len: HashMap<String, f32> = HashMap::new();
+        let mut df: HashMap<String, usize> = HashMap::new();
+
+        for mem in &memories {
+            let text = format!(
+                "{} {} {} {}",
+                mem.scene_type,
+                mem.summary,
+                mem.tags.join(" "),
+                mem.core_knowledge_nodes.join(" ")
+            );
+            let tokens = tokenize(&text);
+            let len = tokens.len() as f32;
+            doc_len.insert(mem.id.clone(), len);
+            for token in &tokens {
+                *postings
+                    .entry(token.clone())
+                    .or_default()
+                    .entry(mem.id.clone())
+                    .or_insert(0.0) += 1.0;
+            }
+            let seen: std::collections::HashSet<&str> = tokens.iter().map(|t| t.as_str()).collect();
+            for token in seen {
+                *df.entry(token.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        let avg_len = if memories.is_empty() {
+            1.0
+        } else {
+            doc_len.values().sum::<f32>() / memories.len() as f32
+        };
+
+        self.episodic_bm25 = Bm25Index {
+            postings,
+            doc_len,
+            avg_len,
+            doc_count: memories.len(),
+            df,
+        };
+        Ok(())
+    }
+
+    fn rebuild_skills_bm25(&mut self) -> MemoryResult<()> {
+        let skills = self.storage.list_skills()?;
+        let mut postings: HashMap<String, HashMap<String, f32>> = HashMap::new();
+        let mut doc_len: HashMap<String, f32> = HashMap::new();
+        let mut df: HashMap<String, usize> = HashMap::new();
+
+        for skill in &skills {
+            let text = format!(
+                "{} {} {}",
+                skill.title,
+                skill.tags.join(" "),
+                skill.content
+            );
+            let tokens = tokenize(&text);
+            let len = tokens.len() as f32;
+            doc_len.insert(skill.id.clone(), len);
+            for token in &tokens {
+                *postings
+                    .entry(token.clone())
+                    .or_default()
+                    .entry(skill.id.clone())
+                    .or_insert(0.0) += 1.0;
+            }
+            let seen: std::collections::HashSet<&str> = tokens.iter().map(|t| t.as_str()).collect();
+            for token in seen {
+                *df.entry(token.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        let avg_len = if skills.is_empty() {
+            1.0
+        } else {
+            doc_len.values().sum::<f32>() / skills.len() as f32
+        };
+
+        self.skills_bm25 = Bm25Index {
+            postings,
+            doc_len,
+            avg_len,
+            doc_count: skills.len(),
+            df,
+        };
         Ok(())
     }
 
@@ -2585,6 +2951,21 @@ fn search_bm25(
     index: &Bm25Index,
     config: &RetrievalConfig,
 ) -> Vec<SearchHit> {
+    search_bm25_with_params(query, limit, index, config.bm25_k1, config.bm25_b)
+}
+
+/// BM25 search using default k1/b parameters, suitable for episodic and skill indexes.
+fn search_bm25_simple(query: &str, limit: usize, index: &Bm25Index) -> Vec<SearchHit> {
+    search_bm25_with_params(query, limit, index, 1.4, 0.75)
+}
+
+fn search_bm25_with_params(
+    query: &str,
+    limit: usize,
+    index: &Bm25Index,
+    k1: f32,
+    b: f32,
+) -> Vec<SearchHit> {
     if limit == 0 || index.doc_count == 0 {
         return Vec::new();
     }
@@ -2594,11 +2975,7 @@ fn search_bm25(
     }
 
     let mut scores: HashMap<String, f32> = HashMap::new();
-    let avg_len = if index.avg_len > 0.0 {
-        index.avg_len
-    } else {
-        1.0
-    };
+    let avg_len = if index.avg_len > 0.0 { index.avg_len } else { 1.0 };
     let n = index.doc_count as f32;
 
     for (token, qtf) in query_counts {
@@ -2610,8 +2987,8 @@ fn search_bm25(
         let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
         for (node_id, tf) in posting {
             let doc_len = index.doc_len.get(node_id).copied().unwrap_or(1.0);
-            let denom = tf + config.bm25_k1 * (1.0 - config.bm25_b + config.bm25_b * (doc_len / avg_len));
-            let score = idf * (tf * (config.bm25_k1 + 1.0) / denom.max(0.0001));
+            let denom = tf + k1 * (1.0 - b + b * (doc_len / avg_len));
+            let score = idf * (tf * (k1 + 1.0) / denom.max(0.0001));
             *scores.entry(node_id.clone()).or_insert(0.0) += score * qtf;
         }
     }

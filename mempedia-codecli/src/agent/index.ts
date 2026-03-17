@@ -213,6 +213,87 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_search_episodic',
+      description: 'BM25 keyword search over episodic memory records (scene-based, time-ordered).',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query' },
+          limit: { type: 'number', description: 'Max number of results' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_list_episodic',
+      description: 'List recent episodic memory records in reverse-chronological order.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max number of records (default 20)' },
+          before_ts: { type: 'number', description: 'Only records before this Unix timestamp (ms)' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_read_preferences',
+      description: 'Read the project-scoped user preferences markdown file.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_update_preferences',
+      description: 'Overwrite the project-scoped user preferences markdown file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'Full markdown content of the preferences file' },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_search_skills',
+      description: 'BM25 keyword search over agent skill files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query' },
+          limit: { type: 'number', description: 'Max number of results' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_read_skill',
+      description: 'Read the full content of a specific agent skill.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string', description: 'The skill ID to read' },
+        },
+        required: ['skill_id'],
+      },
+    },
+  },
 ];
 
 const AGENT_TOOL_NAMES = [
@@ -224,6 +305,12 @@ const AGENT_TOOL_NAMES = [
   'queue_memory_save',
   'mempedia_traverse',
   'mempedia_history',
+  'mempedia_search_episodic',
+  'mempedia_list_episodic',
+  'mempedia_read_preferences',
+  'mempedia_update_preferences',
+  'mempedia_search_skills',
+  'mempedia_read_skill',
   'run_shell',
   'read_file',
   'write_file',
@@ -653,6 +740,102 @@ export class Agent {
 
   private preferenceNodeId(text: string): string {
     return `kg_preference_${this.toSlug(text)}`;
+  }
+
+  /**
+   * Merge newly extracted user habits and behavior patterns into the existing
+   * preferences markdown file. Each habit/pattern is recorded under a stable
+   * heading so repeated updates stay idempotent.
+   */
+  private mergePreferencesMarkdown(
+    existing: string,
+    habits: Array<{ topic: string; summary: string; details: string }>,
+    patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }>,
+    updatedAt: string
+  ): string {
+    // Keep the existing content as the base. We'll append/replace sections.
+    let content = existing || `# User Preferences\n\n_Last updated: ${updatedAt}_\n`;
+
+    // Upsert habits under ## Habits
+    for (const habit of habits) {
+      const heading = `### ${habit.topic}`;
+      const block = `${heading}\n- **Summary**: ${habit.summary}\n- **Details**: ${habit.details}\n- _updated: ${updatedAt}_\n`;
+      const idx = content.indexOf(`### ${habit.topic}`);
+      if (idx >= 0) {
+        // Replace from heading to the next same-level heading or end.
+        // Use `nextIdx` directly (not `+1`) so the leading newline of the next
+        // heading is preserved.
+        const nextIdx = content.indexOf('\n### ', idx + 1);
+        if (nextIdx >= 0) {
+          content = content.slice(0, idx) + block + content.slice(nextIdx);
+        } else {
+          // Try to find end of section (next ## or end of file)
+          const nextSection = content.indexOf('\n## ', idx + 1);
+          if (nextSection >= 0) {
+            content = content.slice(0, idx) + block + content.slice(nextSection);
+          } else {
+            content = content.slice(0, idx) + block;
+          }
+        }
+      } else {
+        // Append to Habits section or add the section
+        const habitSection = '## Habits';
+        if (content.includes(habitSection)) {
+          const sIdx = content.indexOf(habitSection);
+          const nextSection = content.indexOf('\n## ', sIdx + 1);
+          if (nextSection >= 0) {
+            content = content.slice(0, nextSection) + '\n' + block + '\n' + content.slice(nextSection);
+          } else {
+            content = content.trimEnd() + '\n\n' + block;
+          }
+        } else {
+          content = content.trimEnd() + '\n\n## Habits\n\n' + block;
+        }
+      }
+    }
+
+    // Upsert behavior patterns under ## Behavior Patterns
+    for (const pattern of patterns) {
+      const heading = `### ${pattern.pattern_key}`;
+      const blockLines = [
+        heading,
+        `- **Summary**: ${pattern.summary}`,
+        `- **Details**: ${pattern.details}`,
+        pattern.applicable_plan ? `- **Applicable plan**: ${pattern.applicable_plan}` : null,
+        `- _updated: ${updatedAt}_`,
+        '',
+      ].filter((l): l is string => l !== null);
+      const block = blockLines.join('\n');
+      const idx = content.indexOf(heading);
+      if (idx >= 0) {
+        const nextIdx = content.indexOf('\n### ', idx + 1);
+        if (nextIdx >= 0) {
+          content = content.slice(0, idx) + block + content.slice(nextIdx);
+        } else {
+          const nextSection = content.indexOf('\n## ', idx + 1);
+          if (nextSection >= 0) {
+            content = content.slice(0, idx) + block + content.slice(nextSection);
+          } else {
+            content = content.slice(0, idx) + block;
+          }
+        }
+      } else {
+        const patternSection = '## Behavior Patterns';
+        if (content.includes(patternSection)) {
+          const sIdx = content.indexOf(patternSection);
+          const nextSection = content.indexOf('\n## ', sIdx + 1);
+          if (nextSection >= 0) {
+            content = content.slice(0, nextSection) + '\n' + block + '\n' + content.slice(nextSection);
+          } else {
+            content = content.trimEnd() + '\n\n' + block;
+          }
+        } else {
+          content = content.trimEnd() + '\n\n## Behavior Patterns\n\n' + block;
+        }
+      }
+    }
+
+    return content;
   }
 
   private isPreferenceLine(line: string): boolean {
@@ -1988,6 +2171,68 @@ export class Agent {
           }
           this.appendMemoryLog(runId, 'auto_link_batch_done', { node_count: nodeIds.length });
         }
+
+        // ── Record episodic memory (Layer 2) ─────────────────────────────────
+        // Always record an episodic entry for this interaction so the timeline is
+        // preserved. The entry stores the compressed answer as its summary and
+        // links back to any core-knowledge nodes created/updated in this run.
+        try {
+          const episodicSummary = this.clipText(answer, 400)
+            || this.clipText(input, 200)
+            || `unspecified interaction at ${nowIso}`;
+          const episodicTags = [
+            ...payload.atomic_knowledge.slice(0, 5).map((k) => k.keyword),
+            ...payload.user_habits_env.slice(0, 3).map((h) => h.topic),
+          ].filter(Boolean);
+          await sendWithTimeout({
+            action: 'record_episodic',
+            scene_type: 'conversation',
+            summary: episodicSummary,
+            raw_conversation_id: conversationId,
+            importance: 1.0,
+            core_knowledge_nodes: Array.from(linkedNodes),
+            tags: episodicTags,
+            agent_id: 'mempedia-codecli',
+          });
+          this.appendMemoryLog(runId, 'episodic_recorded', {
+            conversation_id: conversationId,
+            core_nodes: linkedNodes.size,
+          });
+        } catch (e: any) {
+          this.appendMemoryLog(runId, 'episodic_record_failed', {
+            error: String(e?.message || e || 'unknown')
+          });
+        }
+
+        // ── Sync user preferences to markdown file (Layer 3) ─────────────────
+        // If habits were captured, append/update the preferences markdown file so
+        // that the user's preferences live in one human-readable location.
+        if (payload.user_habits_env.length > 0) {
+          try {
+            const prefRes = await sendWithTimeout({ action: 'read_user_preferences' });
+            const existing = (prefRes as any).kind === 'user_preferences'
+              ? String((prefRes as any).content || '')
+              : '';
+            const updatedPrefs = this.mergePreferencesMarkdown(
+              existing,
+              payload.user_habits_env,
+              payload.behavior_patterns,
+              nowIso
+            );
+            await sendWithTimeout({
+              action: 'update_user_preferences',
+              content: updatedPrefs,
+            });
+            this.appendMemoryLog(runId, 'preferences_synced', {
+              habits: payload.user_habits_env.length,
+              patterns: payload.behavior_patterns.length,
+            });
+          } catch (e: any) {
+            this.appendMemoryLog(runId, 'preferences_sync_failed', {
+              error: String(e?.message || e || 'unknown')
+            });
+          }
+        }
       })(), this.memoryTaskTimeoutMs, 'memory background task');
       this.appendMemoryLog(runId, 'memory_save_done', {
         elapsed_ms: Date.now() - startedAt
@@ -2101,7 +2346,12 @@ export class Agent {
     const systemPrompt = `You are a branching ReAct agent powered by Mempedia.
 Treat ReAct as a functional loop. A branch is an independent child loop with its own thought -> action -> observation state.
 
-You have access to a knowledge graph stored in Mempedia and local tools.
+You have access to a 4-layer knowledge system stored in Mempedia and local tools:
+  Layer 1 – Core Knowledge: hierarchical graph nodes (mempedia_search_hybrid, mempedia_read, mempedia_save, mempedia_traverse)
+  Layer 2 – Episodic Memory: time-ordered scene records with BM25 search (mempedia_search_episodic, mempedia_list_episodic)
+  Layer 3 – User Preferences: single markdown config file per project (mempedia_read_preferences, mempedia_update_preferences)
+  Layer 4 – Agent Skills: fast-retrieval skill files (mempedia_search_skills, mempedia_read_skill)
+
 You must return exactly one JSON object on every loop iteration. Do not use markdown fences.
 
 Allowed JSON schema:
@@ -2120,12 +2370,15 @@ Rules:
 2. Use kind="branch" only when there are multiple materially distinct strategies worth trying.
 3. A branch must represent a genuinely different hypothesis, search path, or execution strategy.
 4. Never create more than ${this.branchMaxWidth} child branches in one step.
-5. Prefer mempedia_search_hybrid for high-recall retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
-6. When you finish, return kind="final" with a direct user-facing answer.
-7. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
-8. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
-9. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
-10. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
+5. Prefer mempedia_search_hybrid for high-recall core-knowledge retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
+6. Use mempedia_search_episodic or mempedia_list_episodic to recall past interactions or time-bound context.
+7. Use mempedia_read_preferences to check user preferences before making assumptions about user habits.
+8. Use mempedia_search_skills or mempedia_read_skill to find relevant agent skills.
+9. When you finish, return kind="final" with a direct user-facing answer.
+10. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
+11. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
+12. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
+13. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
 
 Available tools:
 ${toolCatalog}
@@ -2357,6 +2610,42 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
           } catch (error: any) {
             result = `Error writing file: ${error.message}`;
           }
+        } else if (fnName === 'mempedia_search_episodic') {
+          const res = await this.mempedia.send({
+            action: 'search_episodic',
+            query: args.query,
+            limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_list_episodic') {
+          const res = await this.mempedia.send({
+            action: 'list_episodic',
+            limit: args.limit,
+            before_ts: args.before_ts,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_read_preferences') {
+          const res = await this.mempedia.send({ action: 'read_user_preferences' });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_update_preferences') {
+          const res = await this.mempedia.send({
+            action: 'update_user_preferences',
+            content: String(args.content || ''),
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_search_skills') {
+          const res = await this.mempedia.send({
+            action: 'search_skills',
+            query: args.query,
+            limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_read_skill') {
+          const res = await this.mempedia.send({
+            action: 'read_skill',
+            skill_id: String(args.skill_id || ''),
+          });
+          result = JSON.stringify(res);
         } else {
           result = `Unknown tool: ${fnName}`;
         }

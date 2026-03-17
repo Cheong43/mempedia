@@ -131,6 +131,51 @@ pub struct AgentActionLog {
     pub source: String,
 }
 
+/// A single episodic memory record stored in chronological order.
+/// Importance decays over time and is not graph-indexed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodicMemoryRecord {
+    pub id: String,
+    pub timestamp: u64,
+    /// Scene category: "conversation", "task", "learning", etc.
+    pub scene_type: String,
+    /// Compressed/summarised content of the episode.
+    pub summary: String,
+    /// Optional reference to a raw conversation file id.
+    #[serde(default)]
+    pub raw_conversation_id: Option<String>,
+    /// Importance score (decays over time).
+    pub importance: f32,
+    /// Core-knowledge node ids that were created or updated during this episode.
+    #[serde(default)]
+    pub core_knowledge_nodes: Vec<String>,
+    /// Keyword tags used for BM25 retrieval.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Agent or user that created this record.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+/// Lightweight metadata for a single agent-skill stored as a markdown file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillRecord {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub updated_at: u64,
+}
+
+/// A search hit from skills BM25 retrieval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSearchHit {
+    pub skill_id: String,
+    pub title: String,
+    pub score: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MergeConflict {
     FieldConflict(String),
