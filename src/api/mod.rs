@@ -2034,7 +2034,9 @@ impl MemoryEngine {
             } => {
                 let id = {
                     let ts = now_ts();
-                    let hash_input = format!("{ts}{}{scene_type}", summary.len());
+                    // Include summary content (not just its length) to reduce collision risk
+                    // when multiple episodes are recorded at the same millisecond.
+                    let hash_input = format!("{ts}:{scene_type}:{}", &summary[..summary.len().min(64)]);
                     let h = blake3::hash(hash_input.as_bytes()).to_hex();
                     format!("ep_{ts}_{}", &h[..8])
                 };

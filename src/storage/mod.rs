@@ -453,9 +453,11 @@ impl FileStorage {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("skill");
-                // Derive skill_id: strip the trailing -<hash8> suffix added by skill_path().
+                // Derive skill_id: strip the trailing -<hash8> hex suffix added by skill_path().
                 let skill_id = if let Some(pos) = stem.rfind('-') {
-                    if stem.len() - pos - 1 == 8 {
+                    let suffix = &stem[pos + 1..];
+                    // Validate that suffix is exactly 8 lowercase hex characters before stripping.
+                    if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()) {
                         &stem[..pos]
                     } else {
                         stem
@@ -526,10 +528,13 @@ fn sanitize_node_id(node_id: &str) -> String {
 
 /// Parse a skill markdown file (with optional YAML frontmatter) into a `SkillRecord`.
 fn parse_skill_file(skill_id: &str, text: &str) -> SkillRecord {
-    let fm_match = text.match_indices("---").collect::<Vec<_>>();
-    if fm_match.len() >= 2 && fm_match[0].0 == 0 {
-        let fm_end = fm_match[1].0 + 3;
-        let frontmatter = &text[3..fm_match[1].0];
+    // Only look for the first two `---` markers needed to detect frontmatter.
+    let mut fm_iter = text.match_indices("---");
+    let first = fm_iter.next();
+    let second = fm_iter.next();
+    if let (Some((0, _)), Some((end_pos, _))) = (first, second) {
+        let fm_end = end_pos + 3;
+        let frontmatter = &text[3..end_pos];
         let body = text[fm_end..].trim_start().to_string();
 
         let mut title = skill_id.to_string();

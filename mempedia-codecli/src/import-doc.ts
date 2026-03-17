@@ -15,7 +15,10 @@ import * as path from 'path';
 import { MempediaClient } from './mempedia/client.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['.md', '.txt', '.mdx']);
-const MAX_CHUNK_CHARS = 8000;
+// 8000 characters per chunk keeps each ingested node well within the LLM
+// context window while still allowing rich content.  Adjust via the
+// MEMPEDIA_CHUNK_CHARS environment variable if needed.
+const MAX_CHUNK_CHARS = parseInt(process.env.MEMPEDIA_CHUNK_CHARS || '8000', 10);
 const SPLIT_HEADING_RE = /^#{1,2}\s+/m;
 
 interface ImportOptions {
@@ -89,6 +92,7 @@ function deriveNodeId(filePath: string, chunkTitle?: string): string {
   if (chunkTitle) {
     const slug = chunkTitle
       .toLowerCase()
+      // Allow ASCII alphanumeric and CJK unified ideographs (U+4E00–U+9FFF)
       .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '_')
       .replace(/^_+|_+$/g, '')
       .slice(0, 32);

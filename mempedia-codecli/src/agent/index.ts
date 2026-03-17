@@ -762,15 +762,17 @@ export class Agent {
       const block = `${heading}\n- **Summary**: ${habit.summary}\n- **Details**: ${habit.details}\n- _updated: ${updatedAt}_\n`;
       const idx = content.indexOf(`### ${habit.topic}`);
       if (idx >= 0) {
-        // Replace from heading to the next same-level heading or end
+        // Replace from heading to the next same-level heading or end.
+        // Use `nextIdx` directly (not `+1`) so the leading newline of the next
+        // heading is preserved.
         const nextIdx = content.indexOf('\n### ', idx + 1);
         if (nextIdx >= 0) {
-          content = content.slice(0, idx) + block + '\n' + content.slice(nextIdx + 1);
+          content = content.slice(0, idx) + block + content.slice(nextIdx);
         } else {
           // Try to find end of section (next ## or end of file)
           const nextSection = content.indexOf('\n## ', idx + 1);
           if (nextSection >= 0) {
-            content = content.slice(0, idx) + block + '\n' + content.slice(nextSection + 1);
+            content = content.slice(0, idx) + block + content.slice(nextSection);
           } else {
             content = content.slice(0, idx) + block;
           }
@@ -808,11 +810,11 @@ export class Agent {
       if (idx >= 0) {
         const nextIdx = content.indexOf('\n### ', idx + 1);
         if (nextIdx >= 0) {
-          content = content.slice(0, idx) + block + '\n' + content.slice(nextIdx + 1);
+          content = content.slice(0, idx) + block + content.slice(nextIdx);
         } else {
           const nextSection = content.indexOf('\n## ', idx + 1);
           if (nextSection >= 0) {
-            content = content.slice(0, idx) + block + '\n' + content.slice(nextSection + 1);
+            content = content.slice(0, idx) + block + content.slice(nextSection);
           } else {
             content = content.slice(0, idx) + block;
           }
@@ -2175,7 +2177,9 @@ export class Agent {
         // preserved. The entry stores the compressed answer as its summary and
         // links back to any core-knowledge nodes created/updated in this run.
         try {
-          const episodicSummary = this.clipText(answer, 400) || this.clipText(input, 200) || 'interaction';
+          const episodicSummary = this.clipText(answer, 400)
+            || this.clipText(input, 200)
+            || `unspecified interaction at ${nowIso}`;
           const episodicTags = [
             ...payload.atomic_knowledge.slice(0, 5).map((k) => k.keyword),
             ...payload.user_habits_env.slice(0, 3).map((h) => h.topic),
