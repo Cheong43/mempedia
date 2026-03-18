@@ -39,6 +39,20 @@ pub fn parse_markdown_with_meta(markdown: &str) -> ParsedMarkdown {
         insert_evidence(&mut structured_data, &evidence);
     }
 
+    // Extract project-hierarchy fields from frontmatter.
+    let project = frontmatter
+        .get("project")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let parent_node = frontmatter
+        .get("parent_node")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let node_type = frontmatter
+        .get("node_type")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
     ParsedMarkdown {
         content: NodeContent {
             title,
@@ -47,6 +61,9 @@ pub fn parse_markdown_with_meta(markdown: &str) -> ParsedMarkdown {
             structured_data,
             links: vec![],
             highlights,
+            project,
+            parent_node,
+            node_type,
         },
         frontmatter,
     }
@@ -82,6 +99,30 @@ pub fn render_node_markdown(node_id: &str, version: &NodeVersion) -> String {
         .filter(|v| !v.is_empty())
     {
         out.push_str(&format!("origin: {}\n", yaml_escape(origin)));
+    }
+    if let Some(project) = version
+        .content
+        .project
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        out.push_str(&format!("project: {}\n", yaml_escape(project)));
+    }
+    if let Some(parent_node) = version
+        .content
+        .parent_node
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        out.push_str(&format!("parent_node: {}\n", yaml_escape(parent_node)));
+    }
+    if let Some(node_type) = version
+        .content
+        .node_type
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        out.push_str(&format!("node_type: {}\n", yaml_escape(node_type)));
     }
 
     if version.parents.is_empty() {

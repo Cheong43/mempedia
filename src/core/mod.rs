@@ -29,6 +29,18 @@ pub struct NodeContent {
     pub structured_data: BTreeMap<String, String>,
     pub links: Vec<Link>,
     pub highlights: Vec<String>,
+    /// Project (domain/category) this node belongs to. Nodes within the same
+    /// project are co-located under `knowledge/projects/<project_id>/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Optional parent node id for hierarchical (Notion-like) page structure
+    /// within a project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node: Option<String>,
+    /// Semantic type of this node, e.g. "index", "concept", "process",
+    /// "reference", "decision", "glossary".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +62,15 @@ pub struct NodePatch {
     pub structured_upserts: BTreeMap<String, String>,
     pub add_links: Vec<Link>,
     pub add_highlights: Vec<String>,
+    /// Update project association.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Update parent node (hierarchical relationship).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node: Option<String>,
+    /// Update semantic node type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +195,23 @@ pub struct SkillSearchHit {
     pub skill_id: String,
     pub title: String,
     pub score: f32,
+}
+
+/// Metadata record for a project (domain/knowledge-base category).
+///
+/// Projects group related knowledge nodes together and are stored in a
+/// dedicated subdirectory under `knowledge/projects/<project_id>/`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRecord {
+    pub project_id: String,
+    pub name: String,
+    pub description: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
