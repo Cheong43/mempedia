@@ -75,7 +75,6 @@ pub fn render_node_markdown(node_id: &str, version: &NodeVersion) -> String {
     out.push_str(&format!("node_id: {}\n", yaml_escape(node_id)));
     out.push_str(&format!("version: {}\n", yaml_escape(&version.version)));
     out.push_str(&format!("timestamp: {}\n", version.timestamp));
-    out.push_str(&format!("confidence: {:.4}\n", version.confidence));
     out.push_str(&format!("importance: {:.4}\n", version.importance));
     out.push_str(&format!("title: {}\n", yaml_escape(&version.content.title)));
     out.push_str(&format!(
@@ -443,7 +442,6 @@ Link to [[Node_A]].
             parents: vec![],
             timestamp: 123,
             content: parse_markdown("# Title\n\nbody"),
-            confidence: 0.8,
             importance: 1.5,
         };
 

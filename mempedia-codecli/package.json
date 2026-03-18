@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --loader ts-node/esm src/index.tsx",
     "build": "tsc",
-    "dev": "node --loader ts-node/esm src/index.tsx"
+    "dev": "node --loader ts-node/esm src/index.tsx",
+    "test": "npm run build && node --test dist/runtime/agent/*.test.js dist/agent/*.test.js"
   },
   "keywords": [],
   "author": "",

@@ -30,6 +30,10 @@ import { ToolRuntime } from './tools/ToolRuntime.js';
 import { GovernanceRuntime } from './governance/GovernanceRuntime.js';
 import { InMemoryApprovalEngine } from './governance/InMemoryApprovalEngine.js';
 import { MempediaActionTool } from './tools/builtin/mempedia/MempediaActionTool.js';
+import { ToolExecutionResult } from './tools/types.js';
+import { ReadFileTool } from './tools/builtin/local/ReadFileTool.js';
+import { WriteFileTool } from './tools/builtin/local/WriteFileTool.js';
+import { RunShellTool } from './tools/builtin/local/RunShellTool.js';
 import { Policy } from './governance/types.js';
 
 export { ToolRuntime } from './tools/ToolRuntime.js';
@@ -39,7 +43,11 @@ export { AuditLogger } from './governance/AuditLogger.js';
 export { InMemoryApprovalEngine } from './governance/InMemoryApprovalEngine.js';
 export { ExternalDirGuard } from './governance/guards/ExternalDirGuard.js';
 export { DoomLoopGuard } from './governance/guards/DoomLoopGuard.js';
+export { ShellSafetyGuard } from './governance/guards/ShellSafetyGuard.js';
 export { MempediaActionTool } from './tools/builtin/mempedia/MempediaActionTool.js';
+export { ReadFileTool } from './tools/builtin/local/ReadFileTool.js';
+export { WriteFileTool } from './tools/builtin/local/WriteFileTool.js';
+export { RunShellTool } from './tools/builtin/local/RunShellTool.js';
 export { AgentRuntime } from './agent/AgentRuntime.js';
 export { SimplePlanner } from './agent/SimplePlanner.js';
 
@@ -65,6 +73,7 @@ export interface RuntimeHandle {
   toolRuntime: ToolRuntime;
   governance: GovernanceRuntime;
   registry: ToolRegistry;
+  executeTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
   /**
    * Convenience method: execute a `ToolAction` through the governed
    * `mempedia_action` tool.  This is the drop-in replacement for
@@ -96,6 +105,11 @@ export function createRuntime(config: RuntimeConfig, client: MempediaClient): Ru
   // 2. Tool registry
   const registry = new ToolRegistry();
   registry.register(new MempediaActionTool(client));
+  registry.registerAll([
+    new ReadFileTool(),
+    new WriteFileTool(),
+    new RunShellTool(),
+  ]);
 
   // 3. Tool runtime
   const toolRuntime = new ToolRuntime({
@@ -105,6 +119,9 @@ export function createRuntime(config: RuntimeConfig, client: MempediaClient): Ru
   });
 
   // 4. Convenience wrapper
+  const executeTool = async (toolName: string, args: Record<string, unknown>) =>
+    toolRuntime.execute(toolName, args);
+
   const sendMempediaAction = async (action: ToolAction): Promise<ToolResponse> => {
     const result = await toolRuntime.execute('mempedia_action', action as unknown as Record<string, unknown>);
     if (!result.success) {
@@ -113,5 +130,5 @@ export function createRuntime(config: RuntimeConfig, client: MempediaClient): Ru
     return result.result as ToolResponse;
   };
 
-  return { toolRuntime, governance, registry, sendMempediaAction };
+  return { toolRuntime, governance, registry, executeTool, sendMempediaAction };
 }

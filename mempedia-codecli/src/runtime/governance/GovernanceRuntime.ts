@@ -5,6 +5,7 @@ import { AuditLogger } from './AuditLogger.js';
 import { InMemoryApprovalEngine } from './InMemoryApprovalEngine.js';
 import { ExternalDirGuard } from './guards/ExternalDirGuard.js';
 import { DoomLoopGuard } from './guards/DoomLoopGuard.js';
+import { ShellSafetyGuard } from './guards/ShellSafetyGuard.js';
 
 export interface GovernanceRuntimeOptions {
   projectRoot: string;
@@ -31,6 +32,7 @@ export class GovernanceRuntime {
   private readonly auditLogger: AuditLogger;
   private readonly approvalEngine: ApprovalEngine;
   private readonly externalDirGuard: ExternalDirGuard | null;
+  private readonly shellSafetyGuard: ShellSafetyGuard | null;
   private readonly doomLoopGuard: DoomLoopGuard | null;
 
   constructor(options: GovernanceRuntimeOptions) {
@@ -44,6 +46,11 @@ export class GovernanceRuntime {
 
     this.externalDirGuard =
       guards.externalDir !== false ? new ExternalDirGuard(projectRoot) : null;
+
+    this.shellSafetyGuard =
+      guards.shellSafety?.enabled !== false
+        ? new ShellSafetyGuard(guards.shellSafety?.decision ?? 'deny')
+        : null;
 
     const dl = guards.doomLoop;
     this.doomLoopGuard =
@@ -97,6 +104,10 @@ export class GovernanceRuntime {
   private runGuards(req: GovernanceRequest): GovernanceDecision | undefined {
     if (this.externalDirGuard) {
       const result = this.externalDirGuard.evaluate(req);
+      if (result) return result;
+    }
+    if (this.shellSafetyGuard) {
+      const result = this.shellSafetyGuard.evaluate(req);
       if (result) return result;
     }
     if (this.doomLoopGuard) {

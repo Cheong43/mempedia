@@ -1,4 +1,4 @@
-import { TranscriptMessage, AgentStep, PlannedToolCall } from './types.js';
+import { TranscriptMessage, AgentStep, PlannedBranch, PlannedToolCall } from './types.js';
 
 /**
  * SimplePlanner implements a minimal ReAct-style planning step.
@@ -33,17 +33,20 @@ export interface SimplePlannerOptions {
   complete: (messages: TranscriptMessage[]) => Promise<string>;
   systemPrompt: string;
   maxToolCalls?: number;
+  maxBranches?: number;
 }
 
 export class SimplePlanner implements Planner {
   private readonly complete: (messages: TranscriptMessage[]) => Promise<string>;
   private readonly systemPrompt: string;
   private readonly maxToolCalls: number;
+  private readonly maxBranches: number;
 
   constructor(options: SimplePlannerOptions) {
     this.complete = options.complete;
     this.systemPrompt = options.systemPrompt;
     this.maxToolCalls = options.maxToolCalls ?? 5;
+    this.maxBranches = options.maxBranches ?? 3;
   }
 
   async plan(transcript: TranscriptMessage[]): Promise<AgentStep> {
@@ -71,10 +74,14 @@ export class SimplePlanner implements Planner {
       return { kind: 'final', content: raw.trim() };
     }
 
+    const thought = typeof parsed.thought === 'string' ? parsed.thought : undefined;
+
     if (parsed.kind === 'final') {
       return {
         kind: 'final',
         content: String(parsed.final_answer ?? parsed.thought ?? ''),
+        completionSummary: typeof parsed.completion_summary === 'string' ? parsed.completion_summary : undefined,
+        thought,
       };
     }
 
@@ -97,13 +104,46 @@ export class SimplePlanner implements Planner {
         return {
           kind: 'final',
           content: String(parsed.thought ?? 'No tool calls provided.'),
+          thought,
         };
       }
 
-      return { kind: 'tool', toolCalls };
+      return { kind: 'tool', toolCalls, thought };
+    }
+
+    if (parsed.kind === 'branch') {
+      const rawBranches = Array.isArray(parsed.branches) ? parsed.branches : [];
+      const branches: PlannedBranch[] = rawBranches
+        .slice(0, this.maxBranches)
+        .filter(
+          (branch): branch is { label: string; goal: string; why?: string; priority?: number } =>
+            Boolean(
+              branch
+              && typeof branch === 'object'
+              && typeof branch.label === 'string'
+              && typeof branch.goal === 'string',
+            ),
+        )
+        .map((branch) => ({
+          label: branch.label.trim(),
+          goal: branch.goal.trim(),
+          why: typeof branch.why === 'string' ? branch.why.trim() : undefined,
+          priority: typeof branch.priority === 'number' ? branch.priority : undefined,
+        }))
+        .filter((branch) => branch.label.length > 0 && branch.goal.length > 0);
+
+      if (branches.length === 0) {
+        return {
+          kind: 'final',
+          content: String(parsed.thought ?? 'No valid branches provided.'),
+          thought,
+        };
+      }
+
+      return { kind: 'branch', branches, thought };
     }
 
     // Unrecognised kind — treat as final answer.
-    return { kind: 'final', content: String(parsed.thought ?? raw.trim()) };
+    return { kind: 'final', content: String(parsed.thought ?? raw.trim()), thought };
   }
 }

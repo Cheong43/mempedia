@@ -105,9 +105,8 @@ export const TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           start_node: { type: 'string', description: 'Start node id' },
-          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first | confidence_filtered' },
+          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first' },
           depth_limit: { type: 'number', description: 'Depth limit (optional)' },
-          min_confidence: { type: 'number', description: 'Min confidence for confidence_filtered mode (optional)' },
         },
         required: ['start_node', 'mode'],
       },
@@ -175,7 +174,7 @@ export const TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'run_shell',
-      description: 'Run a shell command.',
+      description: 'Run a shell command inside the local sandbox. Repository clone/pull/fetch, privilege escalation, remote shell/file transfer, and download-then-exec patterns are blocked.',
       parameters: {
         type: 'object',
         properties: {
@@ -189,7 +188,7 @@ export const TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a file from the filesystem.',
+      description: 'Read a UTF-8 file from inside the current project root.',
       parameters: {
         type: 'object',
         properties: {
@@ -203,7 +202,7 @@ export const TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write content to a file.',
+      description: 'Write UTF-8 content to a file inside the current project root.',
       parameters: {
         type: 'object',
         properties: {

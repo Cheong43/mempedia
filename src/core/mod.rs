@@ -50,7 +50,6 @@ pub struct NodeVersion {
     pub parents: Vec<VersionId>,
     pub timestamp: u64,
     pub content: NodeContent,
-    pub confidence: f32,
     pub importance: f32,
 }
 
@@ -113,7 +112,6 @@ pub struct NodeHistoryItem {
     pub version: VersionId,
     pub timestamp: u64,
     pub parents: Vec<VersionId>,
-    pub confidence: f32,
     pub importance: f32,
 }
 

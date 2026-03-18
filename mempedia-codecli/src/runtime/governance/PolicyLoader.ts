@@ -41,6 +41,10 @@ export const DEFAULT_POLICY: Policy = {
   ],
   guards: {
     externalDir: true,
+    shellSafety: {
+      enabled: true,
+      decision: 'deny',
+    },
     doomLoop: {
       enabled: true,
       maxRepeats: 3,
@@ -90,6 +94,16 @@ function mergeWithDefaults(parsed: Partial<Policy>): Policy {
           typeof parsed.guards.externalDir === 'boolean'
             ? parsed.guards.externalDir
             : DEFAULT_POLICY.guards!.externalDir,
+        shellSafety: parsed.guards.shellSafety
+          ? {
+              enabled: parsed.guards.shellSafety.enabled !== false,
+              decision: validDecisions.includes(
+                parsed.guards.shellSafety.decision as PolicyDecision,
+              )
+                ? (parsed.guards.shellSafety.decision as PolicyDecision)
+                : DEFAULT_POLICY.guards!.shellSafety!.decision,
+            }
+          : DEFAULT_POLICY.guards!.shellSafety,
         doomLoop: parsed.guards.doomLoop
           ? {
               enabled: parsed.guards.doomLoop.enabled !== false,

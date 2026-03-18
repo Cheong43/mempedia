@@ -64,7 +64,6 @@ impl Default for AutoPromotionConfig {
 
 #[derive(Debug, Clone)]
 pub struct AgentGovernanceConfig {
-    pub min_confidence: f32,
     pub min_reason_chars: usize,
     pub max_markdown_bytes: usize,
 }
@@ -72,7 +71,6 @@ pub struct AgentGovernanceConfig {
 impl Default for AgentGovernanceConfig {
     fn default() -> Self {
         Self {
-            min_confidence: 0.55,
             min_reason_chars: 8,
             max_markdown_bytes: 200_000,
         }
@@ -215,7 +213,6 @@ pub enum ToolAction {
         content: Option<NodeContent>,
         #[serde(default)]
         patch: Option<NodePatch>,
-        confidence: f32,
         importance: f32,
     },
     ForkNode {
@@ -239,7 +236,6 @@ pub enum ToolAction {
         start_node: String,
         mode: TraverseMode,
         depth_limit: Option<usize>,
-        min_confidence: Option<f32>,
     },
     SearchNodes {
         query: String,
@@ -284,7 +280,6 @@ pub enum ToolAction {
     AgentUpsertMarkdown {
         node_id: String,
         markdown: String,
-        confidence: f32,
         importance: f32,
         agent_id: String,
         reason: String,
@@ -318,8 +313,6 @@ pub enum ToolAction {
         #[serde(default)]
         reason: Option<String>,
         #[serde(default)]
-        confidence: Option<f32>,
-        #[serde(default)]
         importance: Option<f32>,
         #[serde(default)]
         project: Option<String>,
@@ -342,8 +335,6 @@ pub enum ToolAction {
         #[serde(default)]
         source: Option<String>,
         #[serde(default)]
-        confidence: Option<f32>,
-        #[serde(default)]
         importance: Option<f32>,
         #[serde(default)]
         project: Option<String>,
@@ -362,14 +353,11 @@ pub enum ToolAction {
         #[serde(default)]
         source: Option<String>,
         #[serde(default)]
-        confidence: Option<f32>,
-        #[serde(default)]
         importance: Option<f32>,
     },
     RollbackNode {
         node_id: String,
         target_version: String,
-        confidence: f32,
         importance: f32,
         #[serde(default)]
         agent_id: Option<String>,
@@ -506,7 +494,6 @@ pub enum TraverseMode {
     Bfs,
     Dfs,
     ImportanceFirst,
-    ConfidenceFiltered,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -641,7 +628,6 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         content: NodeContent,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
         let content = normalize_content(content);
@@ -651,7 +637,6 @@ impl MemoryEngine {
             &mut self.nodes,
             node_id,
             content,
-            confidence,
             importance,
         )?;
         self.sync_markdown_for_version(node_id, &version)?;
@@ -663,7 +648,6 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         patch: NodePatch,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
         let patch = self.normalize_patch_with_head(node_id, patch)?;
@@ -673,7 +657,6 @@ impl MemoryEngine {
             &mut self.nodes,
             node_id,
             patch,
-            confidence,
             importance,
         )?;
         self.sync_markdown_for_version(node_id, &version)?;
@@ -685,7 +668,6 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         content: NodeContent,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
         let content = normalize_content(content);
@@ -695,7 +677,6 @@ impl MemoryEngine {
             &mut self.nodes,
             node_id,
             content,
-            confidence,
             importance,
         )?;
         self.sync_markdown_for_version(node_id, &version)?;
@@ -734,7 +715,6 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         target_version: &str,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
         let version = VersionEngine::rollback_node(
@@ -743,7 +723,6 @@ impl MemoryEngine {
             &mut self.nodes,
             node_id,
             target_version,
-            confidence,
             importance,
         )?;
         self.sync_markdown_for_version(node_id, &version)?;
@@ -839,7 +818,6 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         markdown: &str,
-        confidence: f32,
         importance: f32,
         agent_id: &str,
         reason: &str,
@@ -848,7 +826,7 @@ impl MemoryEngine {
         parent_node: Option<String>,
         node_type: Option<String>,
     ) -> MemoryResult<NodeVersion> {
-        self.validate_agent_markdown_request(markdown, confidence, agent_id, reason, source)?;
+        self.validate_agent_markdown_request(markdown, agent_id, reason, source)?;
 
         let mut content = parse_markdown(markdown);
         // Honour explicit project/parent_node/node_type arguments, falling back
@@ -901,9 +879,9 @@ impl MemoryEngine {
                 parent_node: content.parent_node.clone(),
                 node_type: content.node_type.clone(),
             };
-            self.update_node(node_id, patch, confidence, importance)?
+            self.update_node(node_id, patch, importance)?
         } else {
-            self.create_node(node_id, content, confidence, importance)?
+            self.create_node(node_id, content, importance)?
         };
 
         self.storage.append_agent_action_log(&AgentActionLog {
@@ -927,7 +905,6 @@ impl MemoryEngine {
         agent_id: Option<String>,
         reason: Option<String>,
         source: Option<String>,
-        confidence: Option<f32>,
         importance: Option<f32>,
         project: Option<String>,
         parent_node: Option<String>,
@@ -973,14 +950,6 @@ impl MemoryEngine {
             }
         };
 
-        let confidence = confidence
-            .or_else(|| {
-                parsed
-                    .frontmatter
-                    .get("confidence")
-                    .and_then(|value| value.parse::<f32>().ok())
-            })
-            .unwrap_or(0.9);
         let importance = importance
             .or_else(|| {
                 parsed
@@ -993,7 +962,7 @@ impl MemoryEngine {
         let agent_id = agent_id.unwrap_or_else(|| "human".to_string());
         let reason = reason.unwrap_or_else(|| "manual markdown sync".to_string());
         let source = source.unwrap_or_else(|| "manual_edit".to_string());
-        self.validate_agent_markdown_request(&markdown, confidence, &agent_id, &reason, &source)?;
+        self.validate_agent_markdown_request(&markdown, &agent_id, &reason, &source)?;
 
         let existing_head = self
             .head(&resolved_node_id)
@@ -1039,9 +1008,9 @@ impl MemoryEngine {
             .insert("kb.updated_at".to_string(), now.to_string());
 
         let version = if self.head(&resolved_node_id).is_some() {
-            self.replace_node(&resolved_node_id, content, confidence, importance)?
+            self.replace_node(&resolved_node_id, content, importance)?
         } else {
-            self.create_node(&resolved_node_id, content, confidence, importance)?
+            self.create_node(&resolved_node_id, content, importance)?
         };
 
         self.storage.append_agent_action_log(&AgentActionLog {
@@ -1064,7 +1033,6 @@ impl MemoryEngine {
         agent_id: Option<String>,
         reason: Option<String>,
         source: Option<String>,
-        confidence: Option<f32>,
         importance: Option<f32>,
     ) -> MemoryResult<NodeVersion> {
         let head_id = self
@@ -1076,9 +1044,8 @@ impl MemoryEngine {
         let agent_id = agent_id.unwrap_or_else(|| "ui-editor".to_string());
         let reason = reason.unwrap_or_else(|| "update canonical graph links".to_string());
         let source = source.unwrap_or_else(|| "graph_editor".to_string());
-        let confidence = confidence.unwrap_or(head.confidence);
         let importance = importance.unwrap_or(head.importance);
-        self.validate_agent_governed_request(confidence, &agent_id, &reason, &source)?;
+        self.validate_agent_governed_request(&agent_id, &reason, &source)?;
 
         let now = now_ts();
         let mut content = normalize_content(head.content.clone());
@@ -1096,7 +1063,7 @@ impl MemoryEngine {
             .structured_data
             .insert("kb.updated_at".to_string(), now.to_string());
 
-        let version = self.replace_node(node_id, content, confidence, importance)?;
+        let version = self.replace_node(node_id, content, importance)?;
         self.storage.append_agent_action_log(&AgentActionLog {
             timestamp: now,
             agent_id,
@@ -1122,7 +1089,6 @@ impl MemoryEngine {
         source: &str,
         agent_id: Option<String>,
         reason: Option<String>,
-        confidence: Option<f32>,
         importance: Option<f32>,
         project: Option<String>,
         parent_node: Option<String>,
@@ -1130,9 +1096,8 @@ impl MemoryEngine {
     ) -> MemoryResult<NodeVersion> {
         let agent_id = agent_id.unwrap_or_else(|| "agent-ingest".to_string());
         let reason = reason.unwrap_or_else(|| "auto ingestion".to_string());
-        let confidence = confidence.unwrap_or(self.agent_governance.min_confidence.max(0.7));
         let importance = importance.unwrap_or(1.0);
-        self.validate_agent_governed_request(confidence, &agent_id, &reason, source)?;
+        self.validate_agent_governed_request(&agent_id, &reason, source)?;
 
         let parsed = parse_markdown_with_meta(text);
         let mut content = parsed.content;
@@ -1242,9 +1207,9 @@ impl MemoryEngine {
                 parent_node: content.parent_node.clone(),
                 node_type: content.node_type.clone(),
             };
-            self.update_node(&resolved_node_id, patch, confidence, importance)?
+            self.update_node(&resolved_node_id, patch, importance)?
         } else {
-            self.create_node(&resolved_node_id, content, confidence, importance)?
+            self.create_node(&resolved_node_id, content, importance)?
         };
 
         self.storage.append_agent_action_log(&AgentActionLog {
@@ -1290,7 +1255,6 @@ impl MemoryEngine {
                 version: version.version,
                 timestamp: version.timestamp,
                 parents: version.parents,
-                confidence: version.confidence,
                 importance: version.importance,
             });
         }
@@ -1338,21 +1302,6 @@ impl MemoryEngine {
         depth_limit: Option<usize>,
     ) -> Vec<String> {
         self.graph_index.importance_first(start_node, depth_limit)
-    }
-
-    pub fn traverse_confidence_filtered(
-        &self,
-        start_node: &str,
-        depth_limit: Option<usize>,
-        min_confidence: f32,
-    ) -> MemoryResult<Vec<String>> {
-        self.graph_index.confidence_filtered(
-            start_node,
-            depth_limit,
-            min_confidence,
-            &self.heads,
-            &self.storage,
-        )
     }
 
     pub fn search_by_highlight(&self, query: &str) -> MemoryResult<Vec<String>> {
@@ -1540,6 +1489,7 @@ impl MemoryEngine {
             .inbound_neighbors(node_id)
             .into_iter()
             .collect();
+        let head_content_terms = extract_content_terms(&head.content);
         let head_structured_terms = extract_structured_terms(&head.content.structured_data);
 
         let mut candidates: HashMap<String, ExploreCandidate> = HashMap::new();
@@ -1602,7 +1552,18 @@ impl MemoryEngine {
                 .inbound_neighbors(candidate_id)
                 .into_iter()
                 .collect();
+            let candidate_content_terms = extract_content_terms(&candidate.content);
             let candidate_terms = extract_structured_terms(&candidate.content.structured_data);
+
+            let content_overlap = overlap_ratio(&head_content_terms, &candidate_content_terms);
+            if content_overlap > 0.0 {
+                upsert_candidate(
+                    &mut candidates,
+                    candidate_id,
+                    10.0 + content_overlap * 30.0,
+                    "content_overlap".to_string(),
+                );
+            }
 
             let shared_outbound = overlap_ratio(&head_outbound, &candidate_outbound);
             if shared_outbound > 0.0 {
@@ -1635,8 +1596,8 @@ impl MemoryEngine {
             }
 
             let temporal = temporal_proximity_score(head.timestamp, candidate.timestamp);
-            if temporal > 0.70 {
-                let score = 6.0 + temporal * 12.0 + candidate.importance.max(0.0).min(5.0);
+            if temporal > 0.85 {
+                let score = 1.5 + temporal * 4.0 + candidate.importance.max(0.0).min(2.0);
                 upsert_candidate(
                     &mut candidates,
                     candidate_id,
@@ -1694,11 +1655,25 @@ impl MemoryEngine {
             .iter()
             .map(|l| l.target.clone())
             .collect();
+        let head_content_terms = extract_content_terms(&head.content);
+        let head_structured_terms = extract_structured_terms(&head.content.structured_data);
 
         let candidates = self.suggest_exploration(node_id, limit.saturating_mul(4).max(10))?;
         let mut add_links = Vec::new();
         for c in candidates {
             if c.node_id == node_id || existing.contains(&c.node_id) || c.score < min_score {
+                continue;
+            }
+            let candidate_head_id = match self.head(&c.node_id) {
+                Some(id) => id,
+                None => continue,
+            };
+            let candidate = self.get_version(candidate_head_id)?;
+            let candidate_content_terms = extract_content_terms(&candidate.content);
+            let candidate_structured_terms = extract_structured_terms(&candidate.content.structured_data);
+            let content_overlap = overlap_ratio(&head_content_terms, &candidate_content_terms);
+            let structured_overlap = overlap_ratio(&head_structured_terms, &candidate_structured_terms);
+            if content_overlap <= 0.0 || structured_overlap <= 0.0 {
                 continue;
             }
             let normalized = (c.score / 100.0).clamp(0.1, 1.0);
@@ -1722,7 +1697,7 @@ impl MemoryEngine {
             add_links,
             ..NodePatch::default()
         };
-        self.update_node(node_id, patch, head.confidence, head.importance)
+        self.update_node(node_id, patch, head.importance)
     }
 
     pub fn explore_with_budget(
@@ -1829,11 +1804,10 @@ impl MemoryEngine {
         &mut self,
         node_id: &str,
         signal: PromotionSignal,
-        confidence: f32,
     ) -> MemoryResult<NodeVersion> {
         let importance = compute_importance(signal);
         let patch = NodePatch::default();
-        self.update_node(node_id, patch, confidence, importance)
+        self.update_node(node_id, patch, importance)
     }
 
     fn maybe_auto_promote_from_access(
@@ -1878,7 +1852,6 @@ impl MemoryEngine {
         let _ = self.update_node(
             node_id,
             NodePatch::default(),
-            head.confidence,
             new_importance,
         )?;
 
@@ -1896,15 +1869,14 @@ impl MemoryEngine {
                 node_id,
                 content,
                 patch,
-                confidence,
                 importance,
             } => {
                 if let Some(patch) = patch {
                     if self.head(&node_id).is_some() {
-                        self.update_node(&node_id, patch, confidence, importance)
+                        self.update_node(&node_id, patch, importance)
                             .map(|version| ToolResponse::Version { version })
                     } else if let Some(content) = content {
-                        self.create_node(&node_id, content, confidence, importance)
+                        self.create_node(&node_id, content, importance)
                             .map(|version| ToolResponse::Version { version })
                     } else {
                         Err(MemoryError::NotFound(format!(
@@ -1924,10 +1896,10 @@ impl MemoryEngine {
                             parent_node: content.parent_node,
                             node_type: content.node_type,
                         };
-                        self.update_node(&node_id, patch, confidence, importance)
+                        self.update_node(&node_id, patch, importance)
                             .map(|version| ToolResponse::Version { version })
                     } else {
-                        self.create_node(&node_id, content, confidence, importance)
+                        self.create_node(&node_id, content, importance)
                             .map(|version| ToolResponse::Version { version })
                     }
                 } else {
@@ -1963,7 +1935,6 @@ impl MemoryEngine {
                 start_node,
                 mode,
                 depth_limit,
-                min_confidence,
             } => {
                 let nodes_result = match mode {
                     TraverseMode::Bfs => Ok(self.traverse_bfs(&start_node, depth_limit)),
@@ -1971,11 +1942,6 @@ impl MemoryEngine {
                     TraverseMode::ImportanceFirst => {
                         Ok(self.traverse_importance_first(&start_node, depth_limit))
                     }
-                    TraverseMode::ConfidenceFiltered => self.traverse_confidence_filtered(
-                        &start_node,
-                        depth_limit,
-                        min_confidence.unwrap_or(0.0),
-                    ),
                 };
                 nodes_result.map(|nodes| ToolResponse::NodeList { nodes })
             }
@@ -2056,7 +2022,6 @@ impl MemoryEngine {
             ToolAction::AgentUpsertMarkdown {
                 node_id,
                 markdown,
-                confidence,
                 importance,
                 agent_id,
                 reason,
@@ -2066,7 +2031,7 @@ impl MemoryEngine {
                 node_type,
             } => self
                 .agent_upsert_markdown(
-                    &node_id, &markdown, confidence, importance, &agent_id, &reason, &source,
+                    &node_id, &markdown, importance, &agent_id, &reason, &source,
                     project, parent_node, node_type,
                 )
                 .map(|version| ToolResponse::Version { version }),
@@ -2082,7 +2047,6 @@ impl MemoryEngine {
                 source,
                 agent_id,
                 reason,
-                confidence,
                 importance,
                 project,
                 parent_node,
@@ -2100,7 +2064,6 @@ impl MemoryEngine {
                     &source,
                     agent_id,
                     reason,
-                    confidence,
                     importance,
                     project,
                     parent_node,
@@ -2114,7 +2077,6 @@ impl MemoryEngine {
                 agent_id,
                 reason,
                 source,
-                confidence,
                 importance,
                 project,
                 parent_node,
@@ -2127,7 +2089,6 @@ impl MemoryEngine {
                     agent_id,
                     reason,
                     source,
-                    confidence,
                     importance,
                     project,
                     parent_node,
@@ -2140,7 +2101,6 @@ impl MemoryEngine {
                 agent_id,
                 reason,
                 source,
-                confidence,
                 importance,
             } => self
                 .set_node_links(
@@ -2149,19 +2109,17 @@ impl MemoryEngine {
                     agent_id,
                     reason,
                     source,
-                    confidence,
                     importance,
                 )
                 .map(|version| ToolResponse::Version { version }),
             ToolAction::RollbackNode {
                 node_id,
                 target_version,
-                confidence,
                 importance,
                 agent_id,
                 reason,
             } => {
-                let result = self.rollback_node(&node_id, &target_version, confidence, importance);
+                let result = self.rollback_node(&node_id, &target_version, importance);
                 if let (Ok(version), Some(agent)) = (&result, agent_id.as_deref()) {
                     let _ = self.storage.append_agent_action_log(&AgentActionLog {
                         timestamp: now_ts(),
@@ -2674,7 +2632,6 @@ impl MemoryEngine {
     fn validate_agent_markdown_request(
         &self,
         markdown: &str,
-        confidence: f32,
         agent_id: &str,
         reason: &str,
         source: &str,
@@ -2688,12 +2645,6 @@ impl MemoryEngine {
             return Err(MemoryError::Invalid(format!(
                 "markdown exceeds max bytes limit ({})",
                 self.agent_governance.max_markdown_bytes
-            )));
-        }
-        if confidence < self.agent_governance.min_confidence {
-            return Err(MemoryError::Invalid(format!(
-                "confidence {} is below governance minimum {}",
-                confidence, self.agent_governance.min_confidence
             )));
         }
         if agent_id.trim().is_empty() {
@@ -2713,17 +2664,10 @@ impl MemoryEngine {
 
     fn validate_agent_governed_request(
         &self,
-        confidence: f32,
         agent_id: &str,
         reason: &str,
         source: &str,
     ) -> MemoryResult<()> {
-        if confidence < self.agent_governance.min_confidence {
-            return Err(MemoryError::Invalid(format!(
-                "confidence {} is below governance minimum {}",
-                confidence, self.agent_governance.min_confidence
-            )));
-        }
         if agent_id.trim().is_empty() {
             return Err(MemoryError::Invalid("agent_id is required".to_string()));
         }
@@ -3618,6 +3562,10 @@ fn build_exploration_query(content: &NodeContent) -> String {
     parts.join(" ")
 }
 
+fn extract_content_terms(content: &NodeContent) -> HashSet<String> {
+    tokenize(&build_exploration_query(content)).into_iter().collect()
+}
+
 fn upsert_candidate(
     map: &mut HashMap<String, ExploreCandidate>,
     node_id: &str,
@@ -3941,7 +3889,6 @@ mod tests {
             .create_node(
                 "Fatigue_Model",
                 sample_content("Fatigue", "v0 body", "SleepSignals"),
-                0.8,
                 1.0,
             )
             .expect("create node");
@@ -3952,7 +3899,7 @@ mod tests {
         };
 
         let v1 = engine
-            .update_node("Fatigue_Model", patch, 0.85, 1.2)
+            .update_node("Fatigue_Model", patch, 1.2)
             .expect("update node");
 
         let old = engine.get_version(&v0.version).expect("old version read");
@@ -3970,7 +3917,7 @@ mod tests {
         let mut content = sample_content("SummaryRule", "body text", "Ref");
         content.summary = "".to_string();
         let version = engine
-            .create_node("SummaryRule", content, 0.8, 1.0)
+            .create_node("SummaryRule", content, 1.0)
             .expect("should normalize summary");
         assert!(!version.content.summary.trim().is_empty());
         assert!(version.content.summary.chars().count() >= 8);
@@ -3982,7 +3929,7 @@ mod tests {
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
         let _ = engine
-            .create_node("Model", sample_content("Model", "base", "Ref"), 0.7, 0.8)
+            .create_node("Model", sample_content("Model", "base", "Ref"), 0.8)
             .expect("create node");
 
         let v1 = engine
@@ -3992,7 +3939,6 @@ mod tests {
                     body: Some("branch-a".to_string()),
                     ..NodePatch::default()
                 },
-                0.8,
                 1.0,
             )
             .expect("update branch a");
@@ -4014,10 +3960,10 @@ mod tests {
         {
             let mut engine = MemoryEngine::open(&dir).expect("open engine");
             engine
-                .create_node("A", sample_content("A", "body a", "B"), 0.9, 1.2)
+                .create_node("A", sample_content("A", "body a", "B"), 1.2)
                 .expect("create A");
             engine
-                .create_node("B", sample_content("B", "body b", "C"), 0.8, 1.1)
+                .create_node("B", sample_content("B", "body b", "C"), 1.1)
                 .expect("create B");
         }
 
@@ -4039,7 +3985,6 @@ mod tests {
             node_id: "ProtocolNode".to_string(),
             content: Some(sample_content("Protocol", "from tool", "Target")),
             patch: None,
-            confidence: 0.88,
             importance: 1.4,
         };
 
@@ -4051,15 +3996,14 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
-        let payload = r#"{"action":"traverse","start_node":"ProtocolNode","mode":"bfs","depth_limit":1,"min_confidence":null}"#;
+        let payload = r#"{"action":"traverse","start_node":"ProtocolNode","mode":"bfs","depth_limit":1}"#;
         let out = engine.execute_action_json(payload);
         assert!(out.contains("node_list"));
 
         let action = ToolAction::Traverse {
             start_node: "ProtocolNode".to_string(),
-            mode: TraverseMode::ConfidenceFiltered,
+            mode: TraverseMode::ImportanceFirst,
             depth_limit: Some(1),
-            min_confidence: Some(0.5),
         };
 
         let resp = engine.execute_action(action);
@@ -4080,7 +4024,6 @@ mod tests {
             node_id: "MergedNode".to_string(),
             content: Some(sample_content("Merged", "seed body", "RefNode")),
             patch: None,
-            confidence: 0.86,
             importance: 1.5,
         });
         match resp {
@@ -4095,7 +4038,6 @@ mod tests {
                 body: Some("patched body".to_string()),
                 ..NodePatch::default()
             }),
-            confidence: 0.9,
             importance: 1.7,
         });
         match resp {
@@ -4141,7 +4083,6 @@ mod tests {
                     highlights: vec!["graph-memory".to_string()],
                             ..Default::default()
         },
-                0.9,
                 1.6,
             )
             .expect("create node");
@@ -4180,7 +4121,6 @@ mod tests {
                     highlights: vec!["circadian".to_string(), "fatigue".to_string()],
                             ..Default::default()
         },
-                0.9,
                 1.5,
             )
             .expect("create circadian");
@@ -4197,7 +4137,6 @@ mod tests {
                     highlights: vec!["diet".to_string()],
                             ..Default::default()
         },
-                0.8,
                 1.0,
             )
             .expect("create nutrition");
@@ -4233,7 +4172,7 @@ mod tests {
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
         let v0 = engine
-            .create_node("A", sample_content("A", "# Summary\nBase", "B"), 0.8, 1.0)
+            .create_node("A", sample_content("A", "# Summary\nBase", "B"), 1.0)
             .expect("create");
 
         engine.log_access("agent-main", "A").expect("log access");
@@ -4253,7 +4192,7 @@ mod tests {
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
         engine
-            .create_node("OpenNode", sample_content("Open", "Body", "Ref"), 0.8, 1.0)
+            .create_node("OpenNode", sample_content("Open", "Body", "Ref"), 1.0)
             .expect("create node");
 
         let response = engine.execute_action(ToolAction::OpenNode {
@@ -4300,7 +4239,6 @@ mod tests {
                     highlights: vec!["resources".to_string(), "inspiration".to_string()],
                             ..Default::default()
         },
-                0.9,
                 2.0,
             )
             .expect("create source");
@@ -4309,7 +4247,6 @@ mod tests {
             .create_node(
                 "swift_learning_path",
                 sample_content("Swift Path", "roadmap", "swift_learning_resources"),
-                0.8,
                 1.5,
             )
             .expect("create linked");
@@ -4326,7 +4263,6 @@ mod tests {
                     highlights: vec!["yc".to_string(), "startup".to_string()],
                             ..Default::default()
         },
-                0.9,
                 3.0,
             )
             .expect("create yc");
@@ -4376,7 +4312,6 @@ mod tests {
                     highlights: vec!["memory".to_string()],
                             ..Default::default()
         },
-                0.9,
                 2.6,
             )
             .expect("create source");
@@ -4407,7 +4342,6 @@ mod tests {
                     highlights: vec!["graph".to_string()],
                             ..Default::default()
         },
-                0.88,
                 2.4,
             )
             .expect("create candidate");
@@ -4416,7 +4350,6 @@ mod tests {
             .create_node(
                 "retrieval_pattern",
                 sample_content("Retrieval Pattern", "ranking and filtering", "x"),
-                0.8,
                 1.4,
             )
             .expect("create helper");
@@ -4425,7 +4358,6 @@ mod tests {
             .create_node(
                 "ranking_strategy",
                 sample_content("Ranking Strategy", "score fusion", "x"),
-                0.8,
                 1.4,
             )
             .expect("create helper2");
@@ -4459,7 +4391,6 @@ mod tests {
                     highlights: vec!["yc".to_string(), "startup".to_string()],
                             ..Default::default()
         },
-                0.95,
                 3.5,
             )
             .expect("create yc");
@@ -4467,12 +4398,18 @@ mod tests {
         engine
             .create_node(
                 "startup_accelerator_model",
-                sample_content(
-                    "Startup Accelerator Model",
-                    "program structure and mentorship",
-                    "x",
-                ),
-                0.8,
+                NodeContent {
+                    title: "Startup Accelerator Model".to_string(),
+                    summary: "Startup accelerator program structure and mentorship.".to_string(),
+                    body: "startup accelerator program mentorship and demo day".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "category".to_string(),
+                        "startup_accelerator".to_string(),
+                    )]),
+                    links: vec![],
+                    highlights: vec!["startup".to_string(), "accelerator".to_string()],
+                    ..Default::default()
+                },
                 2.2,
             )
             .expect("create model");
@@ -4481,7 +4418,6 @@ mod tests {
             .create_node(
                 "demo_day_playbook",
                 sample_content("Demo Day Playbook", "pitching and investor workflow", "x"),
-                0.8,
                 2.0,
             )
             .expect("create demo day");
@@ -4490,6 +4426,58 @@ mod tests {
             .auto_link_related("y_combinator_overview", 2, 35.0)
             .expect("auto link");
         assert!(!updated.content.links.is_empty());
+    }
+
+    #[test]
+    fn auto_link_related_requires_content_and_structured_overlap() {
+        let dir = temp_data_dir("auto-link-strict-overlap");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "recent_doc_a",
+                NodeContent {
+                    title: "Agent Documentation".to_string(),
+                    summary: "Agent docs with markdown workflow notes.".to_string(),
+                    body: "markdown workflow annotations and retrieval".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "category".to_string(),
+                        "agent_docs".to_string(),
+                    )]),
+                    links: vec![],
+                    highlights: vec!["markdown".to_string(), "workflow".to_string()],
+                    ..Default::default()
+                },
+                1.5,
+            )
+            .expect("create source");
+
+        engine
+            .create_node(
+                "recent_doc_b",
+                NodeContent {
+                    title: "Workflow Notes".to_string(),
+                    summary: "Workflow notes written in markdown.".to_string(),
+                    body: "markdown workflow notes and retrieval".to_string(),
+                    structured_data: BTreeMap::from([(
+                        "category".to_string(),
+                        "mobile_ar".to_string(),
+                    )]),
+                    links: vec![],
+                    highlights: vec!["markdown".to_string(), "workflow".to_string()],
+                    ..Default::default()
+                },
+                1.5,
+            )
+            .expect("create candidate");
+
+        let err = engine
+            .auto_link_related("recent_doc_a", 2, 10.0)
+            .expect_err("auto link should reject content-only overlap");
+        assert!(
+            err.to_string().contains("no related candidates above min_score"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -4516,7 +4504,6 @@ mod tests {
                     highlights: vec!["swift".to_string(), "resources".to_string()],
                             ..Default::default()
         },
-                0.9,
                 2.0,
             )
             .expect("create root");
@@ -4537,7 +4524,6 @@ mod tests {
                     highlights: vec!["learning".to_string()],
                             ..Default::default()
         },
-                0.8,
                 1.8,
             )
             .expect("create middle");
@@ -4554,7 +4540,6 @@ mod tests {
                     highlights: vec!["yc".to_string()],
                             ..Default::default()
         },
-                0.95,
                 3.2,
             )
             .expect("create leaf");
@@ -4601,7 +4586,6 @@ mod tests {
         let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
             node_id: "kb_policy".to_string(),
             markdown: markdown.to_string(),
-            confidence: 0.9,
             importance: 1.4,
             agent_id: "agent-main".to_string(),
             reason: "同步新的知识规范".to_string(),
@@ -4646,7 +4630,6 @@ mod tests {
                     highlights: vec!["rust".to_string()],
                             ..Default::default()
         },
-                0.9,
                 2.0,
             )
             .expect("create related node");
@@ -4658,7 +4641,6 @@ mod tests {
         let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
             node_id: "kb_draft".to_string(),
             markdown: markdown.to_string(),
-            confidence: 0.9,
             importance: 1.4,
             agent_id: "agent-main".to_string(),
             reason: "补充知识草案内容".to_string(),
@@ -4699,7 +4681,6 @@ mod tests {
                     highlights: vec!["suna".to_string()],
                             ..Default::default()
         },
-                0.9,
                 2.0,
             )
             .expect("create related github node");
@@ -4711,7 +4692,6 @@ Notable repos include `kortix-ai/suna`.
         let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
             node_id: "github-top-100-repos".to_string(),
             markdown: markdown.to_string(),
-            confidence: 0.9,
             importance: 1.4,
             agent_id: "agent-main".to_string(),
             reason: "补充 top100 仓库引用信息".to_string(),
@@ -4744,7 +4724,6 @@ Notable repos include `kortix-ai/suna`.
             .create_node(
                 "design_doc",
                 sample_content("Design Doc", "v1 baseline", "x"),
-                0.8,
                 1.0,
             )
             .expect("create");
@@ -4756,13 +4735,12 @@ Notable repos include `kortix-ai/suna`.
                     body: Some("v2 changed".to_string()),
                     ..NodePatch::default()
                 },
-                0.85,
                 1.1,
             )
             .expect("update");
 
         let restored = engine
-            .rollback_node("design_doc", &v1.version, 0.88, 1.2)
+            .rollback_node("design_doc", &v1.version, 1.2)
             .expect("rollback");
         assert!(restored.parents.iter().any(|p| p == &v1.version));
         assert_eq!(restored.content.body, "v1 baseline");
@@ -4788,7 +4766,6 @@ Notable repos include `kortix-ai/suna`.
                     highlights: vec!["检索".to_string()],
                             ..Default::default()
         },
-                0.9,
                 1.8,
             )
             .expect("create");
@@ -4856,7 +4833,6 @@ Notable repos include `kortix-ai/suna`.
             source: "test".to_string(),
             agent_id: Some("test-agent".to_string()),
             reason: Some("create index node for project".to_string()),
-            confidence: Some(0.9),
             importance: Some(1.5),
             project: Some("tech".to_string()),
             parent_node: None,
@@ -4883,7 +4859,6 @@ Notable repos include `kortix-ai/suna`.
             source: "test".to_string(),
             agent_id: Some("test-agent".to_string()),
             reason: Some("add rust concept to tech project".to_string()),
-            confidence: Some(0.9),
             importance: Some(1.2),
             project: Some("tech".to_string()),
             parent_node: Some("tech_index".to_string()),
@@ -4931,7 +4906,6 @@ Notable repos include `kortix-ai/suna`.
             source: "test".to_string(),
             agent_id: Some("test-agent".to_string()),
             reason: Some("test project frontmatter roundtrip".to_string()),
-            confidence: Some(0.9),
             importance: Some(1.0),
             project: Some("test_project".to_string()),
             parent_node: Some("root_node".to_string()),
@@ -4966,7 +4940,6 @@ Notable repos include `kortix-ai/suna`.
                     highlights: vec![],
                     ..Default::default()
                 },
-                0.8,
                 1.0,
             )
             .expect("create node");
@@ -4978,7 +4951,6 @@ Notable repos include `kortix-ai/suna`.
                     body: Some("updated historical detail".to_string()),
                     ..Default::default()
                 },
-                0.85,
                 1.1,
             )
             .expect("update node");
@@ -5037,7 +5009,6 @@ Notable repos include `kortix-ai/suna`.
                     highlights: vec![],
                     ..Default::default()
                 },
-                0.8,
                 1.0,
             )
             .expect("create v1");
@@ -5049,7 +5020,6 @@ Notable repos include `kortix-ai/suna`.
                     body: Some("v2".to_string()),
                     ..Default::default()
                 },
-                0.85,
                 1.1,
             )
             .expect("update v2");
@@ -5061,7 +5031,6 @@ Notable repos include `kortix-ai/suna`.
                     body: Some("v3 current".to_string()),
                     ..Default::default()
                 },
-                0.9,
                 1.2,
             )
             .expect("update v3");

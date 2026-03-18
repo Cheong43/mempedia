@@ -4,7 +4,8 @@ use crate::core::{MergeConflict, NodeContent, NodeVersion};
 
 pub fn merge_content(left: &NodeVersion, right: &NodeVersion) -> (NodeContent, Vec<MergeConflict>) {
     let mut conflicts = Vec::new();
-    let pick_right = right.confidence > left.confidence;
+    let pick_right = right.timestamp > left.timestamp
+        || (right.timestamp == left.timestamp && right.importance >= left.importance);
 
     let mut structured = BTreeMap::new();
     for (k, v) in &left.content.structured_data {
@@ -44,7 +45,7 @@ pub fn merge_content(left: &NodeVersion, right: &NodeVersion) -> (NodeContent, V
     let mut highlights = left.content.highlights.clone();
     highlights.extend(right.content.highlights.clone());
 
-    // For project-hierarchy fields, prefer the higher-confidence side.
+    // For project-hierarchy fields, prefer the newer side.
     let project = if pick_right {
         right.content.project.clone().or_else(|| left.content.project.clone())
     } else {

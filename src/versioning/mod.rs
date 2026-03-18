@@ -14,10 +14,9 @@ impl VersionEngine {
         nodes: &mut HashMap<String, Node>,
         node_id: &str,
         content: NodeContent,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
-        validate_scores(confidence, importance)?;
+        validate_importance(importance)?;
         validate_content(&content)?;
 
         if heads.contains_key(node_id) {
@@ -32,7 +31,6 @@ impl VersionEngine {
             parents: vec![],
             timestamp: now_ts(),
             content,
-            confidence,
             importance,
         };
 
@@ -58,10 +56,9 @@ impl VersionEngine {
         nodes: &mut HashMap<String, Node>,
         node_id: &str,
         patch: NodePatch,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
-        validate_scores(confidence, importance)?;
+        validate_importance(importance)?;
 
         let head_id = heads
             .get(node_id)
@@ -79,7 +76,6 @@ impl VersionEngine {
             parents: vec![head_id],
             timestamp: now_ts(),
             content,
-            confidence,
             importance,
         };
         version.version = storage.write_object(&version)?;
@@ -100,10 +96,9 @@ impl VersionEngine {
         nodes: &mut HashMap<String, Node>,
         node_id: &str,
         content: NodeContent,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
-        validate_scores(confidence, importance)?;
+        validate_importance(importance)?;
         validate_content(&content)?;
 
         let head_id = heads
@@ -117,7 +112,6 @@ impl VersionEngine {
             parents: vec![head_id],
             timestamp: now_ts(),
             content,
-            confidence,
             importance,
         };
         version.version = storage.write_object(&version)?;
@@ -150,7 +144,6 @@ impl VersionEngine {
             parents: vec![head_id],
             timestamp: now_ts(),
             content: head.content,
-            confidence: head.confidence,
             importance: head.importance,
         };
         version.version = storage.write_object(&version)?;
@@ -188,7 +181,6 @@ impl VersionEngine {
             parents: vec![left_version.to_string(), right_version.to_string()],
             timestamp: now_ts(),
             content,
-            confidence: left.confidence.max(right.confidence),
             importance: left.importance.max(right.importance),
         };
         version.version = storage.write_object(&version)?;
@@ -209,10 +201,9 @@ impl VersionEngine {
         nodes: &mut HashMap<String, Node>,
         node_id: &str,
         target_version: &str,
-        confidence: f32,
         importance: f32,
     ) -> MemoryResult<NodeVersion> {
-        validate_scores(confidence, importance)?;
+        validate_importance(importance)?;
 
         let current_head = heads
             .get(node_id)
@@ -234,7 +225,6 @@ impl VersionEngine {
             parents,
             timestamp: now_ts(),
             content: target.content,
-            confidence,
             importance,
         };
         validate_content(&version.content)?;
@@ -312,12 +302,7 @@ fn persist_index(
     })
 }
 
-fn validate_scores(confidence: f32, importance: f32) -> MemoryResult<()> {
-    if !(0.0..=1.0).contains(&confidence) {
-        return Err(MemoryError::Invalid(
-            "confidence must be within [0.0, 1.0]".to_string(),
-        ));
-    }
+fn validate_importance(importance: f32) -> MemoryResult<()> {
     if !importance.is_finite() || importance < 0.0 {
         return Err(MemoryError::Invalid(
             "importance must be finite and >= 0.0".to_string(),

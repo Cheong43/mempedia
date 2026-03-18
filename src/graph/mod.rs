@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::core::{MemoryResult, NodeVersion};
+use crate::core::MemoryResult;
 use crate::storage::FileStorage;
 
 #[derive(Debug, Clone, Default)]
@@ -104,30 +104,6 @@ impl GraphIndex {
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.into_iter().map(|(n, _)| n).collect()
     }
-
-    pub fn confidence_filtered(
-        &self,
-        start: &str,
-        depth_limit: Option<usize>,
-        min_confidence: f32,
-        heads: &HashMap<String, String>,
-        storage: &FileStorage,
-    ) -> MemoryResult<Vec<String>> {
-        let reachable = self.bfs(start, depth_limit);
-        let mut out = Vec::new();
-
-        for node_id in reachable {
-            if let Some(version_id) = heads.get(&node_id) {
-                let NodeVersion { confidence, .. } = storage.read_object(version_id)?;
-                if confidence >= min_confidence {
-                    out.push(node_id);
-                }
-            }
-        }
-
-        Ok(out)
-    }
-
     pub fn neighbors(&self, node_id: &str) -> Vec<String> {
         self.adjacency.get(node_id).cloned().unwrap_or_default()
     }

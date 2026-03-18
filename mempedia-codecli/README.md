@@ -80,14 +80,22 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
    ```
    This is not required, but it raises the GitHub API rate limit for `/skills search <query>`.
 
+   Optional sandbox controls:
+   ```
+   MEMPEDIA_SHELL_TIMEOUT_MS=15000
+   ```
+   `run_shell` now executes inside `.mempedia/sandbox` with project-local `HOME`, `TMPDIR`, config, and cache directories.
+   The sandbox blocks `git clone`, `git pull`, `git fetch`, `gh repo clone`, remote shell/file transfer, privilege escalation, and download-then-exec patterns.
+
    Branching ReAct loop controls:
    ```
    REACT_BRANCH_MAX_DEPTH=2
    REACT_BRANCH_MAX_WIDTH=3
    REACT_BRANCH_MAX_STEPS=8
    REACT_BRANCH_MAX_COMPLETED=4
+   REACT_BRANCH_CONCURRENCY=3
    ```
-   These tune how aggressively the agent forks child reasoning loops when one thought step has multiple viable next actions.
+   These tune how aggressively the agent forks child reasoning loops when one thought step has multiple viable next actions. Child branches get their own local step budget, while `REACT_BRANCH_CONCURRENCY` caps how many branches can run at the same time.
 
 ## Running
 
@@ -112,6 +120,7 @@ npm start
   - `/clear` clear current screen history
 - When a skill is active, its description and body are injected into the request prompt so the agent follows that skill behavior.
 - Remote skill search uses the GitHub code search API and treats matching `SKILL.md` files the same way as local skills once cached.
+- Shell execution is sandboxed. Use `run_shell` for local bash work inside the project, but repository sync and other sensitive shell patterns are blocked.
 - Integrated UI features:
   - Embedded CLI dialogue window inside `mempedia-ui`
   - Trace visualization for thought/action/observation flow
@@ -127,4 +136,5 @@ npm start
 - **Agent-decided Async Memory Saves**: Memory is no longer auto-saved for every completed session. Instead, the agent can queue asynchronous saves from any ReAct branch when it decides the result is valuable enough to preserve.
 - **Branch Synthesizer**: Completed branches are merged into one final user answer.
 - **Mempedia Client**: Communicates with `mempedia` binary via NDJSON over stdin/stdout.
+- **Governed Local Sandbox**: `run_shell`, `read_file`, and `write_file` now execute through the runtime governance layer. Shell commands run with project-local sandbox directories and command-level safety checks.
 - **Memory Save Queue**: Explicit save jobs are serialized in the background so knowledge extraction and raw conversation logging do not block the main loop.

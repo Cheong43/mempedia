@@ -183,7 +183,6 @@ async function importFile(
       source,
       agent_id: 'import-doc',
       reason: `Imported from ${path.basename(filePath)}`,
-      confidence: 0.95,
       importance: 1.5,
     });
     if ((res as any).kind === 'error') {
@@ -208,7 +207,6 @@ async function importFile(
         source,
         agent_id: 'import-doc',
         reason: `Imported from ${path.basename(filePath)}`,
-        confidence: 0.95,
         importance: 1.5,
       });
       if ((res as any).kind === 'error') {

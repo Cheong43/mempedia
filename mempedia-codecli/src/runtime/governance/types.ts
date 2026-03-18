@@ -43,6 +43,13 @@ export interface GuardConfig {
   /** Enable the external-directory guard.  Defaults to `true`. */
   externalDir?: boolean;
 
+  /** Enable command-level shell safety checks. */
+  shellSafety?: {
+    enabled: boolean;
+    /** Decision to emit when a forbidden shell command is detected. */
+    decision?: PolicyDecision;
+  };
+
   /** Doom-loop detection configuration. */
   doomLoop?: {
     enabled: boolean;

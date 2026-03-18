@@ -2,12 +2,12 @@ import OpenAI from 'openai';
 import crypto from 'crypto';
 import { MempediaClient } from '../mempedia/client.js';
 import { ToolAction } from '../mempedia/types.js';
-import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { z } from 'zod';
-import { createRuntime, RuntimeHandle } from '../runtime/index.js';
+import { AgentRuntime, createRuntime, RuntimeHandle } from '../runtime/index.js';
+import type { AgentBranchState, BranchSynthesisInput } from '../runtime/agent/AgentRuntime.js';
 
 dotenv.config();
 
@@ -130,9 +130,10 @@ const TOOLS = [
         properties: {
           reason: { type: 'string', description: 'Why this memory is worth saving now.' },
           focus: { type: 'string', description: 'Optional summary of the valuable information to preserve.' },
-          save_habits: { type: 'boolean', description: 'Whether to extract user habits from this snapshot.' },
-          save_patterns: { type: 'boolean', description: 'Whether to extract reusable behavior patterns from this snapshot.' },
-          save_atomic: { type: 'boolean', description: 'Whether to extract atomic project or domain knowledge from this snapshot.' },
+          save_preferences: { type: 'boolean', description: 'Whether to update Layer 3 user preferences from this snapshot.' },
+          save_skills: { type: 'boolean', description: 'Whether to upsert Layer 4 agent skills from reusable workflows in this snapshot.' },
+          save_atomic: { type: 'boolean', description: 'Whether to upsert Layer 1 core knowledge nodes from this snapshot.' },
+          save_episodic: { type: 'boolean', description: 'Whether to write a Layer 2 episodic memory record for this snapshot.' },
         },
         required: ['reason'],
       },
@@ -147,9 +148,8 @@ const TOOLS = [
         type: 'object',
         properties: {
           start_node: { type: 'string', description: 'Start node id' },
-          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first | confidence_filtered' },
+          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first' },
           depth_limit: { type: 'number', description: 'Depth limit (optional)' },
-          min_confidence: { type: 'number', description: 'Min confidence for confidence_filtered mode (optional)' },
         },
         required: ['start_node', 'mode'],
       },
@@ -173,8 +173,124 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'mempedia_suggest_exploration',
+      description: 'Suggest related nodes to explore from a starting node.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Start node id' },
+          limit: { type: 'number', description: 'Max number of suggestions (optional)' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_explore_with_budget',
+      description: 'Explore related nodes with explicit traversal budget controls.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Start node id' },
+          depth_budget: { type: 'number', description: 'Traversal depth budget (optional)' },
+          per_layer_limit: { type: 'number', description: 'Per depth layer candidate limit (optional)' },
+          total_limit: { type: 'number', description: 'Total max returned results (optional)' },
+          min_score: { type: 'number', description: 'Minimum relevance score threshold (optional)' },
+          depth_limit: { type: 'number', description: 'Backward-compatible alias of depth_budget (optional)' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_auto_link_related',
+      description: 'Auto-discover and score related nodes for link suggestions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Node id to auto-link from' },
+          limit: { type: 'number', description: 'Max related links (optional)' },
+          min_score: { type: 'number', description: 'Minimum score threshold (optional)' },
+          threshold: { type: 'number', description: 'Backward-compatible alias of min_score (optional)' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_sync_markdown',
+      description: 'Sync markdown content to a node while preserving source/governance metadata.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Target node id (optional if path is provided)' },
+          path: { type: 'string', description: 'File path to sync from (optional)' },
+          markdown: { type: 'string', description: 'Markdown content to sync (optional)' },
+          content: { type: 'string', description: 'Backward-compatible alias of markdown (optional)' },
+          agent_id: { type: 'string', description: 'Agent id for governance/audit (optional)' },
+          reason: { type: 'string', description: 'Reason for this write (optional)' },
+          source: { type: 'string', description: 'Source tag (optional)' },
+          importance: { type: 'number', description: 'Optional importance score' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mempedia_set_node_links',
+      description: 'Set explicit graph links for a node.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: { type: 'string', description: 'Node id to set links on' },
+          links: {
+            type: 'array',
+            description: 'Link list in target/label/weight structure',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string', description: 'Target node id' },
+                label: { type: 'string', description: 'Optional relation label' },
+                weight: { type: 'number', description: 'Optional relation weight' },
+              },
+              required: ['target'],
+            },
+          },
+          relations: {
+            type: 'array',
+            description: 'Backward-compatible alias of links',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string', description: 'Target node id' },
+                label: { type: 'string', description: 'Optional relation label' },
+                weight: { type: 'number', description: 'Optional relation weight' },
+              },
+              required: ['target'],
+            },
+          },
+          agent_id: { type: 'string', description: 'Agent id for governance/audit (optional)' },
+          reason: { type: 'string', description: 'Reason for this write (optional)' },
+          source: { type: 'string', description: 'Source tag (optional)' },
+          importance: { type: 'number', description: 'Optional importance score' },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'run_shell',
-      description: 'Run a shell command.',
+      description: 'Run a shell command inside the local sandbox. Repository clone/pull/fetch, privilege escalation, remote shell/file transfer, and download-then-exec patterns are blocked.',
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +304,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a file from the filesystem.',
+      description: 'Read a UTF-8 file from inside the current project root.',
       parameters: {
         type: 'object',
         properties: {
@@ -202,7 +318,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write content to a file.',
+      description: 'Write UTF-8 content to a file inside the current project root.',
       parameters: {
         type: 'object',
         properties: {
@@ -305,6 +421,11 @@ const AGENT_TOOL_NAMES = [
   'queue_memory_save',
   'mempedia_traverse',
   'mempedia_history',
+  'mempedia_suggest_exploration',
+  'mempedia_explore_with_budget',
+  'mempedia_auto_link_related',
+  'mempedia_sync_markdown',
+  'mempedia_set_node_links',
   'mempedia_search_episodic',
   'mempedia_list_episodic',
   'mempedia_read_preferences',
@@ -334,7 +455,6 @@ const PlannerBranchSchema = z.object({
 const PlannerDecisionSchema = z.object({
   kind: z.enum(['tool', 'branch', 'final']),
   thought: z.string().trim().min(1),
-  confidence: z.number().min(0).max(1).optional(),
   tool_calls: z.array(PlannerToolCallSchema).optional(),
   branches: z.array(PlannerBranchSchema).optional(),
   final_answer: z.string().optional(),
@@ -381,7 +501,6 @@ interface BranchState {
   savedNodeIds: string[];
   completionSummary?: string;
   finalAnswer?: string;
-  confidence?: number;
 }
 
 function createHmacClient(baseURL: string | undefined, accessKey: string, secretKey: string): ChatClient {
@@ -493,6 +612,12 @@ export interface AgentConfig {
   memoryHmacSecretKey?: string;
 }
 
+export interface AgentRunOptions {
+  conversationId?: string;
+  agentId?: string;
+  sessionId?: string;
+}
+
 interface PerfEntry {
   label: string;
   ms: number;
@@ -504,8 +629,8 @@ interface ConversationTurn {
 }
 
 interface MemoryExtraction {
-  user_habits_env: Array<{ topic: string; summary: string; details: string }>;
-  behavior_patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }>;
+  user_preferences: Array<{ topic: string; preference: string; evidence: string }>;
+  agent_skills: Array<{ skill_id: string; title: string; content: string; tags: string[] }>;
   atomic_knowledge: Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>;
 }
 
@@ -515,9 +640,10 @@ interface MemorySaveJob {
   answer: string;
   reason: string;
   focus?: string;
-  saveHabits: boolean;
-  savePatterns: boolean;
+  savePreferences: boolean;
+  saveSkills: boolean;
   saveAtomic: boolean;
+  saveEpisodic: boolean;
   branchId?: string;
 }
 
@@ -547,7 +673,10 @@ type ChatClient = {
   };
 };
 
+type MempediaActionSender = (action: ToolAction) => Promise<any>;
+
 export class Agent {
+  private readonly projectRoot: string;
   private openai: ChatClient;
   private memoryOpenai: ChatClient;
   private mempedia: MempediaClient;
@@ -555,7 +684,7 @@ export class Agent {
   private memoryModel: string;
   private interactionCounter: number;
   private readonly maxConversationTurns: number;
-  private conversationTurns: ConversationTurn[];
+  private readonly conversationTurnsByConversation: Map<string, ConversationTurn[]>;
   private onBackgroundTaskCallback: ((task: string, status: 'started' | 'completed') => void) | null = null;
   private saveQueue: MemorySaveJob[] = [];
   private saveInProgress = false;
@@ -578,10 +707,12 @@ export class Agent {
   private readonly branchMaxWidth: number;
   private readonly branchMaxSteps: number;
   private readonly branchMaxCompleted: number;
+  private readonly branchConcurrency: number;
   /** Governed runtime handle — routes mempedia actions through policy + guards. */
   private readonly runtimeHandle: RuntimeHandle;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
+    this.projectRoot = projectRoot;
     this.openai = config.hmacAccessKey && config.hmacSecretKey
       ? createHmacClient(config.baseURL, config.hmacAccessKey, config.hmacSecretKey)
       : config.gatewayApiKey
@@ -607,7 +738,7 @@ export class Agent {
     this.mempedia = new MempediaClient(projectRoot, binaryPath);
     this.interactionCounter = 0;
     this.maxConversationTurns = 5;
-    this.conversationTurns = [];
+    this.conversationTurnsByConversation = new Map();
     const rawExtractionMaxChars = Number(process.env.MEMORY_EXTRACTION_MAX_CHARS ?? 12000);
     this.extractionMaxChars = Number.isFinite(rawExtractionMaxChars) ? Math.max(2000, Math.floor(rawExtractionMaxChars)) : 12000;
     const rawAutoLinkEnabled = String(process.env.MEMORY_AUTO_LINK_ENABLED ?? '1').toLowerCase();
@@ -636,6 +767,8 @@ export class Agent {
     this.branchMaxSteps = Number.isFinite(rawBranchMaxSteps) ? Math.max(2, Math.min(24, Math.floor(rawBranchMaxSteps))) : 8;
     const rawBranchMaxCompleted = Number(process.env.REACT_BRANCH_MAX_COMPLETED ?? 4);
     this.branchMaxCompleted = Number.isFinite(rawBranchMaxCompleted) ? Math.max(1, Math.min(8, Math.floor(rawBranchMaxCompleted))) : 4;
+    const rawBranchConcurrency = Number(process.env.REACT_BRANCH_CONCURRENCY ?? 3);
+    this.branchConcurrency = Number.isFinite(rawBranchConcurrency) ? Math.max(1, Math.min(8, Math.floor(rawBranchConcurrency))) : 3;
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
     this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
     this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
@@ -734,77 +867,36 @@ export class Agent {
     return normalized || 'empty';
   }
 
-  private stableNodeId(type: 'intent' | 'thought' | 'fact' | 'pattern' | 'atomic', text: string): string {
+  private stableNodeId(type: 'atomic', text: string): string {
     return `kg_${type}_${this.toSlug(text)}`;
   }
 
-  private preferenceNodeId(text: string): string {
-    return `kg_preference_${this.toSlug(text)}`;
-  }
-
   /**
-   * Merge newly extracted user habits and behavior patterns into the existing
-   * preferences markdown file. Each habit/pattern is recorded under a stable
-   * heading so repeated updates stay idempotent.
+   * Merge extracted user preferences into the project preferences markdown file.
+   * Each topic is maintained under a stable heading for idempotent updates.
    */
-  private mergePreferencesMarkdown(
+  private mergeUserPreferencesMarkdown(
     existing: string,
-    habits: Array<{ topic: string; summary: string; details: string }>,
-    patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }>,
+    preferences: Array<{ topic: string; preference: string; evidence: string }>,
     updatedAt: string
   ): string {
-    // Keep the existing content as the base. We'll append/replace sections.
     let content = existing || `# User Preferences\n\n_Last updated: ${updatedAt}_\n`;
 
-    // Upsert habits under ## Habits
-    for (const habit of habits) {
-      const heading = `### ${habit.topic}`;
-      const block = `${heading}\n- **Summary**: ${habit.summary}\n- **Details**: ${habit.details}\n- _updated: ${updatedAt}_\n`;
-      const idx = content.indexOf(`### ${habit.topic}`);
-      if (idx >= 0) {
-        // Replace from heading to the next same-level heading or end.
-        // Use `nextIdx` directly (not `+1`) so the leading newline of the next
-        // heading is preserved.
-        const nextIdx = content.indexOf('\n### ', idx + 1);
-        if (nextIdx >= 0) {
-          content = content.slice(0, idx) + block + content.slice(nextIdx);
-        } else {
-          // Try to find end of section (next ## or end of file)
-          const nextSection = content.indexOf('\n## ', idx + 1);
-          if (nextSection >= 0) {
-            content = content.slice(0, idx) + block + content.slice(nextSection);
-          } else {
-            content = content.slice(0, idx) + block;
-          }
-        }
-      } else {
-        // Append to Habits section or add the section
-        const habitSection = '## Habits';
-        if (content.includes(habitSection)) {
-          const sIdx = content.indexOf(habitSection);
-          const nextSection = content.indexOf('\n## ', sIdx + 1);
-          if (nextSection >= 0) {
-            content = content.slice(0, nextSection) + '\n' + block + '\n' + content.slice(nextSection);
-          } else {
-            content = content.trimEnd() + '\n\n' + block;
-          }
-        } else {
-          content = content.trimEnd() + '\n\n## Habits\n\n' + block;
-        }
+    for (const pref of preferences) {
+      const topic = pref.topic.replace(/\s+/g, ' ').trim();
+      if (!topic) {
+        continue;
       }
-    }
-
-    // Upsert behavior patterns under ## Behavior Patterns
-    for (const pattern of patterns) {
-      const heading = `### ${pattern.pattern_key}`;
+      const heading = `### ${topic}`;
+      const preference = pref.preference.replace(/\s+/g, ' ').trim();
+      const evidence = pref.evidence.replace(/\s+/g, ' ').trim();
       const blockLines = [
         heading,
-        `- **Summary**: ${pattern.summary}`,
-        `- **Details**: ${pattern.details}`,
-        pattern.applicable_plan ? `- **Applicable plan**: ${pattern.applicable_plan}` : null,
+        `- **Preference**: ${preference}`,
+        evidence ? `- **Evidence**: ${evidence}` : null,
         `- _updated: ${updatedAt}_`,
         '',
-      ].filter((l): l is string => l !== null);
+      ].filter((line): line is string => line !== null);
       const block = blockLines.join('\n');
       const idx = content.indexOf(heading);
       if (idx >= 0) {
@@ -820,9 +912,9 @@ export class Agent {
           }
         }
       } else {
-        const patternSection = '## Behavior Patterns';
-        if (content.includes(patternSection)) {
-          const sIdx = content.indexOf(patternSection);
+        const prefSection = '## Preferences';
+        if (content.includes(prefSection)) {
+          const sIdx = content.indexOf(prefSection);
           const nextSection = content.indexOf('\n## ', sIdx + 1);
           if (nextSection >= 0) {
             content = content.slice(0, nextSection) + '\n' + block + '\n' + content.slice(nextSection);
@@ -830,11 +922,10 @@ export class Agent {
             content = content.trimEnd() + '\n\n' + block;
           }
         } else {
-          content = content.trimEnd() + '\n\n## Behavior Patterns\n\n' + block;
+          content = content.trimEnd() + '\n\n## Preferences\n\n' + block;
         }
       }
     }
-
     return content;
   }
 
@@ -966,7 +1057,7 @@ export class Agent {
         }
         try {
           const open = await this.withTimeout(
-            this.mempedia.send({ action: 'open_node', node_id: candidate, markdown: false }),
+            this.sendMempediaAction({ action: 'open_node', node_id: candidate, markdown: false }),
             this.memoryActionTimeoutMs,
             'relation open'
           );
@@ -979,7 +1070,7 @@ export class Agent {
       if (!target) {
         try {
           const search = await this.withTimeout(
-            this.mempedia.send({
+            this.sendMempediaAction({
               action: 'search_nodes',
               query: rel,
               limit: this.relationSearchLimit,
@@ -1442,6 +1533,13 @@ export class Agent {
   }
 
   private async guardedMempediaSave(rawArgs: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.guardedMempediaSaveWithSender(rawArgs, (action) => this.sendMempediaAction(action));
+  }
+
+  private async guardedMempediaSaveWithSender(
+    rawArgs: Record<string, unknown>,
+    sendAction: MempediaActionSender,
+  ): Promise<Record<string, unknown>> {
     const payload = this.buildStructuredSavePayload(rawArgs);
     const originalNodeId = this.deriveSaveNodeId(payload.requestedNodeId, payload);
     const title = payload.title || originalNodeId;
@@ -1457,7 +1555,7 @@ export class Agent {
     }
 
     try {
-      const existing = await this.mempedia.send({
+      const existing = await sendAction({
         action: 'open_node',
         node_id: redirected ? resolvedNodeId : originalNodeId,
         markdown: true,
@@ -1477,7 +1575,7 @@ export class Agent {
       // missing node is acceptable; keep original node id
     }
 
-    const result = await this.mempedia.send({
+    const result = await sendAction({
       action: 'ingest',
       node_id: resolvedNodeId,
       title: title,
@@ -1489,7 +1587,6 @@ export class Agent {
       source: payload.source,
       agent_id: 'mempedia-codecli',
       reason: redirected ? `Branching ReAct task completion (${redirectReason})` : 'Branching ReAct task completion',
-      confidence: 1.0,
       importance: 1.0,
     });
 
@@ -1529,16 +1626,28 @@ export class Agent {
     return compactTokens.length <= 4;
   }
 
-  private selectRelevantConversationTurns(input: string): ConversationTurn[] {
-    if (this.conversationTurns.length === 0) {
+  private getConversationTurns(conversationId = 'default'): ConversationTurn[] {
+    return this.conversationTurnsByConversation.get(conversationId) || [];
+  }
+
+  private appendConversationTurn(conversationId: string, turn: ConversationTurn): void {
+    const current = this.getConversationTurns(conversationId);
+    const next = [...current, turn];
+    const bounded = next.length > this.maxConversationTurns ? next.slice(-this.maxConversationTurns) : next;
+    this.conversationTurnsByConversation.set(conversationId, bounded);
+  }
+
+  private selectRelevantConversationTurns(input: string, conversationId = 'default'): ConversationTurn[] {
+    const conversationTurns = this.getConversationTurns(conversationId);
+    if (conversationTurns.length === 0) {
       return [];
     }
     const followUp = this.isLikelyFollowUp(input);
-    const scored = this.conversationTurns
+    const scored = conversationTurns
       .map((turn, index) => {
         const combined = `${turn.user}\n${turn.assistant}`;
         const overlap = this.lexicalOverlapScore(input, combined);
-        const recency = (index + 1) / Math.max(1, this.conversationTurns.length) * 0.18;
+        const recency = (index + 1) / Math.max(1, conversationTurns.length) * 0.18;
         const score = overlap + (followUp ? recency : recency * 0.5);
         return { turn, score, index };
       })
@@ -1552,7 +1661,7 @@ export class Agent {
         .map((item) => item.turn);
     }
     if (followUp) {
-      return this.conversationTurns.slice(-1);
+      return conversationTurns.slice(-1);
     }
     return [];
   }
@@ -1645,9 +1754,10 @@ export class Agent {
     input: string,
     selectedTurns: ConversationTurn[],
     perfEntries: PerfEntry[] | null,
+    sendAction: MempediaActionSender = (action) => this.sendMempediaAction(action),
   ): Promise<RetrievedContext> {
     const query = [input, ...selectedTurns.map((turn) => turn.user)].filter(Boolean).join('\n');
-    const searchResults = await this.mempedia.send({
+    const searchResults = await sendAction({
       action: 'search_hybrid',
       query,
       limit: 10,
@@ -1665,7 +1775,7 @@ export class Agent {
     const recalledNodeIds = searchResults.results.map((item: any) => String(item.node_id));
     const candidates: ContextCandidate[] = [];
     for (const hit of searchResults.results.slice(0, 5)) {
-      const opened = await this.mempedia.send({
+      const opened = await sendAction({
         action: 'open_node',
         node_id: String(hit.node_id),
         markdown: true,
@@ -1810,35 +1920,25 @@ export class Agent {
     const compactInput = this.clipText(input, this.extractionMaxChars);
     const compactTraces = this.clipText(traceLines, Math.max(2000, Math.floor(this.extractionMaxChars / 2)));
     const compactAnswer = this.clipText(answer, Math.max(1000, Math.floor(this.extractionMaxChars / 3)));
-    const extractionPrompt = `请提取以下对话中应长期保存到知识库的信息。
-输出必须是 JSON（不要 markdown）并使用这个结构：
+    const extractionPrompt = `请按 Mempedia 最新四层模型提取长期记忆，输出必须是 JSON（不要 markdown）：
 {
-  "user_habits_env": [
-    { "topic": "环境或偏好关键词", "summary": "准确简短描述(必须)", "details": "证据与细节" }
+  "user_preferences": [
+    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }
   ],
-  "behavior_patterns": [
-    { "pattern_key": "稳定模式键(唯一)", "summary": "准确简短描述(必须)", "details": "可复用步骤与触发条件", "applicable_plan": "适用计划类型" }
+  "agent_skills": [
+    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }
   ],
   "atomic_knowledge": [
-     { "keyword": "关键词(唯一标识)", "summary": "准确简短的摘要(必须)", "description": "较完整的描述", "evolution": "历史变迁/版本沿革/发展", "relations": ["相关关键词1", "相关关键词2"] }
+    { "keyword": "核心关键词", "summary": "短摘要", "description": "完整描述", "evolution": "演进信息", "relations": ["相关项"] }
   ]
 }
 
 规则：
-1. **user_habits_env (用户习惯与环境)**: 记录目前的环境信息与用户偏好，使用稳定topic归档并持续补充。
-2. **behavior_patterns (行为模式)**: 模型在尝试完成某种用户计划时减去无意义尝试，只留下有用行为总结形成pattern；pattern_key必须稳定，后续持续更新同一node。
-3. **atomic_knowledge (原子化知识)**: 
-    - 所有知识node都应该由一个独立的关键词确认。
-    - 关键词下包含摘要、描述、变迁、关联关系，类似wikipedia一样。
-    - 每个核心关键词知识都有系统性的知识（解释、事实、历史变迁、引申）记录并不断维护。
-    - 如有重名的关键词知识，则在摘要中区分开。
-    - **必须**包含 summary 字段，且为准确简短描述（8-140字）。
-
-约束：
-- 只有 atomic_knowledge 会被写入知识图谱节点；user_habits_env 与 behavior_patterns 会写入专用结构。
-- 不要把原始对话逐字写入任何字段；只保留抽象、可复用的长期知识。
-
-严禁输出寒暄、执行日志、临时上下文、错误堆栈。只保留长期有价值的信息。`;
+1. Layer 1 Core Knowledge：atomic_knowledge 必须是可独立复用的知识点。
+2. Layer 3 User Preferences：仅提取稳定偏好，不要临时状态。
+3. Layer 4 Agent Skills：只提取可复用流程/策略，避免一次性日志。
+4. 不要逐字复制对话；保留抽象、可复用长期知识。
+5. 严禁输出寒暄、临时上下文、错误堆栈。`;
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
@@ -1852,49 +1952,53 @@ export class Agent {
       });
       const content = extraction.choices[0]?.message?.content || '{}';
       const parsed = JSON.parse(content);
-    const habits = Array.isArray(parsed.user_habits_env)
-        ? parsed.user_habits_env.map((item: any) => {
+      const preferences = Array.isArray(parsed.user_preferences)
+        ? parsed.user_preferences.map((item: any) => {
             if (typeof item === 'string') {
-              const topic = item.replace(/\s+/g, ' ').trim().slice(0, 64) || 'habit_env';
+              const topic = item.replace(/\s+/g, ' ').trim().slice(0, 64) || 'general';
               return {
                 topic,
-                summary: this.normalizeSummary(item, topic),
-                details: this.normalizeDetails(item, topic)
+                preference: this.normalizeSummary(item, topic),
+                evidence: this.normalizeDetails(item, topic),
               };
             }
             const topic = typeof item?.topic === 'string'
               ? item.topic.replace(/\s+/g, ' ').trim().slice(0, 64)
               : '';
-            const fallback = topic || item?.summary || 'habit_env';
+            const fallback = topic || item?.preference || 'general';
             return {
               topic: topic || this.toSlug(String(fallback)).slice(0, 64),
-              summary: this.normalizeSummary(item?.summary, String(fallback)),
-              details: this.normalizeDetails(item?.details, String(fallback))
+              preference: this.normalizeSummary(item?.preference, String(fallback)),
+              evidence: this.normalizeDetails(item?.evidence, String(fallback)),
             };
-          }).filter((x: any) => x.topic && x.summary)
+          }).filter((x: any) => x.topic && x.preference)
         : [];
-      const patterns = Array.isArray(parsed.behavior_patterns)
-        ? parsed.behavior_patterns.map((item: any) => {
+      const skills = Array.isArray(parsed.agent_skills)
+        ? parsed.agent_skills.map((item: any) => {
             if (typeof item === 'string') {
-              const key = this.toSlug(item).slice(0, 64) || 'behavior_pattern';
+              const skillId = `skill_${this.toSlug(item).slice(0, 56) || 'general'}`;
               return {
-                pattern_key: key,
-                summary: this.normalizeSummary(item, key),
-                details: this.normalizeDetails(item, key),
-                applicable_plan: ''
+                skill_id: skillId,
+                title: this.normalizeSummary(item, skillId),
+                content: this.normalizeDetails(item, skillId),
+                tags: ['auto'],
               };
             }
-            const rawKey = typeof item?.pattern_key === 'string' ? item.pattern_key : '';
-            const fallback = rawKey || item?.summary || 'behavior_pattern';
+            const rawTitle = typeof item?.title === 'string' ? item.title.trim() : '';
+            const rawSkillId = typeof item?.skill_id === 'string' ? item.skill_id.trim() : '';
+            const fallback = rawTitle || rawSkillId || 'general_skill';
+            const tags = Array.isArray(item?.tags)
+              ? item.tags.map((tag: any) => String(tag || '').trim()).filter((tag: string) => tag.length > 0).slice(0, 8)
+              : [];
             return {
-              pattern_key: this.toSlug(String(rawKey || fallback)).slice(0, 64) || 'behavior_pattern',
-              summary: this.normalizeSummary(item?.summary, String(fallback)),
-              details: this.normalizeDetails(item?.details, String(fallback)),
-              applicable_plan: typeof item?.applicable_plan === 'string' ? item.applicable_plan.trim() : ''
+              skill_id: rawSkillId || `skill_${this.toSlug(fallback).slice(0, 56) || 'general'}`,
+              title: rawTitle || this.normalizeSummary(fallback, fallback),
+              content: this.normalizeDetails(item?.content || item?.details || item?.summary, fallback),
+              tags,
             };
-          }).filter((x: any) => x.pattern_key && x.summary)
+          }).filter((x: any) => x.skill_id && x.title && x.content)
         : [];
-    const atomic = Array.isArray(parsed.atomic_knowledge)
+      const atomic = Array.isArray(parsed.atomic_knowledge)
         ? parsed.atomic_knowledge.map((item: any) => {
             const keyword = typeof item?.keyword === 'string' ? item.keyword.replace(/\s+/g, ' ').trim() : '';
             if (!keyword) {
@@ -1920,10 +2024,10 @@ export class Agent {
         : [];
       
       return {
-        user_habits_env: habits.slice(0, 10),
-        behavior_patterns: patterns.slice(0, 10),
-      atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>
-    };
+        user_preferences: preferences.slice(0, 12),
+        agent_skills: skills.slice(0, 12),
+        atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>
+      };
   } catch (_) {
     return this.fallbackExtractMemory(input, answer);
   }
@@ -1931,35 +2035,35 @@ export class Agent {
 
   private fallbackExtractMemory(input: string, answer: string): MemoryExtraction {
     const text = `${input}\n${answer}`;
-    const habits: Array<{ topic: string; summary: string; details: string }> = [];
-    const patterns: Array<{ pattern_key: string; summary: string; details: string; applicable_plan?: string }> = [];
+    const preferences: Array<{ topic: string; preference: string; evidence: string }> = [];
+    const skills: Array<{ skill_id: string; title: string; content: string; tags: string[] }> = [];
 
     const habitRegex = /(偏好|喜欢|习惯|不喜欢|讨厌|避免)[^。\\n]{0,120}/;
     const habitMatch = text.match(habitRegex);
     if (habitMatch) {
       const phrase = habitMatch[0].trim();
       const topic = phrase.slice(0, 32);
-      habits.push({
+      preferences.push({
         topic,
-        summary: this.normalizeSummary(phrase, topic),
-        details: this.normalizeDetails(phrase, topic)
+        preference: this.normalizeSummary(phrase, topic),
+        evidence: this.normalizeDetails(phrase, topic)
       });
     }
 
     const hasSteps = /步骤|流程|最佳实践|注意事项|操作方法|建议/.test(text) || /\\n\\s*\\d+\\./.test(text);
     if (hasSteps) {
-      const key = this.toSlug(answer.slice(0, 64) || 'behavior_pattern').slice(0, 64) || 'behavior_pattern';
-      patterns.push({
-        pattern_key: key,
-        summary: this.normalizeSummary(answer.slice(0, 200), key),
-        details: this.normalizeDetails(answer.slice(0, 600), key),
-        applicable_plan: ''
+      const key = this.toSlug(answer.slice(0, 64) || 'general_skill').slice(0, 56) || 'general_skill';
+      skills.push({
+        skill_id: `skill_${key}`,
+        title: this.normalizeSummary(answer.slice(0, 120), key),
+        content: this.normalizeDetails(answer.slice(0, 600), key),
+        tags: ['auto'],
       });
     }
 
     return {
-      user_habits_env: habits.slice(0, 5),
-      behavior_patterns: patterns.slice(0, 5),
+      user_preferences: preferences.slice(0, 8),
+      agent_skills: skills.slice(0, 8),
       atomic_knowledge: this.fallbackExtractAtomic(input, answer)
     };
   }
@@ -1979,9 +2083,10 @@ export class Agent {
       reason: job.reason,
       focus: job.focus || '',
       branch_id: job.branchId || null,
-      save_habits: job.saveHabits,
-      save_patterns: job.savePatterns,
+      save_preferences: job.savePreferences,
+      save_skills: job.saveSkills,
       save_atomic: job.saveAtomic,
+      save_episodic: job.saveEpisodic,
       input_chars: input.length,
       traces_count: traces.length,
       answer_chars: answer.length
@@ -1992,7 +2097,7 @@ export class Agent {
         const extractionInput = [
           `保存原因: ${job.reason}`,
           job.focus ? `保存重点: ${job.focus}` : '',
-          `类别选择: habits=${job.saveHabits} patterns=${job.savePatterns} atomic=${job.saveAtomic}`,
+          `类别选择: preferences=${job.savePreferences} skills=${job.saveSkills} atomic=${job.saveAtomic} episodic=${job.saveEpisodic}`,
           '',
           input,
         ].filter(Boolean).join('\n');
@@ -2003,33 +2108,33 @@ export class Agent {
             'memory extraction'
           )
         );
-        if (!job.saveHabits) {
-          payload.user_habits_env = [];
+        if (!job.savePreferences) {
+          payload.user_preferences = [];
         }
-        if (!job.savePatterns) {
-          payload.behavior_patterns = [];
+        if (!job.saveSkills) {
+          payload.agent_skills = [];
         }
         if (!job.saveAtomic) {
           payload.atomic_knowledge = [];
         }
         if (
-          payload.user_habits_env.length === 0 &&
-          payload.behavior_patterns.length === 0 &&
+          payload.user_preferences.length === 0 &&
+          payload.agent_skills.length === 0 &&
           payload.atomic_knowledge.length === 0
         ) {
           const fallbackPayload = this.fallbackExtractMemory(extractionInput, answer);
-          if (!job.saveHabits) {
-            fallbackPayload.user_habits_env = [];
+          if (!job.savePreferences) {
+            fallbackPayload.user_preferences = [];
           }
-          if (!job.savePatterns) {
-            fallbackPayload.behavior_patterns = [];
+          if (!job.saveSkills) {
+            fallbackPayload.agent_skills = [];
           }
           if (!job.saveAtomic) {
             fallbackPayload.atomic_knowledge = [];
           }
           if (
-            fallbackPayload.user_habits_env.length > 0 ||
-            fallbackPayload.behavior_patterns.length > 0 ||
+            fallbackPayload.user_preferences.length > 0 ||
+            fallbackPayload.agent_skills.length > 0 ||
             fallbackPayload.atomic_knowledge.length > 0
           ) {
             payload = fallbackPayload;
@@ -2037,15 +2142,15 @@ export class Agent {
         }
         this.appendMemoryLog(runId, 'memory_extract_done', {
           elapsed_ms: Date.now() - extractionStartedAt,
-          habits: payload.user_habits_env.length,
-          patterns: payload.behavior_patterns.length,
+          preferences: payload.user_preferences.length,
+          skills: payload.agent_skills.length,
           atomic: payload.atomic_knowledge.length
         });
 
         const nowIso = new Date().toISOString();
         const sendWithTimeout = (action: ToolAction) =>
           this.withTimeout(
-            this.mempedia.send(action),
+            this.sendMempediaAction(action),
             this.memoryActionTimeoutMs,
             `memory action ${action.action}`
           );
@@ -2071,44 +2176,6 @@ export class Agent {
           });
         };
         const linkedNodes = new Set<string>();
-
-        if (payload.user_habits_env.length > 0) {
-          const habitMap = new Map<string, { topic: string; summary: string; details: string }>();
-          for (const item of payload.user_habits_env) {
-            habitMap.set(this.toSlug(item.topic), item);
-          }
-          for (const item of habitMap.values()) {
-            await runAction('habit_record', {
-              action: 'record_user_habit',
-              topic: item.topic,
-              summary: item.summary,
-              details: item.details,
-              agent_id: 'mempedia-codecli',
-              source: 'kg_habit_env'
-            });
-          }
-        }
-
-        if (payload.behavior_patterns.length > 0) {
-          const patternMap = new Map<string, { pattern_key: string; summary: string; details: string; applicable_plan?: string }>();
-          for (const item of payload.behavior_patterns) {
-            patternMap.set(this.toSlug(item.pattern_key), {
-              ...item,
-              pattern_key: this.toSlug(item.pattern_key)
-            });
-          }
-          for (const item of patternMap.values()) {
-            await runAction('pattern_record', {
-              action: 'record_behavior_pattern',
-              pattern_key: item.pattern_key,
-              summary: item.summary,
-              details: item.details,
-              applicable_plan: item.applicable_plan || '',
-              agent_id: 'mempedia-codecli',
-              source: 'kg_pattern_success'
-            });
-          }
-        }
 
         if (payload.atomic_knowledge.length > 0) {
           const atomicMap = new Map<string, { keyword: string; summary: string; description: string; evolution: string; relations: string[] }>();
@@ -2140,7 +2207,6 @@ export class Agent {
                 `conversation:${conversationId}`,
                 `memory_run:${runId}`,
               ],
-              confidence: 0.98,
               importance: 1.9,
               agent_id: 'mempedia-codecli',
               reason: 'Atomic knowledge update',
@@ -2148,6 +2214,28 @@ export class Agent {
             });
             linkedNodes.add(nodeId);
             this.appendNodeConversationMap(nodeId, conversationId, 'atomic_knowledge');
+          }
+        }
+
+        if (payload.agent_skills.length > 0) {
+          const skillMap = new Map<string, { skill_id: string; title: string; content: string; tags: string[] }>();
+          for (const item of payload.agent_skills) {
+            const skillId = this.toSlug(item.skill_id || item.title || 'general_skill').slice(0, 64);
+            skillMap.set(skillId, {
+              skill_id: skillId,
+              title: item.title,
+              content: item.content,
+              tags: item.tags || [],
+            });
+          }
+          for (const item of skillMap.values()) {
+            await runAction('skill_upsert', {
+              action: 'upsert_skill',
+              skill_id: item.skill_id,
+              title: item.title,
+              content: item.content,
+              tags: item.tags,
+            });
           }
         }
 
@@ -2172,51 +2260,46 @@ export class Agent {
           this.appendMemoryLog(runId, 'auto_link_batch_done', { node_count: nodeIds.length });
         }
 
-        // ── Record episodic memory (Layer 2) ─────────────────────────────────
-        // Always record an episodic entry for this interaction so the timeline is
-        // preserved. The entry stores the compressed answer as its summary and
-        // links back to any core-knowledge nodes created/updated in this run.
-        try {
-          const episodicSummary = this.clipText(answer, 400)
-            || this.clipText(input, 200)
-            || `unspecified interaction at ${nowIso}`;
-          const episodicTags = [
-            ...payload.atomic_knowledge.slice(0, 5).map((k) => k.keyword),
-            ...payload.user_habits_env.slice(0, 3).map((h) => h.topic),
-          ].filter(Boolean);
-          await sendWithTimeout({
-            action: 'record_episodic',
-            scene_type: 'conversation',
-            summary: episodicSummary,
-            raw_conversation_id: conversationId,
-            importance: 1.0,
-            core_knowledge_nodes: Array.from(linkedNodes),
-            tags: episodicTags,
-            agent_id: 'mempedia-codecli',
-          });
-          this.appendMemoryLog(runId, 'episodic_recorded', {
-            conversation_id: conversationId,
-            core_nodes: linkedNodes.size,
-          });
-        } catch (e: any) {
-          this.appendMemoryLog(runId, 'episodic_record_failed', {
-            error: String(e?.message || e || 'unknown')
-          });
+        if (job.saveEpisodic) {
+          try {
+            const episodicSummary = this.clipText(answer, 400)
+              || this.clipText(input, 200)
+              || `unspecified interaction at ${nowIso}`;
+            const episodicTags = [
+              ...payload.atomic_knowledge.slice(0, 5).map((k) => k.keyword),
+              ...payload.user_preferences.slice(0, 3).map((p) => p.topic),
+              ...payload.agent_skills.slice(0, 3).map((s) => s.skill_id),
+            ].filter(Boolean);
+            await sendWithTimeout({
+              action: 'record_episodic',
+              scene_type: 'conversation',
+              summary: episodicSummary,
+              raw_conversation_id: conversationId,
+              importance: 1.0,
+              core_knowledge_nodes: Array.from(linkedNodes),
+              tags: episodicTags,
+              agent_id: 'mempedia-codecli',
+            });
+            this.appendMemoryLog(runId, 'episodic_recorded', {
+              conversation_id: conversationId,
+              core_nodes: linkedNodes.size,
+            });
+          } catch (e: any) {
+            this.appendMemoryLog(runId, 'episodic_record_failed', {
+              error: String(e?.message || e || 'unknown')
+            });
+          }
         }
 
-        // ── Sync user preferences to markdown file (Layer 3) ─────────────────
-        // If habits were captured, append/update the preferences markdown file so
-        // that the user's preferences live in one human-readable location.
-        if (payload.user_habits_env.length > 0) {
+        if (payload.user_preferences.length > 0) {
           try {
             const prefRes = await sendWithTimeout({ action: 'read_user_preferences' });
             const existing = (prefRes as any).kind === 'user_preferences'
               ? String((prefRes as any).content || '')
               : '';
-            const updatedPrefs = this.mergePreferencesMarkdown(
+            const updatedPrefs = this.mergeUserPreferencesMarkdown(
               existing,
-              payload.user_habits_env,
-              payload.behavior_patterns,
+              payload.user_preferences,
               nowIso
             );
             await sendWithTimeout({
@@ -2224,8 +2307,7 @@ export class Agent {
               content: updatedPrefs,
             });
             this.appendMemoryLog(runId, 'preferences_synced', {
-              habits: payload.user_habits_env.length,
-              patterns: payload.behavior_patterns.length,
+              preferences: payload.user_preferences.length,
             });
           } catch (e: any) {
             this.appendMemoryLog(runId, 'preferences_sync_failed', {
@@ -2286,9 +2368,10 @@ export class Agent {
       reason: job.reason,
       focus: job.focus || '',
       branch_id: job.branchId || null,
-      save_habits: job.saveHabits,
-      save_patterns: job.savePatterns,
+      save_preferences: job.savePreferences,
+      save_skills: job.saveSkills,
       save_atomic: job.saveAtomic,
+      save_episodic: job.saveEpisodic,
       queue_depth: this.saveQueue.length,
     });
     if (!this.saveInProgress) {
@@ -2296,17 +2379,21 @@ export class Agent {
     }
   }
 
-  async run(input: string, onTrace: (event: TraceEvent) => void): Promise<string> {
+  async run(input: string, onTrace: (event: TraceEvent) => void, options: AgentRunOptions = {}): Promise<string> {
     const perfEnabled = process.env.AGENT_PERF !== '0';
     const perfEntries: PerfEntry[] | null = perfEnabled ? [] : null;
     const traceBuffer: TraceEvent[] = [];
+    const conversationId = options.conversationId || 'default';
+    const runAgentId = options.agentId || 'agent-main';
+    const runSessionId = options.sessionId || `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const runRuntimeHandle = createRuntime({ projectRoot: this.projectRoot, agentId: runAgentId, sessionId: runSessionId }, this.mempedia);
     const emitTrace = (event: TraceEvent) => {
       traceBuffer.push(event);
       onTrace(event);
     };
     emitTrace({ type: 'thought', content: 'Initializing branching ReAct context from Mempedia...' });
 
-    const selectedConversationTurns = this.selectRelevantConversationTurns(input);
+    const selectedConversationTurns = this.selectRelevantConversationTurns(input, conversationId);
     emitTrace({
       type: 'observation',
       content: selectedConversationTurns.length > 0
@@ -2317,9 +2404,12 @@ export class Agent {
     let context = '';
     let recalledNodeIds: string[] = [];
     let selectedNodeIds: string[] = [];
+    const rawAutoQueueMemorySave = String(process.env.AUTO_QUEUE_MEMORY_SAVE ?? '1').toLowerCase();
+    const autoQueueMemorySave = rawAutoQueueMemorySave !== '0' && rawAutoQueueMemorySave !== 'false' && rawAutoQueueMemorySave !== 'off';
+    let memoryQueuedThisRun = false;
     try {
       const retrieved = await this.measure(perfEntries, 'context_retrieval', async () =>
-        this.retrieveRelevantContext(input, selectedConversationTurns, perfEntries)
+        this.retrieveRelevantContext(input, selectedConversationTurns, perfEntries, (action) => runRuntimeHandle.sendMempediaAction(action))
       );
       context = retrieved.contextText;
       recalledNodeIds = retrieved.recalledNodeIds;
@@ -2358,7 +2448,6 @@ Allowed JSON schema:
 {
   "kind": "tool" | "branch" | "final",
   "thought": "string",
-  "confidence": 0.0,
   "tool_calls": [{ "name": "tool_name", "arguments": {}, "goal": "optional" }],
   "branches": [{ "label": "short label", "goal": "what this child branch should try", "why": "optional", "priority": 0.0 }],
   "final_answer": "string",
@@ -2371,14 +2460,18 @@ Rules:
 3. A branch must represent a genuinely different hypothesis, search path, or execution strategy.
 4. Never create more than ${this.branchMaxWidth} child branches in one step.
 5. Prefer mempedia_search_hybrid for high-recall core-knowledge retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
-6. Use mempedia_search_episodic or mempedia_list_episodic to recall past interactions or time-bound context.
-7. Use mempedia_read_preferences to check user preferences before making assumptions about user habits.
-8. Use mempedia_search_skills or mempedia_read_skill to find relevant agent skills.
-9. When you finish, return kind="final" with a direct user-facing answer.
-10. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
-11. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
-12. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
-13. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
+6. Use mempedia_suggest_exploration or mempedia_explore_with_budget when you need guided graph expansion around a node.
+7. Use mempedia_auto_link_related before setting links if relation candidates are unclear.
+8. Use mempedia_sync_markdown or mempedia_set_node_links for precise node content/link maintenance.
+9. Use mempedia_search_episodic or mempedia_list_episodic to recall past interactions or time-bound context.
+10. Use mempedia_read_preferences to check user preferences before making preference-sensitive decisions.
+11. Use mempedia_search_skills or mempedia_read_skill to find relevant agent skills.
+12. When you finish, return kind="final" with a direct user-facing answer.
+13. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
+14. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
+15. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
+16. Treat run_shell as a last resort. It runs inside a local sandbox and blocks repository sync, privilege escalation, remote shell, and download-then-exec patterns.
+17. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
 
 Available tools:
 ${toolCatalog}
@@ -2389,29 +2482,6 @@ ${context || '(no context found)'}
 Selected context node ids:
 ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
 `;
-
-    const rootBranch: BranchState = {
-      id: 'B0',
-      parentId: null,
-      depth: 0,
-      label: 'root',
-      goal: 'Solve the user request end-to-end.',
-      priority: 1,
-      steps: 0,
-      savedNodeIds: [],
-      transcript: [
-        {
-          role: 'user',
-          content: `Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`,
-        },
-      ],
-    };
-
-    const queue: BranchState[] = [rootBranch];
-    const completed: BranchState[] = [];
-    let lastTouchedBranch: BranchState | null = rootBranch;
-    let totalLoopSteps = 0;
-    const totalLoopBudget = Math.max(this.branchMaxSteps, this.branchMaxSteps * this.branchMaxWidth * (this.branchMaxDepth + 1));
 
     const extractText = (content: any): string => {
       if (typeof content === 'string') {
@@ -2467,14 +2537,48 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
           jsonText = jsonText.slice(start, end + 1);
         }
       }
-      return PlannerDecisionSchema.parse(JSON.parse(jsonText));
+      const parsed = JSON.parse(jsonText);
+      const obj = Array.isArray(parsed) ? (parsed[0] || {}) : parsed;
+      const normalized: Record<string, unknown> = obj && typeof obj === 'object' ? { ...obj } : {};
+
+      if (typeof normalized.kind !== 'string') {
+        if (typeof normalized.final_answer === 'string') {
+          normalized.kind = 'final';
+        } else if (Array.isArray(normalized.tool_calls)) {
+          normalized.kind = 'tool';
+        } else if (Array.isArray(normalized.branches)) {
+          normalized.kind = 'branch';
+        } else {
+          normalized.kind = 'final';
+        }
+      }
+
+      if (typeof normalized.thought !== 'string' || !normalized.thought.trim()) {
+        const kind = String(normalized.kind || 'tool');
+        if (kind === 'tool' && Array.isArray(normalized.tool_calls)) {
+          const names = normalized.tool_calls
+            .map((call: any) => (call && typeof call.name === 'string' ? call.name : 'tool'))
+            .filter((name: string) => name.length > 0)
+            .slice(0, 3)
+            .join(', ');
+          normalized.thought = names
+            ? `Call tools for progress: ${names}`
+            : 'Call tool to gather required context.';
+        } else if (kind === 'branch') {
+          normalized.thought = 'Split into distinct strategies to improve solution quality.';
+        } else {
+          normalized.thought = 'Provide the final answer for the user.';
+        }
+      }
+
+      return PlannerDecisionSchema.parse(normalized);
     };
 
     const buildBranchMemoryJob = (
       branch: BranchState,
       reason: string,
       focus?: string,
-      flags?: { saveHabits?: boolean; savePatterns?: boolean; saveAtomic?: boolean }
+      flags?: { savePreferences?: boolean; saveSkills?: boolean; saveAtomic?: boolean; saveEpisodic?: boolean }
     ): MemorySaveJob => {
       const branchTraces = traceBuffer.filter((event) => {
         const eventBranchId = event.metadata?.branchId;
@@ -2487,9 +2591,10 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
         answer: branchSummary,
         reason,
         focus: focus?.trim() || branch.goal,
-        saveHabits: flags?.saveHabits ?? true,
-        savePatterns: flags?.savePatterns ?? true,
+        savePreferences: flags?.savePreferences ?? true,
+        saveSkills: flags?.saveSkills ?? true,
         saveAtomic: flags?.saveAtomic ?? true,
+        saveEpisodic: flags?.saveEpisodic ?? true,
         branchId: branch.id,
       };
     };
@@ -2516,14 +2621,14 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
       let result = '';
       try {
         if (fnName === 'mempedia_search') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'search_nodes',
             query: args.query,
             limit: args.limit,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_search_hybrid') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'search_hybrid',
             query: args.query,
             limit: args.limit,
@@ -2536,112 +2641,166 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_read') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'open_node',
             node_id: args.node_id,
             markdown: true,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_traverse') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'traverse',
             start_node: args.start_node,
             mode: args.mode,
             depth_limit: args.depth_limit,
-            min_confidence: args.min_confidence,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_history') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'node_history',
             node_id: args.node_id,
             limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_suggest_exploration') {
+          const res = await runRuntimeHandle.sendMempediaAction({
+            action: 'suggest_exploration',
+            node_id: String(args.node_id || args.start_node || ''),
+            limit: args.limit,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_explore_with_budget') {
+          const res = await runRuntimeHandle.sendMempediaAction({
+            action: 'explore_with_budget',
+            node_id: String(args.node_id || args.start_node || ''),
+            depth_budget: args.depth_budget ?? args.depth_limit,
+            per_layer_limit: args.per_layer_limit,
+            total_limit: args.total_limit ?? args.limit,
+            min_score: args.min_score,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_auto_link_related') {
+          const res = await runRuntimeHandle.sendMempediaAction({
+            action: 'auto_link_related',
+            node_id: String(args.node_id || args.start_node || ''),
+            limit: args.limit,
+            min_score: args.min_score ?? args.threshold,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_sync_markdown') {
+          const markdown = typeof args.markdown === 'string' && args.markdown.trim()
+            ? String(args.markdown)
+            : String(args.content || '');
+          const res = await runRuntimeHandle.sendMempediaAction({
+            action: 'sync_markdown',
+            node_id: typeof args.node_id === 'string' ? args.node_id : undefined,
+            path: typeof args.path === 'string' ? args.path : undefined,
+            markdown: markdown || undefined,
+            agent_id: typeof args.agent_id === 'string' ? args.agent_id : undefined,
+            reason: typeof args.reason === 'string' ? args.reason : undefined,
+            source: typeof args.source === 'string' ? args.source : undefined,
+            importance: typeof args.importance === 'number' ? args.importance : undefined,
+          });
+          result = JSON.stringify(res);
+        } else if (fnName === 'mempedia_set_node_links') {
+          const links = Array.isArray(args.links)
+            ? args.links
+            : (Array.isArray(args.relations) ? args.relations : []);
+          const normalizedLinks = links
+            .map((link: any) => ({
+              target: typeof link?.target === 'string' ? link.target.trim() : '',
+              label: typeof link?.label === 'string' ? link.label.trim() || undefined : undefined,
+              weight: typeof link?.weight === 'number' ? link.weight : undefined,
+            }))
+            .filter((link: any) => link.target.length > 0);
+          const res = await runRuntimeHandle.sendMempediaAction({
+            action: 'set_node_links',
+            node_id: String(args.node_id || ''),
+            links: normalizedLinks,
+            agent_id: typeof args.agent_id === 'string' ? args.agent_id : undefined,
+            reason: typeof args.reason === 'string' ? args.reason : undefined,
+            source: typeof args.source === 'string' ? args.source : undefined,
+            importance: typeof args.importance === 'number' ? args.importance : undefined,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_conversation_lookup') {
           const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
           result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
         } else if (fnName === 'mempedia_save') {
-          const res = await this.guardedMempediaSave(args as Record<string, unknown>);
+          const res = await this.guardedMempediaSaveWithSender(args as Record<string, unknown>, (action) => runRuntimeHandle.sendMempediaAction(action));
           result = JSON.stringify(res);
         } else if (fnName === 'queue_memory_save') {
           const reason = String(args.reason || '').trim();
           if (!reason) {
             result = JSON.stringify({ kind: 'error', message: 'queue_memory_save requires reason' });
           } else {
+            const prefFlag = typeof args.save_preferences === 'boolean' ? args.save_preferences : true;
+            const skillFlag = typeof args.save_skills === 'boolean' ? args.save_skills : true;
             const job = buildBranchMemoryJob(branch, reason, typeof args.focus === 'string' ? args.focus : '', {
-              saveHabits: typeof args.save_habits === 'boolean' ? args.save_habits : false,
-              savePatterns: typeof args.save_patterns === 'boolean' ? args.save_patterns : true,
+              savePreferences: prefFlag,
+              saveSkills: skillFlag,
               saveAtomic: typeof args.save_atomic === 'boolean' ? args.save_atomic : true,
+              saveEpisodic: typeof args.save_episodic === 'boolean' ? args.save_episodic : true,
             });
             this.scheduleMemorySave(job);
+            memoryQueuedThisRun = true;
             result = JSON.stringify({
               kind: 'queued_memory_save',
               branch_id: branch.id,
               reason,
               focus: job.focus,
-              save_habits: job.saveHabits,
-              save_patterns: job.savePatterns,
+              save_preferences: job.savePreferences,
+              save_skills: job.saveSkills,
               save_atomic: job.saveAtomic,
+              save_episodic: job.saveEpisodic,
               traces_count: job.traces.length,
             });
           }
-        } else if (fnName === 'run_shell') {
-          result = await new Promise((resolve) => {
-            exec(String(args.command || ''), (error, stdout, stderr) => {
-              if (error) {
-                resolve(`Error: ${error.message}\nStderr: ${stderr}`);
-                return;
-              }
-              resolve(stdout || stderr || 'Command executed successfully.');
-            });
-          });
-        } else if (fnName === 'read_file') {
-          try {
-            result = fs.readFileSync(String(args.path || ''), 'utf-8');
-          } catch (error: any) {
-            result = `Error reading file: ${error.message}`;
-          }
-        } else if (fnName === 'write_file') {
-          try {
-            fs.mkdirSync(path.dirname(String(args.path || '')), { recursive: true });
-            fs.writeFileSync(String(args.path || ''), String(args.content || ''));
-            result = `File written to ${args.path}`;
-          } catch (error: any) {
-            result = `Error writing file: ${error.message}`;
+        } else if (
+          fnName === 'run_shell'
+          || fnName === 'read_file'
+          || fnName === 'write_file'
+        ) {
+          const toolRes = await runRuntimeHandle.executeTool(fnName, args as Record<string, unknown>);
+          if (!toolRes.success) {
+            result = `Error: ${toolRes.error ?? 'unknown tool error'}`;
+          } else if (typeof toolRes.result === 'string') {
+            result = toolRes.result;
+          } else {
+            result = JSON.stringify(toolRes.result);
           }
         } else if (fnName === 'mempedia_search_episodic') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'search_episodic',
             query: args.query,
             limit: args.limit,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_list_episodic') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'list_episodic',
             limit: args.limit,
             before_ts: args.before_ts,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_read_preferences') {
-          const res = await this.mempedia.send({ action: 'read_user_preferences' });
+          const res = await runRuntimeHandle.sendMempediaAction({ action: 'read_user_preferences' });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_update_preferences') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'update_user_preferences',
             content: String(args.content || ''),
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_search_skills') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'search_skills',
             query: args.query,
             limit: args.limit,
           });
           result = JSON.stringify(res);
         } else if (fnName === 'mempedia_read_skill') {
-          const res = await this.mempedia.send({
+          const res = await runRuntimeHandle.sendMempediaAction({
             action: 'read_skill',
             skill_id: String(args.skill_id || ''),
           });
@@ -2688,12 +2847,10 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
       }
       emitTrace({ type: 'thought', content: `Synthesizing ${branches.length} completed branches into one final answer...` });
       const branchSummary = branches
-        .sort((a, b) => (b.confidence ?? 0.5) - (a.confidence ?? 0.5))
         .map((branch) => [
           `Branch ${branch.id}`,
           `label: ${branch.label}`,
           `goal: ${branch.goal}`,
-          `confidence: ${branch.confidence ?? 0.5}`,
           `saved_nodes: ${branch.savedNodeIds.length ? branch.savedNodeIds.join(', ') : '(none)'}`,
           `summary: ${branch.completionSummary || '(none)'}`,
           `answer:\n${branch.finalAnswer || ''}`,
@@ -2718,145 +2875,113 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
 
       return extractText(completion.choices[0]?.message?.content).trim();
     };
-
-    while (queue.length > 0 && completed.length < this.branchMaxCompleted && totalLoopSteps < totalLoopBudget) {
-      queue.sort((a, b) => (b.priority - a.priority) || (a.depth - b.depth) || (a.steps - b.steps));
-      const branch = queue.shift()!;
-      lastTouchedBranch = branch;
-
-      if (branch.steps >= this.branchMaxSteps) {
-        const forced = await finalizeFromBranch(branch, 'step budget reached');
-        branch.finalAnswer = forced || branch.finalAnswer || 'I reached the reasoning budget without a stronger answer.';
-        branch.completionSummary = branch.completionSummary || 'Forced finalization after step budget.';
-        branch.confidence = branch.confidence ?? 0.45;
-        completed.push(branch);
-        emitBranchTrace('observation', branch, `Branch completed after hitting step budget.`);
-        continue;
-      }
-
-      branch.steps += 1;
-      totalLoopSteps += 1;
-
-      let decision: PlannerDecision;
-      try {
-        const completion = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps}`, async () =>
+    let completedBranchesForRun: Array<BranchSynthesisInput['branches'][number]> = [];
+    const runtime = new AgentRuntime({
+      planner: { plan: async (transcript) => ({ kind: 'final', content: transcript.at(-1)?.content || '' }) },
+      toolRuntime: {
+        execute: async () => ({ success: false, error: 'unreachable tool runtime fallback', durationMs: 0 }),
+        resetSession: () => runRuntimeHandle.toolRuntime.resetSession(),
+      },
+      maxSteps: this.branchMaxSteps,
+      maxBranchDepth: this.branchMaxDepth,
+      maxBranchWidth: this.branchMaxWidth,
+      maxCompletedBranches: this.branchMaxCompleted,
+      branchConcurrency: this.branchConcurrency,
+      planBranch: async ({ branch }) => {
+        const completion = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps + 1}`, async () =>
           this.openai.chat.completions.create({
             model: this.model,
-            messages: buildMessages(branch) as any,
+            messages: buildMessages(branch as BranchState) as any,
           })
         );
         const raw = extractText(completion.choices[0]?.message?.content);
-        decision = parseDecision(raw);
-      } catch (error: any) {
-        emitBranchTrace('error', branch, `Failed to parse branch step: ${error.message}`);
-        branch.transcript.push({
-          role: 'user',
-          content: `Your last response was invalid. Error: ${error.message}. Return exactly one valid JSON object next.`,
-        });
-        queue.push(branch);
-        continue;
-      }
-
-      branch.confidence = decision.confidence ?? branch.confidence;
-      branch.transcript.push({ role: 'assistant', content: JSON.stringify(decision) });
-      emitBranchTrace('thought', branch, decision.thought);
-
-      if (decision.kind === 'tool') {
-        const toolCalls = (decision.tool_calls || []).slice(0, this.branchMaxWidth);
-        if (toolCalls.length === 0) {
-          branch.transcript.push({
-            role: 'user',
-            content: 'You selected kind="tool" but provided no tool_calls. Either provide tool_calls or finish with kind="final".',
-          });
-          queue.push(branch);
-          continue;
+        const decision = parseDecision(raw);
+        return decision.kind === 'tool'
+          ? { kind: 'tool', thought: decision.thought, toolCalls: decision.tool_calls || [] }
+          : decision.kind === 'branch'
+            ? { kind: 'branch', thought: decision.thought, branches: decision.branches || [] }
+            : { kind: 'final', thought: decision.thought, content: String(decision.final_answer || ''), completionSummary: decision.completion_summary };
+      },
+      executeToolCall: async ({ branch, toolCall }) => {
+        const result = await executeToolCall(branch as BranchState, toolCall as z.infer<typeof PlannerToolCallSchema>);
+        return {
+          toolName: toolCall.name,
+          result,
+          success: !/^Error[:\s]|^ERROR:/.test(result),
+        };
+      },
+      finalizeBranch: async ({ branch, reason }) => finalizeFromBranch(branch as BranchState, reason),
+      synthesizeFinal: async (inputData) => {
+        completedBranchesForRun = inputData.branches;
+        const branches = inputData.branches.map((branch) => ({
+          id: branch.id,
+          parentId: null,
+          depth: 0,
+          label: branch.label,
+          goal: branch.goal,
+          priority: 1,
+          steps: 0,
+          transcript: [],
+          savedNodeIds: branch.savedNodeIds,
+          completionSummary: branch.completionSummary,
+          finalAnswer: branch.finalAnswer,
+        })) as BranchState[];
+        return synthesizeCompletedBranches(branches);
+      },
+      onTrace: (event) => {
+        if (event.type === 'final') {
+          return;
         }
+        emitTrace(event as TraceEvent);
+      },
+    });
 
-        for (const toolCall of toolCalls) {
-          const observation = await executeToolCall(branch, toolCall);
-          branch.transcript.push({
-            role: 'user',
-            content: `TOOL OBSERVATION for ${toolCall.name}:\n${observation}`,
-          });
-        }
-        queue.push(branch);
-        continue;
-      }
-
-      if (decision.kind === 'branch') {
-        const children = (decision.branches || []).slice(0, this.branchMaxWidth);
-        if (branch.depth >= this.branchMaxDepth || children.length < 2) {
-          branch.transcript.push({
-            role: 'user',
-            content: `Branching was rejected because ${branch.depth >= this.branchMaxDepth ? 'the branch depth budget is exhausted' : 'fewer than two valid child branches were provided'}. Continue this branch without further splitting unless necessary.`,
-          });
-          queue.push(branch);
-          continue;
-        }
-
-        emitBranchTrace('action', branch, `Spawning ${children.length} child branches.`, { childCount: children.length });
-        children.forEach((child, index) => {
-          const childBranch: BranchState = {
-            id: `${branch.id}.${index + 1}`,
-            parentId: branch.id,
-            depth: branch.depth + 1,
-            label: child.label,
-            goal: child.goal,
-            priority: Math.max(0.05, branch.priority * (child.priority ?? Math.max(0.2, 1 - index * 0.2))),
-            steps: branch.steps,
-            savedNodeIds: branch.savedNodeIds.slice(),
-            transcript: [
-              ...branch.transcript,
-              {
-                role: 'user',
-                content: `Continue only this child branch.\nChild label: ${child.label}\nChild goal: ${child.goal}\nWhy this branch exists: ${child.why || 'Distinct strategy'}\nDo not repeat sibling work unless needed.`,
-              },
-            ],
-          };
-          queue.push(childBranch);
-          emitTrace({
-            type: 'observation',
-            content: `Spawned child branch ${childBranch.id}: ${child.label}`,
-            metadata: traceMeta(childBranch),
-          });
+    const finalAnswer = await runtime.run(
+      `Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`,
+    );
+    if (autoQueueMemorySave && !memoryQueuedThisRun) {
+      const bestBranch = completedBranchesForRun[0];
+      if (finalAnswer.trim().length >= 24) {
+        const autoJob = buildBranchMemoryJob(
+          bestBranch
+            ? ({
+                id: bestBranch.id,
+                parentId: null,
+                depth: 0,
+                label: bestBranch.label,
+                goal: bestBranch.goal,
+                priority: 1,
+                steps: 0,
+                transcript: [],
+                savedNodeIds: bestBranch.savedNodeIds,
+                completionSummary: bestBranch.completionSummary,
+                finalAnswer: bestBranch.finalAnswer,
+              } as BranchState)
+            : ({
+                id: 'B0',
+                parentId: null,
+                depth: 0,
+                label: 'root',
+                goal: 'Solve the user request end-to-end.',
+                priority: 1,
+                steps: 0,
+                transcript: [],
+                savedNodeIds: [],
+                finalAnswer,
+              } as BranchState),
+          'auto post-run memory capture',
+          this.firstSentence(finalAnswer),
+          { savePreferences: true, saveSkills: true, saveAtomic: true, saveEpisodic: true }
+        );
+        this.scheduleMemorySave(autoJob);
+        memoryQueuedThisRun = true;
+        emitTrace({
+          type: 'observation',
+          content: `Auto-queued async memory save from branch ${bestBranch.id}.`,
         });
-        continue;
       }
-
-      const finalAnswer = (decision.final_answer || '').trim();
-      if (!finalAnswer) {
-        branch.transcript.push({
-          role: 'user',
-          content: 'You selected kind="final" but did not provide final_answer. Return a complete final answer.',
-        });
-        queue.push(branch);
-        continue;
-      }
-
-      branch.finalAnswer = finalAnswer;
-      branch.completionSummary = decision.completion_summary || this.firstSentence(finalAnswer) || `Completed branch ${branch.id}`;
-      branch.confidence = decision.confidence ?? branch.confidence ?? 0.65;
-      completed.push(branch);
-      emitBranchTrace('observation', branch, `Branch completed: ${branch.completionSummary}`);
     }
-
-    if (totalLoopSteps >= totalLoopBudget) {
-      emitTrace({ type: 'error', content: `Reached total branch loop budget (${totalLoopBudget}). Finalizing best available result.` });
-    }
-
-    if (completed.length === 0 && lastTouchedBranch) {
-      const forced = await finalizeFromBranch(lastTouchedBranch, 'no branch produced a final answer');
-      lastTouchedBranch.finalAnswer = forced || 'I could not complete the branching loop.';
-      lastTouchedBranch.completionSummary = lastTouchedBranch.completionSummary || 'Forced finalization because no branch returned final output.';
-      lastTouchedBranch.confidence = lastTouchedBranch.confidence ?? 0.35;
-      completed.push(lastTouchedBranch);
-    }
-
-    const finalAnswer = await synthesizeCompletedBranches(completed.slice(0, this.branchMaxCompleted));
-    this.conversationTurns.push({ user: input, assistant: finalAnswer });
-    if (this.conversationTurns.length > this.maxConversationTurns) {
-      this.conversationTurns = this.conversationTurns.slice(-this.maxConversationTurns);
-    }
+    this.appendConversationTurn(conversationId, { user: input, assistant: finalAnswer });
     if (perfEntries && perfEntries.length > 0) {
       const totalMs = perfEntries.reduce((sum, item) => sum + item.ms, 0);
       const top = [...perfEntries]

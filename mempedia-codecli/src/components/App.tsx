@@ -61,6 +61,54 @@ interface WebConversationItem {
   timestamp: number;
 }
 
+type BranchVisualStatus = 'queued' | 'active' | 'completed' | 'finalizing' | 'error';
+
+interface BranchVisualNode {
+  id: string;
+  parentId: string | null;
+  label: string;
+  depth: number;
+  step: number;
+  status: BranchVisualStatus;
+}
+
+interface BranchLoopVisualState {
+  round: number;
+  totalSteps: number;
+  totalBudget: number;
+  completed: number;
+  maxCompleted: number;
+  /** Last branch to emit a non-completed event — used for single-node highlight. */
+  activeBranchId: string | null;
+  /** All branches currently running steps concurrently. */
+  activeBranchIds: string[];
+  queueCount: number;
+  nodes: Record<string, BranchVisualNode>;
+}
+
+interface BranchTreeRow {
+  node: BranchVisualNode;
+  isLast: boolean;
+  ancestorHasNext: boolean[];
+}
+
+interface ThreadRound {
+  id: string;
+  timestamp: number;
+  user_input: string;
+  agent_response: string;
+  traces: Array<{ type: string; content: string; metadata?: TraceEvent['metadata'] }>;
+  branch_snapshot: BranchLoopVisualState | null;
+}
+
+interface ConversationThread {
+  id: string;
+  title: string;
+  created_at: number;
+  last_updated: number;
+  rounds: ThreadRound[];
+}
+
 export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, memoryApiKey, memoryBaseURL, memoryModel }) => {
   const { exit } = useApp();
   const hmacAccessKey = process.env.HMAC_ACCESS_KEY?.trim();
@@ -91,10 +139,25 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [remoteSkills, setRemoteSkills] = useState<LocalSkill[]>([]);
   const [activeSkill, setActiveSkill] = useState<LocalSkill | null>(null);
+  const [runRound, setRunRound] = useState(0);
+  const [branchLoop, setBranchLoop] = useState<BranchLoopVisualState | null>(null);
+  const [traceLogExpanded, setTraceLogExpanded] = useState(false);
   const [uiUrl, setUiUrl] = useState<string | null>(null);
   const uiServerRef = useRef<http.Server | null>(null);
   const uiBusyRef = useRef(false);
+  const activeThreadRunsRef = useRef<Set<string>>(new Set());
   const webConversationRef = useRef<WebConversationItem[]>([]);
+  const branchStepSeenRef = useRef<Set<string>>(new Set());
+
+  const envBranchMaxDepth = Number(process.env.REACT_BRANCH_MAX_DEPTH ?? 2);
+  const branchMaxDepth = Number.isFinite(envBranchMaxDepth) ? Math.max(0, Math.min(4, Math.floor(envBranchMaxDepth))) : 2;
+  const envBranchMaxWidth = Number(process.env.REACT_BRANCH_MAX_WIDTH ?? 3);
+  const branchMaxWidth = Number.isFinite(envBranchMaxWidth) ? Math.max(1, Math.min(5, Math.floor(envBranchMaxWidth))) : 3;
+  const envBranchMaxSteps = Number(process.env.REACT_BRANCH_MAX_STEPS ?? 8);
+  const branchMaxSteps = Number.isFinite(envBranchMaxSteps) ? Math.max(2, Math.min(24, Math.floor(envBranchMaxSteps))) : 8;
+  const envBranchMaxCompleted = Number(process.env.REACT_BRANCH_MAX_COMPLETED ?? 4);
+  const branchMaxCompleted = Number.isFinite(envBranchMaxCompleted) ? Math.max(1, Math.min(8, Math.floor(envBranchMaxCompleted))) : 4;
+  const branchTotalBudget = Math.max(branchMaxSteps, branchMaxSteps * branchMaxWidth * (branchMaxDepth + 1));
 
   useEffect(() => {
     agent.start().catch((err: any) => {
@@ -242,8 +305,34 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     }
     const accessLogs = readJsonLines(path.join(indexDir, 'access.log'), (row) => row && typeof row.node_id === 'string');
     const agentActions = readJsonLines(path.join(indexDir, 'agent_actions.log'), (row) => row && typeof row.node_id === 'string');
-    const habits = readJsonLines(path.join(indexDir, 'user_habits.jsonl'), (row) => row && typeof row.topic === 'string');
-    const behaviorPatterns = readJsonLines(path.join(indexDir, 'behavior_patterns.jsonl'), (row) => row && typeof row.pattern_key === 'string');
+    const preferencesPath = path.join(memoryRoot, 'preferences.md');
+    const preferences = fs.existsSync(preferencesPath) ? fs.readFileSync(preferencesPath, 'utf-8') : '';
+    const skillsDir = path.join(memoryRoot, 'skills');
+    const skills: Array<{ skill_id: string; title?: string; tags?: string[]; updated_at?: number }> = [];
+    if (fs.existsSync(skillsDir)) {
+      const skillFiles = listFiles(skillsDir).filter((f) => f.endsWith('.md'));
+      for (const file of skillFiles) {
+        try {
+          const raw = fs.readFileSync(file, 'utf-8');
+          const frontmatter = raw.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
+          const meta = frontmatter ? frontmatter[1] : '';
+          const skillId = path.basename(file).replace(/-[0-9a-f]{8}\.md$/i, '');
+          const title = meta.match(/title:\s*"?([^"\n]+)"?/i)?.[1]?.trim();
+          const tagsLine = meta.match(/tags:\s*\[(.*?)\]/i)?.[1] || '';
+          const tags = tagsLine
+            .split(',')
+            .map((item) => item.replace(/["']/g, '').trim())
+            .filter(Boolean);
+          const updatedAtRaw = meta.match(/updated_at:\s*(\d+)/i)?.[1];
+          skills.push({
+            skill_id: skillId,
+            title,
+            tags,
+            updated_at: updatedAtRaw ? Number(updatedAtRaw) : undefined,
+          });
+        } catch {}
+      }
+    }
     const nodeConversations = readJsonLines(path.join(indexDir, 'node_conversations.jsonl'), (row) => row && typeof row.node_id === 'string');
     const conversationDir = path.join(indexDir, 'conversations');
     const conversations: Array<{ id: string; timestamp?: string; input?: string; answer?: string }> = [];
@@ -287,8 +376,8 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       versions,
       accessLogs,
       agentActions,
-      habits,
-      behaviorPatterns,
+      preferences,
+      skills,
       nodeConversations,
       conversations,
       markdownByNode,
@@ -421,6 +510,126 @@ ${query}`
       : query;
   };
 
+  // ── Branch state pure updater (shared by terminal UI and thread chat) ────────
+  const applyBranchTraceEvent = (
+    prev: BranchLoopVisualState,
+    event: TraceEvent,
+    seenKeys: Set<string>
+  ): BranchLoopVisualState => {
+    const next: BranchLoopVisualState = { ...prev, nodes: { ...prev.nodes } };
+    const meta = event.metadata;
+    const content = String(event.content || '');
+
+    if (meta?.branchId) {
+      const branchId = meta.branchId;
+      const existing = next.nodes[branchId];
+      const node: BranchVisualNode = existing
+        ? { ...existing }
+        : {
+            id: branchId,
+            parentId: typeof meta.parentBranchId === 'string' ? meta.parentBranchId : null,
+            label: meta.branchLabel || branchId,
+            depth: typeof meta.depth === 'number' ? meta.depth : 0,
+            step: typeof meta.step === 'number' ? meta.step : 0,
+            status: 'queued',
+          };
+
+      if (meta.branchLabel) node.label = meta.branchLabel;
+      if (typeof meta.depth === 'number') node.depth = meta.depth;
+      if (typeof meta.step === 'number') {
+        node.step = meta.step;
+        const stepKey = `${branchId}:${meta.step}`;
+        if (!seenKeys.has(stepKey) && event.type === 'thought') {
+          seenKeys.add(stepKey);
+          next.totalSteps += 1;
+        }
+      }
+
+      if (event.type === 'error') {
+        node.status = 'error';
+      } else if (content.startsWith('Forcing finalization')) {
+        node.status = 'finalizing';
+      } else if (content.startsWith('Branch completed')) {
+        node.status = 'completed';
+      } else if (node.status !== 'completed' && node.status !== 'finalizing') {
+        node.status = 'active';
+      }
+
+      next.nodes[branchId] = node;
+      next.activeBranchId = node.status === 'completed' ? next.activeBranchId : branchId;
+    }
+
+    if (content.startsWith('Spawned child branch')) {
+      const spawnedMatch = content.match(/^Spawned child branch\s+([^:]+):\s*(.+)$/i);
+      if (spawnedMatch) {
+        const childId = spawnedMatch[1].trim();
+        const childLabel = spawnedMatch[2].trim();
+        const existing = next.nodes[childId];
+        next.nodes[childId] = {
+          id: childId,
+          parentId: existing?.parentId || (meta?.parentBranchId ?? null),
+          label: childLabel || existing?.label || childId,
+          depth: typeof meta?.depth === 'number' ? meta.depth : (existing?.depth ?? 0),
+          step: typeof meta?.step === 'number' ? meta.step : (existing?.step ?? 0),
+          status: existing?.status === 'completed' ? 'completed' : 'queued',
+        };
+      }
+    }
+
+    const allNodes = Object.values(next.nodes);
+    next.completed = allNodes.filter((n) => n.status === 'completed').length;
+    next.queueCount = allNodes.filter((n) => n.status === 'queued').length;
+    // Track all concurrently active branches (for multi-highlight in the UI).
+    next.activeBranchIds = allNodes
+      .filter((n) => n.status === 'active' || n.status === 'finalizing')
+      .map((n) => n.id);
+
+    if (content.startsWith('Synthesizing ') || content.startsWith('Reached total branch loop budget')) {
+      next.activeBranchId = null;
+      next.activeBranchIds = [];
+    }
+
+    return next;
+  };
+
+  // ── Thread persistence helpers ────────────────────────────────────────────────
+  const getThreadsDir = () => path.join(projectRoot, '.mempedia', 'threads');
+
+  const generateThreadId = () =>
+    `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+  const threadLoadIndex = (): Array<{ id: string; title: string; created_at: number; last_updated: number }> => {
+    const indexPath = path.join(getThreadsDir(), 'index.json');
+    if (!fs.existsSync(indexPath)) return [];
+    try { return JSON.parse(fs.readFileSync(indexPath, 'utf-8')); } catch { return []; }
+  };
+
+  const threadSaveIndex = (index: Array<{ id: string; title: string; created_at: number; last_updated: number }>) => {
+    fs.mkdirSync(getThreadsDir(), { recursive: true });
+    fs.writeFileSync(path.join(getThreadsDir(), 'index.json'), JSON.stringify(index, null, 2));
+  };
+
+  const threadLoad = (id: string): ConversationThread | null => {
+    const sanitized = id.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!sanitized) return null;
+    const p = path.join(getThreadsDir(), `${sanitized}.json`);
+    if (!fs.existsSync(p)) return null;
+    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+  };
+
+  const threadSave = (thread: ConversationThread) => {
+    fs.mkdirSync(getThreadsDir(), { recursive: true });
+    const sanitized = thread.id.replace(/[^a-zA-Z0-9_-]/g, '');
+    fs.writeFileSync(path.join(getThreadsDir(), `${sanitized}.json`), JSON.stringify(thread, null, 2));
+  };
+
+  const threadDelete = (id: string) => {
+    const sanitized = id.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!sanitized) return;
+    const p = path.join(getThreadsDir(), `${sanitized}.json`);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  };
+
   const createUiServer = (uiRoot: string) => {
     const safeRoot = path.resolve(uiRoot);
     const safePrefix = `${safeRoot}${path.sep}`;
@@ -485,7 +694,6 @@ ${query}`
           const agentId = String(body?.agent_id || 'ui-editor').trim() || 'ui-editor';
           const reason = String(body?.reason || 'ui autosave sync').trim() || 'ui autosave sync';
           const source = String(body?.source || 'mempedia-ui').trim() || 'mempedia-ui';
-          const confidence = Number(body?.confidence);
           const importance = Number(body?.importance);
           if (!markdown.trim()) {
             writeJson(res, 400, { ok: false, error: 'markdown is required' });
@@ -502,7 +710,6 @@ ${query}`
             agent_id: agentId,
             reason,
             source,
-            confidence: Number.isFinite(confidence) ? confidence : undefined,
             importance: Number.isFinite(importance) ? importance : undefined,
           });
           if ((result as any)?.kind === 'error') {
@@ -522,7 +729,6 @@ ${query}`
             agent_id: agentId,
             reason: `${reason} (graph links)`,
             source,
-            confidence: Number.isFinite(confidence) ? confidence : undefined,
             importance: Number.isFinite(importance) ? importance : undefined,
           });
           if ((linkResult as any)?.kind === 'error') {
@@ -581,7 +787,7 @@ ${query}`
               traceMeta: event.metadata,
               timestamp: Date.now(),
             });
-          });
+          }, { conversationId: 'web-cli', sessionId: `web-cli-${Date.now()}` });
           webConversationRef.current.push({ role: 'assistant', content: answer, timestamp: Date.now() });
           if (webConversationRef.current.length > 400) {
             webConversationRef.current = webConversationRef.current.slice(-400);
@@ -599,6 +805,230 @@ ${query}`
         }
         return;
       }
+      // ── Thread API ──────────────────────────────────────────────────────────
+
+      // GET /api/threads – list all conversation threads
+      if (rawPath === '/api/threads' && method === 'GET') {
+        writeJson(res, 200, { ok: true, threads: threadLoadIndex() });
+        return;
+      }
+
+      // POST /api/threads – create a new thread
+      if (rawPath === '/api/threads' && method === 'POST') {
+        const body = await readBody(req);
+        const title = String(body?.title || '').trim() || 'New Conversation';
+        const id = generateThreadId();
+        const now = Date.now();
+        const thread: ConversationThread = { id, title, created_at: now, last_updated: now, rounds: [] };
+        threadSave(thread);
+        const index = threadLoadIndex();
+        index.unshift({ id, title, created_at: now, last_updated: now });
+        threadSaveIndex(index);
+        writeJson(res, 200, { ok: true, thread });
+        return;
+      }
+
+      const threadIdMatch = rawPath.match(/^\/api\/threads\/([a-zA-Z0-9_-]{1,80})(\/[a-z]*)?\/?$/);
+      if (threadIdMatch) {
+        const tId = threadIdMatch[1];
+        const subPath = threadIdMatch[2] || '';
+
+        // GET /api/threads/:id – get thread detail
+        if (!subPath && method === 'GET') {
+          const thread = threadLoad(tId);
+          if (!thread) { writeJson(res, 404, { ok: false, error: 'Thread not found' }); return; }
+          writeJson(res, 200, { ok: true, thread });
+          return;
+        }
+
+        // DELETE /api/threads/:id – delete thread
+        if (!subPath && method === 'DELETE') {
+          threadDelete(tId);
+          const idx = threadLoadIndex().filter((t) => t.id !== tId);
+          threadSaveIndex(idx);
+          writeJson(res, 200, { ok: true });
+          return;
+        }
+
+        // POST /api/threads/:id/title – rename thread
+        if (subPath === '/title' && method === 'POST') {
+          const body = await readBody(req);
+          const newTitle = String(body?.title || '').trim();
+          if (!newTitle) { writeJson(res, 400, { ok: false, error: 'title is required' }); return; }
+          const thread = threadLoad(tId);
+          if (!thread) { writeJson(res, 404, { ok: false, error: 'Thread not found' }); return; }
+          thread.title = newTitle;
+          threadSave(thread);
+          const idx = threadLoadIndex();
+          const pos = idx.findIndex((t) => t.id === tId);
+          if (pos >= 0) { idx[pos].title = newTitle; threadSaveIndex(idx); }
+          writeJson(res, 200, { ok: true, thread });
+          return;
+        }
+
+        // POST /api/threads/:id/chat – send a message in a thread
+        if (subPath === '/chat' && method === 'POST') {
+          if (activeThreadRunsRef.current.has(tId)) {
+            writeJson(res, 409, { ok: false, error: 'This thread is busy. Please wait for the current request to finish.' });
+            return;
+          }
+          try {
+            const body = await readBody(req);
+            const query = String(body?.query || '').trim();
+            if (!query) { writeJson(res, 400, { ok: false, error: 'query is required' }); return; }
+            const thread = threadLoad(tId);
+            if (!thread) { writeJson(res, 404, { ok: false, error: 'Thread not found' }); return; }
+
+            const skillName = String(body?.skill || '').trim();
+            const selectedSkill = skillName
+              ? skills.find((s) => s.name === skillName || s.name.endsWith(`/${skillName}`) || s.name.includes(skillName)) || null
+              : null;
+            const prompt = formatPromptWithSkill(query, selectedSkill);
+
+            activeThreadRunsRef.current.add(tId);
+            const roundId = generateThreadId();
+            const roundTimestamp = Date.now();
+            const roundTraces: Array<{ type: string; content: string; metadata?: TraceEvent['metadata'] }> = [];
+            const roundBranchSeen = new Set<string>();
+            let roundBranchState: BranchLoopVisualState = {
+              round: thread.rounds.length + 1,
+              totalSteps: 0,
+              totalBudget: branchTotalBudget,
+              completed: 0,
+              maxCompleted: branchMaxCompleted,
+              activeBranchId: 'B0',
+              activeBranchIds: ['B0'],
+              queueCount: 0,
+              nodes: { B0: { id: 'B0', parentId: null, label: 'root', depth: 0, step: 0, status: 'active' } },
+            };
+
+            const answer = await agent.run(prompt, (event: TraceEvent) => {
+              roundTraces.push({ type: event.type, content: event.content, metadata: event.metadata });
+              roundBranchState = applyBranchTraceEvent(roundBranchState, event, roundBranchSeen);
+            }, { conversationId: `thread:${tId}`, sessionId: `thread-${tId}-${roundId}` });
+
+            const round: ThreadRound = {
+              id: roundId,
+              timestamp: roundTimestamp,
+              user_input: query,
+              agent_response: answer,
+              traces: roundTraces,
+              branch_snapshot: roundBranchState,
+            };
+
+            thread.rounds.push(round);
+            thread.last_updated = Date.now();
+            // Auto-title from first message
+            if (thread.rounds.length === 1 && thread.title === 'New Conversation') {
+              thread.title = query.length > 50 ? `${query.slice(0, 50)}…` : query;
+            }
+            threadSave(thread);
+
+            const idx = threadLoadIndex();
+            const pos = idx.findIndex((t) => t.id === tId);
+            if (pos >= 0) { idx[pos].last_updated = thread.last_updated; idx[pos].title = thread.title; }
+            threadSaveIndex(idx);
+
+            writeJson(res, 200, { ok: true, round, thread });
+          } catch (error: any) {
+            writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+          } finally {
+            activeThreadRunsRef.current.delete(tId);
+          }
+          return;
+        }
+
+        // POST /api/threads/:id/stream – SSE streaming chat
+        if (subPath === '/stream' && method === 'POST') {
+          if (activeThreadRunsRef.current.has(tId)) {
+            writeJson(res, 409, { ok: false, error: 'This thread is busy. Please wait for the current request to finish.' });
+            return;
+          }
+          let body: any;
+          try { body = await readBody(req); } catch { writeJson(res, 400, { ok: false, error: 'Invalid body' }); return; }
+          const query = String(body?.query || '').trim();
+          if (!query) { writeJson(res, 400, { ok: false, error: 'query is required' }); return; }
+          const thread = threadLoad(tId);
+          if (!thread) { writeJson(res, 404, { ok: false, error: 'Thread not found' }); return; }
+
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          });
+
+          const sendSSE = (data: object) => {
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify(data)}\n\n`);
+            }
+          };
+
+          const skillName = String(body?.skill || '').trim();
+          const selectedSkill = skillName
+            ? skills.find((s) => s.name === skillName || s.name.endsWith(`/${skillName}`) || s.name.includes(skillName)) || null
+            : null;
+          const prompt = formatPromptWithSkill(query, selectedSkill);
+
+          activeThreadRunsRef.current.add(tId);
+          const roundId = generateThreadId();
+          const roundTimestamp = Date.now();
+          const roundTraces: Array<{ type: string; content: string; metadata?: TraceEvent['metadata'] }> = [];
+          const roundBranchSeen = new Set<string>();
+          let roundBranchState: BranchLoopVisualState = {
+            round: thread.rounds.length + 1,
+            totalSteps: 0,
+            totalBudget: branchTotalBudget,
+            completed: 0,
+            maxCompleted: branchMaxCompleted,
+            activeBranchId: 'B0',
+            activeBranchIds: ['B0'],
+            queueCount: 0,
+            nodes: { B0: { id: 'B0', parentId: null, label: 'root', depth: 0, step: 0, status: 'active' } },
+          };
+
+          // Send initial tree state so the UI can render the root node immediately
+          sendSSE({ kind: 'init', branchState: roundBranchState, query });
+
+          try {
+            const answer = await agent.run(prompt, (event: TraceEvent) => {
+              roundTraces.push({ type: event.type, content: event.content, metadata: event.metadata });
+              roundBranchState = applyBranchTraceEvent(roundBranchState, event, roundBranchSeen);
+              sendSSE({ kind: 'trace', event, branchState: roundBranchState });
+            }, { conversationId: `thread:${tId}`, sessionId: `thread-${tId}-${roundId}` });
+
+            const round: ThreadRound = {
+              id: roundId,
+              timestamp: roundTimestamp,
+              user_input: query,
+              agent_response: answer,
+              traces: roundTraces,
+              branch_snapshot: roundBranchState,
+            };
+
+            thread.rounds.push(round);
+            thread.last_updated = Date.now();
+            if (thread.rounds.length === 1 && thread.title === 'New Conversation') {
+              thread.title = query.length > 50 ? `${query.slice(0, 50)}…` : query;
+            }
+            threadSave(thread);
+
+            const idx = threadLoadIndex();
+            const pos = idx.findIndex((t) => t.id === tId);
+            if (pos >= 0) { idx[pos].last_updated = thread.last_updated; idx[pos].title = thread.title; }
+            threadSaveIndex(idx);
+
+            sendSSE({ kind: 'done', round, thread });
+          } catch (error: any) {
+            sendSSE({ kind: 'error', error: error?.message || String(error) });
+          } finally {
+            activeThreadRunsRef.current.delete(tId);
+            if (!res.writableEnded) res.end();
+          }
+          return;
+        }
+      }
+
       const requestPath = decodeURIComponent(rawPath === '/' ? '/index.html' : rawPath);
       const filePath = path.resolve(path.join(safeRoot, `.${requestPath}`));
       if (!(filePath === safeRoot || filePath.startsWith(safePrefix))) {
@@ -668,16 +1098,44 @@ ${query}`
   };
 
   const runAgent = async (query: string, oneShotSkill?: LocalSkill) => {
+    const nextRound = runRound + 1;
+    setRunRound(nextRound);
+    branchStepSeenRef.current = new Set();
+    setBranchLoop({
+      round: nextRound,
+      totalSteps: 0,
+      totalBudget: branchTotalBudget,
+      completed: 0,
+      maxCompleted: branchMaxCompleted,
+      activeBranchId: 'B0',
+      activeBranchIds: ['B0'],
+      queueCount: 0,
+      nodes: {
+        B0: {
+          id: 'B0',
+          parentId: null,
+          label: 'root',
+          depth: 0,
+          step: 0,
+          status: 'active'
+        }
+      }
+    });
+
     const prompt = formatPromptWithSkill(query, oneShotSkill || null);
     const response = await agent.run(prompt, (event: TraceEvent) => {
+      setBranchLoop((prev) => {
+        if (!prev) return prev;
+        return applyBranchTraceEvent(prev, event, branchStepSeenRef.current);
+      });
+
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'trace',
         content: event.content,
         traceType: event.type,
         traceMeta: event.metadata,
       }]);
-      setStatus(event.type === 'thought' ? 'Thinking...' : event.type === 'action' ? 'Acting...' : 'Observing...');
-    });
+    }, { conversationId: 'terminal-main', sessionId: `terminal-${Date.now()}` });
     setHistory((prev: HistoryItem[]) => [...prev, { type: 'agent', content: response }]);
   };
 
@@ -702,7 +1160,16 @@ ${query}`
     if (trimmed === '/help') {
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'info',
-        content: 'Commands: /help | /clear | /skills | /skills search <query> | /skills clear-remote | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
+        content: 'Commands: /help | /clear | /tracelog | /skills | /skills search <query> | /skills clear-remote | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
+      }]);
+      return;
+    }
+
+    if (trimmed === '/tracelog') {
+      setTraceLogExpanded((prev) => !prev);
+      setHistory((prev: HistoryItem[]) => [...prev, {
+        type: 'info',
+        content: `Trace log ${traceLogExpanded ? 'collapsed' : 'expanded'}.`
       }]);
       return;
     }
@@ -895,13 +1362,141 @@ ${query}`
     return `[${meta.branchId}${depth}${label}] `;
   };
 
+  const sortBranchIds = (left: string, right: string) => {
+    const l = left.replace(/^B/, '').split('.').map((part) => Number(part) || 0);
+    const r = right.replace(/^B/, '').split('.').map((part) => Number(part) || 0);
+    const max = Math.max(l.length, r.length);
+    for (let i = 0; i < max; i += 1) {
+      const lv = l[i] ?? -1;
+      const rv = r[i] ?? -1;
+      if (lv !== rv) {
+        return lv - rv;
+      }
+    }
+    return left.localeCompare(right);
+  };
+
+  const getBranchStatusColor = (status: BranchVisualStatus) => {
+    switch (status) {
+      case 'completed': return 'green';
+      case 'active': return 'cyan';
+      case 'queued': return 'gray';
+      case 'finalizing': return 'yellow';
+      case 'error': return 'red';
+      default: return 'white';
+    }
+  };
+
+  const getBranchStatusGlyph = (status: BranchVisualStatus) => {
+    switch (status) {
+      case 'completed': return '●';
+      case 'active': return '◆';
+      case 'queued': return '○';
+      case 'finalizing': return '◐';
+      case 'error': return '✖';
+      default: return '•';
+    }
+  };
+
+  const buildProgressBar = (value: number, total: number, width = 22) => {
+    const safeTotal = Math.max(1, total);
+    const clamped = Math.max(0, Math.min(value, safeTotal));
+    const filled = Math.round((clamped / safeTotal) * width);
+    return `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`;
+  };
+
+  const buildBranchTreeRows = (state: BranchLoopVisualState): BranchTreeRow[] => {
+    const children = new Map<string | null, BranchVisualNode[]>();
+    for (const node of Object.values(state.nodes)) {
+      const key = node.parentId ?? null;
+      const bucket = children.get(key) || [];
+      bucket.push(node);
+      children.set(key, bucket);
+    }
+    for (const bucket of children.values()) {
+      bucket.sort((a, b) => sortBranchIds(a.id, b.id));
+    }
+
+    const rows: BranchTreeRow[] = [];
+    const walk = (parentId: string | null, ancestorHasNext: boolean[]) => {
+      const bucket = children.get(parentId) || [];
+      bucket.forEach((node, index) => {
+        const isLast = index === bucket.length - 1;
+        rows.push({ node, isLast, ancestorHasNext });
+        walk(node.id, [...ancestorHasNext, !isLast]);
+      });
+    };
+
+    walk(null, []);
+    return rows;
+  };
+
+  const renderBranchTree = (state: BranchLoopVisualState) => {
+    return buildBranchTreeRows(state).slice(0, 24).map((row) => {
+      const statusColor = getBranchStatusColor(row.node.status);
+      const isActive = state.activeBranchId === row.node.id;
+      const label = row.node.label && row.node.label !== row.node.id ? row.node.label : 'branch';
+      return (
+        <Box key={row.node.id} flexDirection="row">
+          {row.ancestorHasNext.map((hasNext, index) => (
+            <Text key={`${row.node.id}-ancestor-${index}`} color="gray">{hasNext ? '│  ' : '   '}</Text>
+          ))}
+          <Text color="gray">{row.node.depth === 0 ? '● ' : row.isLast ? '└─ ' : '├─ '}</Text>
+          <Text color={statusColor}>{getBranchStatusGlyph(row.node.status)}</Text>
+          <Text> </Text>
+          <Text bold color={isActive ? 'cyanBright' : 'white'}>{row.node.id}</Text>
+          <Text color="dim"> · s{row.node.step} · d{row.node.depth}</Text>
+          <Text> </Text>
+          <Text color={statusColor}>{label}</Text>
+        </Box>
+      );
+    });
+  };
+
+  const visibleHistory = traceLogExpanded ? history : history.slice(-5);
+
   return (
     <Box flexDirection="column" padding={1}>
       <Text color="green" bold>Mempedia CodeCLI (Branching ReAct Agent)</Text>
       <Text color="dim">Skill: {activeSkill ? formatSkillLabel(activeSkill) : 'none'} | Use /skills or /skills search</Text>
       <Text color="dim">UI: {uiUrl || 'stopped'} | /ui start to launch mempedia-ui</Text>
-      <Box flexDirection="column" marginY={1}>
-        {history.map((item, index) => (
+      <Text color="dim">Trace log: {traceLogExpanded ? 'expanded' : 'collapsed'} | /tracelog to toggle</Text>
+      {branchLoop && (
+        <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0}>
+          <Text color="cyan" bold>Branch Tree</Text>
+          <Box flexDirection="row">
+            <Text color="dim">Round {branchLoop.round}</Text>
+            <Text color="dim">  Active: {branchLoop.activeBranchId || 'synthesizing'}</Text>
+            <Text color="dim">  Queue: {branchLoop.queueCount}</Text>
+          </Box>
+          <Box flexDirection="row">
+            <Text color="white">Steps </Text>
+            <Text color="cyan">{buildProgressBar(branchLoop.totalSteps, branchLoop.totalBudget)}</Text>
+            <Text color="dim"> {branchLoop.totalSteps}/{branchLoop.totalBudget}</Text>
+          </Box>
+          <Box flexDirection="row">
+            <Text color="white">Done  </Text>
+            <Text color="green">{buildProgressBar(branchLoop.completed, branchLoop.maxCompleted)}</Text>
+            <Text color="dim"> {branchLoop.completed}/{branchLoop.maxCompleted}</Text>
+          </Box>
+          <Box flexDirection="row" marginBottom={0}>
+            <Text color="cyan">◆ active</Text>
+            <Text color="dim">  </Text>
+            <Text color="green">● done</Text>
+            <Text color="dim">  </Text>
+            <Text color="yellow">◐ finalizing</Text>
+            <Text color="dim">  </Text>
+            <Text color="gray">○ queued</Text>
+            <Text color="dim">  </Text>
+            <Text color="red">✖ error</Text>
+          </Box>
+          <Box flexDirection="column">
+            {renderBranchTree(branchLoop)}
+          </Box>
+        </Box>
+      )}
+      <Box flexDirection="column" marginY={1} minHeight={5}>
+        {visibleHistory.map((item, index) => (
           <Box key={index} flexDirection="column" marginY={0} marginLeft={item.type === 'trace' ? 2 : 0}>
             {item.type === 'trace' ? (
               <Text color={getTraceColor(item.traceType)}>
@@ -915,6 +1510,9 @@ ${query}`
             )}
           </Box>
         ))}
+        {!traceLogExpanded && history.length > 5 && (
+          <Text color="dim">... {history.length - 5} earlier log entries hidden</Text>
+        )}
       </Box>
 
       {isProcessing ? (
