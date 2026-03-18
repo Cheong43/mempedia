@@ -282,6 +282,50 @@ impl FileStorage {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    /// Delete a version object file from the object store.
+    /// Returns `Ok(true)` if the file existed and was removed, `Ok(false)` if it
+    /// was already absent (idempotent).
+    pub fn delete_version_object(&self, version_id: &str) -> MemoryResult<bool> {
+        if version_id.len() < 2 {
+            return Err(MemoryError::Invalid("version id too short".to_string()));
+        }
+        let prefix = &version_id[0..2];
+        let file = self
+            .objects_dir()
+            .join(prefix)
+            .join(format!("{version_id}.json"));
+        if file.exists() {
+            fs::remove_file(&file)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Delete the markdown projection file for a node.
+    /// Tries the project-scoped path first, then the legacy `knowledge/nodes/` path.
+    /// Returns `Ok(true)` if a file was removed.
+    pub fn delete_markdown_node(
+        &self,
+        node_id: &str,
+        project: Option<&str>,
+    ) -> MemoryResult<bool> {
+        let path = self.markdown_node_path(node_id, project);
+        if path.exists() {
+            fs::remove_file(&path)?;
+            return Ok(true);
+        }
+        // Also clean up legacy path when node was previously stored without a project.
+        if project.is_some() {
+            let legacy = self.markdown_node_path(node_id, None);
+            if legacy.exists() {
+                fs::remove_file(&legacy)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn append_access_log(&self, log: &AccessLog) -> MemoryResult<()> {
         let line = serde_json::to_string(log)?;
         let mut f = fs::OpenOptions::new()

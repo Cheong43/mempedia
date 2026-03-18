@@ -480,6 +480,24 @@ pub enum ToolAction {
     ListProjectNodes {
         project_id: String,
     },
+    // ── Node lifecycle ──────────────────────────────────────────────────────
+    /// Permanently delete a node and all of its version objects from storage.
+    DeleteNode {
+        node_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Remove non-head historical version objects for a node, keeping only the
+    /// current head version.  The node remains active; only storage is reclaimed.
+    PruneNodeHistory {
+        node_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -558,6 +576,16 @@ pub enum ToolResponse {
     ProjectNodes {
         project_id: String,
         nodes: Vec<String>,
+    },
+    /// Confirmation that a node was successfully deleted.
+    Deleted {
+        node_id: String,
+        versions_removed: usize,
+    },
+    /// Confirmation that non-head history was pruned for a node.
+    PrunedHistory {
+        node_id: String,
+        versions_removed: usize,
     },
     Error {
         message: String,
@@ -721,6 +749,90 @@ impl MemoryEngine {
         self.sync_markdown_for_version(node_id, &version)?;
         self.rebuild_index()?;
         Ok(version)
+    }
+
+    /// Permanently delete a node and all of its version objects.
+    ///
+    /// This removes the node from the in-memory index, deletes its markdown
+    /// projection file, and deletes every version object that was ever recorded
+    /// in `node.branches`.  The index snapshot is persisted atomically.
+    ///
+    /// Returns the number of version objects that were removed.
+    pub fn delete_node(&mut self, node_id: &str) -> MemoryResult<usize> {
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+
+        // Remove all recorded version objects.
+        let mut versions_removed = 0usize;
+        for version_id in &node.branches {
+            if self.storage.delete_version_object(version_id)? {
+                versions_removed += 1;
+            }
+        }
+
+        // Remove the markdown projection.
+        let project = self.node_project_index.get(node_id).map(|s| s.as_str());
+        self.storage.delete_markdown_node(node_id, project)?;
+
+        // Remove from in-memory indexes.
+        self.heads.remove(node_id);
+        self.nodes.remove(node_id);
+        self.node_project_index.remove(node_id);
+        self.access_state.remove(node_id);
+
+        // Persist index and rebuild search indexes.
+        let snapshot = IndexSnapshot {
+            heads: self.heads.clone(),
+            nodes: self.nodes.clone(),
+        };
+        self.storage.persist_index_snapshot(&snapshot)?;
+        self.storage.persist_node_project_index(&self.node_project_index)?;
+        self.rebuild_index()?;
+
+        Ok(versions_removed)
+    }
+
+    /// Remove non-head historical version objects for a node.
+    ///
+    /// The node remains active with its current head.  Only the extra branch
+    /// objects (all versions that are *not* the current head) are deleted from
+    /// disk.  `node.branches` is updated to contain only the head version id
+    /// and the index snapshot is persisted.
+    ///
+    /// Returns the number of version objects that were removed.
+    pub fn prune_node_history(&mut self, node_id: &str) -> MemoryResult<usize> {
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| MemoryError::NotFound(format!("node {node_id} not found")))?
+            .clone();
+
+        let head_id = node.head.clone();
+        let mut versions_removed = 0usize;
+
+        for version_id in &node.branches {
+            if *version_id != head_id {
+                if self.storage.delete_version_object(version_id)? {
+                    versions_removed += 1;
+                }
+            }
+        }
+
+        // Retain only the head in branches.
+        if let Some(n) = self.nodes.get_mut(node_id) {
+            n.branches.retain(|v| *v == head_id);
+        }
+
+        let snapshot = IndexSnapshot {
+            heads: self.heads.clone(),
+            nodes: self.nodes.clone(),
+        };
+        self.storage.persist_index_snapshot(&snapshot)?;
+
+        Ok(versions_removed)
     }
 
     pub fn agent_upsert_markdown(
@@ -2314,6 +2426,50 @@ impl MemoryEngine {
                     self.storage.list_project_nodes(&project_id, &self.node_project_index);
                 nodes.sort();
                 Ok(ToolResponse::ProjectNodes { project_id, nodes })
+            }
+            ToolAction::DeleteNode {
+                node_id,
+                agent_id,
+                reason,
+            } => {
+                let result = self.delete_node(&node_id);
+                if let (Ok(_), Some(agent)) = (&result, agent_id.as_deref()) {
+                    let _ = self.storage.append_agent_action_log(&AgentActionLog {
+                        timestamp: now_ts(),
+                        agent_id: agent.to_string(),
+                        action: "delete_node".to_string(),
+                        node_id: node_id.clone(),
+                        version: String::new(),
+                        reason: reason.unwrap_or_default().trim().to_string(),
+                        source: "delete_node".to_string(),
+                    });
+                }
+                result.map(|versions_removed| ToolResponse::Deleted {
+                    node_id,
+                    versions_removed,
+                })
+            }
+            ToolAction::PruneNodeHistory {
+                node_id,
+                agent_id,
+                reason,
+            } => {
+                let result = self.prune_node_history(&node_id);
+                if let (Ok(_), Some(agent)) = (&result, agent_id.as_deref()) {
+                    let _ = self.storage.append_agent_action_log(&AgentActionLog {
+                        timestamp: now_ts(),
+                        agent_id: agent.to_string(),
+                        action: "prune_node_history".to_string(),
+                        node_id: node_id.clone(),
+                        version: String::new(),
+                        reason: reason.unwrap_or_default().trim().to_string(),
+                        source: "prune_node_history".to_string(),
+                    });
+                }
+                result.map(|versions_removed| ToolResponse::PrunedHistory {
+                    node_id,
+                    versions_removed,
+                })
             }
         };
 
@@ -4790,5 +4946,155 @@ Notable repos include `kortix-ai/suna`.
         assert!(md.contains("project: \"test_project\""));
         assert!(md.contains("parent_node: \"root_node\""));
         assert!(md.contains("node_type: \"concept\""));
+    }
+
+    #[test]
+    fn delete_node_removes_node_and_version_objects() {
+        let dir = temp_data_dir("delete-node");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        // Create a node with two versions.
+        engine
+            .create_node(
+                "arch_legacy",
+                NodeContent {
+                    title: "Legacy Arch".to_string(),
+                    summary: "Old architectural concept".to_string(),
+                    body: "historical detail".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec![],
+                    ..Default::default()
+                },
+                0.8,
+                1.0,
+            )
+            .expect("create node");
+
+        engine
+            .update_node(
+                "arch_legacy",
+                NodePatch {
+                    body: Some("updated historical detail".to_string()),
+                    ..Default::default()
+                },
+                0.85,
+                1.1,
+            )
+            .expect("update node");
+
+        // Node should have 2 branches.
+        assert_eq!(engine.nodes["arch_legacy"].branches.len(), 2);
+
+        // Delete via execute_action.
+        let resp = engine.execute_action(ToolAction::DeleteNode {
+            node_id: "arch_legacy".to_string(),
+            agent_id: Some("agent-test".to_string()),
+            reason: Some("node is obsolete".to_string()),
+        });
+
+        match resp {
+            ToolResponse::Deleted { node_id, versions_removed } => {
+                assert_eq!(node_id, "arch_legacy");
+                assert_eq!(versions_removed, 2);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        // Node should no longer exist in memory.
+        assert!(engine.head("arch_legacy").is_none());
+        assert!(!engine.nodes.contains_key("arch_legacy"));
+
+        // Audit log should record the deletion.
+        let audit = std::fs::read_to_string(dir.join("index").join("agent_actions.log"))
+            .expect("read audit log");
+        assert!(audit.contains("delete_node"));
+        assert!(audit.contains("agent-test"));
+
+        // Requesting the deleted node should now return an error response.
+        let resp2 = engine.execute_action(ToolAction::NodeHistory {
+            node_id: "arch_legacy".to_string(),
+            limit: Some(10),
+        });
+        assert!(matches!(resp2, ToolResponse::Error { .. }));
+    }
+
+    #[test]
+    fn prune_node_history_removes_old_versions_keeps_head() {
+        let dir = temp_data_dir("prune-node-history");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        // Create a node with three versions.
+        engine
+            .create_node(
+                "arch_node",
+                NodeContent {
+                    title: "Arch Node".to_string(),
+                    summary: "Architecture concept".to_string(),
+                    body: "v1".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec![],
+                    ..Default::default()
+                },
+                0.8,
+                1.0,
+            )
+            .expect("create v1");
+
+        engine
+            .update_node(
+                "arch_node",
+                NodePatch {
+                    body: Some("v2".to_string()),
+                    ..Default::default()
+                },
+                0.85,
+                1.1,
+            )
+            .expect("update v2");
+
+        engine
+            .update_node(
+                "arch_node",
+                NodePatch {
+                    body: Some("v3 current".to_string()),
+                    ..Default::default()
+                },
+                0.9,
+                1.2,
+            )
+            .expect("update v3");
+
+        let head_before = engine.head("arch_node").cloned().expect("head exists");
+        assert_eq!(engine.nodes["arch_node"].branches.len(), 3);
+
+        let resp = engine.execute_action(ToolAction::PruneNodeHistory {
+            node_id: "arch_node".to_string(),
+            agent_id: Some("agent-prune".to_string()),
+            reason: Some("clean up old history".to_string()),
+        });
+
+        match resp {
+            ToolResponse::PrunedHistory { node_id, versions_removed } => {
+                assert_eq!(node_id, "arch_node");
+                assert_eq!(versions_removed, 2);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        // Only the head version should remain in branches.
+        assert_eq!(engine.nodes["arch_node"].branches.len(), 1);
+        assert_eq!(engine.nodes["arch_node"].branches[0], head_before);
+        assert_eq!(*engine.head("arch_node").unwrap(), head_before);
+
+        // Current head version object should still be readable.
+        let head_version = engine.get_version(&head_before).expect("head version readable");
+        assert_eq!(head_version.node_id, "arch_node");
+        assert!(head_version.content.body.contains("v3 current"));
+
+        // History query now returns only one item.
+        let history = engine.node_history("arch_node", 10).expect("history ok");
+        assert_eq!(history.len(), 1);
     }
 }
