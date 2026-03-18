@@ -53,22 +53,26 @@ cargo run
 #### 1.4 Local Demo from Scratch
 
 ```bash
-# 1) Create an action request
-cat > action.json <<'JSON'
-{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","summary":"Core fatigue baseline assumptions.","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
-JSON
+# 1) Create a project first
+cargo run -- --project /path/to/project --action '{"action":"create_project","project_id":"real_estate","name":"Real Estate KB","description":"Domain knowledge for real estate analysis and decision making"}'
 
-# 2) Execute action (create node)
+# 2) Create a project index node
+cat > action.json <<'JSON'
+{"action":"ingest","node_id":"real_estate_index","title":"Real Estate Knowledge Base","text":"# Real Estate Knowledge Base\n\nThis project covers real estate market analysis, valuation methods, investment strategies, and regulatory frameworks.","source":"human","project":"real_estate","node_type":"index"}
+JSON
 cargo run -- --project /path/to/project --action-file action.json
 
-# 3) Open the node
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+# 3) Add a concept node
+cargo run -- --project /path/to/project --action '{"action":"ingest","node_id":"cap_rate","title":"Capitalization Rate (Cap Rate)","text":"# Cap Rate\n\nThe cap rate is the ratio of net operating income to property value. Formula: Cap Rate = NOI / Property Value. A higher cap rate indicates higher risk and higher potential return.","source":"human","project":"real_estate","parent_node":"real_estate_index","node_type":"concept"}'
 
-# 4) Run tests
+# 4) List project nodes
+cargo run -- --project /path/to/project --action '{"action":"list_project_nodes","project_id":"real_estate"}'
+
+# 5) Run tests
 cargo test
 
-# 5) Inspect generated data
-find /path/to/project/.mempedia -maxdepth 4 -type f | sort
+# 6) Inspect generated data
+find /path/to/project/.mempedia -maxdepth 5 -type f | sort
 ```
 
 #### 1.5 Import Documents into Core Knowledge (import-doc)
@@ -108,22 +112,36 @@ Each `NodeVersion` has `parents: Vec<VersionId>`, enabling:
 - Head pointer moves to the latest version
 - Index snapshots are written atomically
 
+#### 2.4 Project Hierarchy
+
+Nodes can optionally belong to a **project** (domain/category), which:
+- Groups related nodes under `knowledge/projects/<project_id>/`
+- Supports Notion-style parent–child relationships via `parent_node`
+- Classifies nodes by semantic type via `node_type` (index, concept, process, etc.)
+
+Use `create_project` before adding project-scoped nodes, then set `project`, `parent_node`, and `node_type` when calling `ingest`, `agent_upsert_markdown`, or `sync_markdown`.
+
 ### 3. Storage Layout
 
 ```text
 data/
   index/
-    state.json            # index snapshot (heads + nodes)
-    heads.json            # compatibility/readable copy
-    nodes.json            # compatibility/readable copy
-    access.log            # optional access log
-    agent_actions.log     # autonomous agent update audit
+    state.json              # index snapshot (heads + nodes)
+    heads.json              # compatibility/readable copy
+    nodes.json              # compatibility/readable copy
+    access.log              # optional access log
+    agent_actions.log       # autonomous agent update audit
+    node_project_index.json # node_id → project_id mapping
   objects/
     <hash_prefix>/
       <version_hash>.json
   knowledge/
-    nodes/
+    nodes/                  # unclassified nodes (legacy / no project)
       <sanitized_node_id>-<hash8>.md
+    projects/
+      _index.json           # project metadata registry
+      <project_id>/         # one directory per project
+        <sanitized_node_id>-<hash8>.md
   episodic/               # Layer 2: Episodic memory
     memories.jsonl        # append-only list of EpisodicMemoryRecord (BM25 indexed)
   preferences.md          # Layer 3: User preferences (single markdown file)
@@ -136,6 +154,7 @@ Notes:
 - Objects are bucketed by hash prefix
 - Index files are atomically written (`tmp + rename + fsync`)
 - Episodic memories are stored chronologically in JSONL; importance decays over time
+- Project node directories are created on first write
 
 ### 4. Rust API
 
@@ -176,31 +195,56 @@ For agent-side direct calls:
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
-- `agent_upsert_markdown`
-- `ingest`
-- `sync_markdown`
+- `agent_upsert_markdown` *(supports `project`, `parent_node`, `node_type`)*
+- `ingest` *(supports `project`, `parent_node`, `node_type`)*
+- `sync_markdown` *(supports `project`, `parent_node`, `node_type`)*
 - `rollback_node`
 - `node_history`
+- `create_project`
+- `list_projects`
+- `get_project`
+- `list_project_nodes`
 
-Request example:
+Request examples:
+
+```json
+{ "action": "create_project", "project_id": "real_estate", "name": "Real Estate KB", "description": "Domain knowledge for real estate." }
+```
+
+```json
+{
+  "action": "ingest",
+  "node_id": "cap_rate",
+  "title": "Capitalization Rate",
+  "text": "# Cap Rate\n\nCap Rate = NOI / Property Value.",
+  "source": "human",
+  "project": "real_estate",
+  "parent_node": "real_estate_index",
+  "node_type": "concept"
+}
+```
+
+```json
+{ "action": "list_project_nodes", "project_id": "real_estate" }
+```
 
 ```json
 {
   "action": "traverse",
-  "start_node": "Fatigue_Model",
+  "start_node": "real_estate_index",
   "mode": "bfs",
-  "depth_limit": 2,
-  "min_confidence": null
+  "depth_limit": 2
 }
 ```
 
 CLI examples:
 
 ```bash
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+cargo run -- --project /path/to/project --action '{"action":"create_project","project_id":"real_estate","name":"Real Estate KB","description":"Real estate domain knowledge"}'
 cargo run -- --project /path/to/project --action-file action.json
 cat action.json | cargo run -- --project /path/to/project --stdin
-cargo run -- --project /path/to/project --action '{"action":"sync_markdown","path":"/path/to/project/.mempedia/memory/knowledge/nodes/fatigue_model-1234abcd.md"}'
+cargo run -- --project /path/to/project --action '{"action":"list_project_nodes","project_id":"real_estate"}'
+cargo run -- --project /path/to/project --action '{"action":"sync_markdown","path":"/path/to/doc.md","project":"real_estate","node_type":"reference"}'
 ```
 
 Runtime mode:
@@ -253,14 +297,20 @@ cargo run
 #### 1.4 本地从零体验
 
 ```bash
-cat > action.json <<'JSON'
-{"action":"upsert_node","node_id":"Fatigue_Model","content":{"title":"Fatigue Model","summary":"疲劳模型的核心基线假设。","body":"Base assumptions","structured_data":{"state":"draft"},"links":[],"highlights":["recovery"]},"confidence":0.8,"importance":1.0}
-JSON
+# 1) 创建项目
+cargo run -- --project /path/to/project --action '{"action":"create_project","project_id":"real_estate","name":"房产知识库","description":"房地产市场分析、估值方法和投资策略"}'
 
-cargo run -- --project /path/to/project --action-file action.json
-cargo run -- --project /path/to/project --action '{"action":"open_node","node_id":"Fatigue_Model","markdown":false,"agent_id":"agent-main"}'
+# 2) 创建项目索引节点
+cargo run -- --project /path/to/project --action '{"action":"ingest","node_id":"real_estate_index","title":"房产知识库索引","text":"# 房产知识库\n\n本项目涵盖房地产市场分析、估值方法、投资策略和法规框架。","source":"human","project":"real_estate","node_type":"index"}'
+
+# 3) 添加概念节点
+cargo run -- --project /path/to/project --action '{"action":"ingest","node_id":"cap_rate","title":"资本化率（Cap Rate）","text":"# 资本化率\n\nCap Rate = 净营业收入 / 物业价值。较高的资本化率意味着较高的风险和潜在回报。","source":"human","project":"real_estate","parent_node":"real_estate_index","node_type":"concept"}'
+
+# 4) 查看项目下的节点
+cargo run -- --project /path/to/project --action '{"action":"list_project_nodes","project_id":"real_estate"}'
+
 cargo test
-find /path/to/project/.mempedia -maxdepth 4 -type f | sort
+find /path/to/project/.mempedia -maxdepth 5 -type f | sort
 ```
 
 ### 2. 核心模型
@@ -270,6 +320,13 @@ find /path/to/project/.mempedia -maxdepth 4 -type f | sort
 - 任何更新都会创建新版本，不覆盖旧版本
 
 `NodeVersion.parents` 支持线性历史、分叉和合并。
+
+### 2.4 项目层级（Project Hierarchy）
+
+节点可以归属于**项目**（领域/分类），实现：
+- 按项目存储 markdown 文件：`knowledge/projects/<project_id>/`
+- 通过 `parent_node` 建立 Notion 风格的父子层级结构
+- 通过 `node_type` 标注语义类型（index、concept、process 等）
 
 ### 3. 存储结构
 
@@ -281,12 +338,17 @@ data/
     nodes.json
     access.log
     agent_actions.log
+    node_project_index.json   # node_id → project_id 映射
   objects/
     <hash_prefix>/
       <version_hash>.json
   knowledge/
-    nodes/
+    nodes/                    # 未分类节点（兼容旧数据）
       <sanitized_node_id>-<hash8>.md
+    projects/
+      _index.json             # 项目元数据注册表
+      <project_id>/           # 每个项目一个目录
+        <sanitized_node_id>-<hash8>.md
 ```
 
 ### 4. API 与 Action
@@ -306,11 +368,15 @@ Rust API 入口：`src/api/mod.rs`。
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
-- `agent_upsert_markdown`
-- `ingest`
-- `sync_markdown`
+- `agent_upsert_markdown`（支持 `project`、`parent_node`、`node_type`）
+- `ingest`（支持 `project`、`parent_node`、`node_type`）
+- `sync_markdown`（支持 `project`、`parent_node`、`node_type`）
 - `rollback_node`
 - `node_history`
+- `create_project`
+- `list_projects`
+- `get_project`
+- `list_project_nodes`
 
 ### 5. UI 多语言
 
