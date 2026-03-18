@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
-import * as path from 'path';
 import * as readline from 'readline';
 import { ToolAction, ToolResponse } from './types.js';
+import { resolveMempediaBinaryPath } from '../config/projectPaths.js';
 
 export class MempediaClient {
   private process: ChildProcess | null = null;
@@ -14,7 +14,7 @@ export class MempediaClient {
   constructor(private projectRoot: string, private binaryPath?: string) {}
 
   start() {
-    const binaryPath = this.binaryPath || path.resolve(process.cwd(), '../target/release/mempedia');
+    const binaryPath = resolveMempediaBinaryPath(import.meta.dirname, this.binaryPath);
     console.log(`Starting mempedia process: ${binaryPath} --project ${this.projectRoot}`);
     this.process = spawn(binaryPath, ['--serve', '--project', this.projectRoot], {
       stdio: ['pipe', 'pipe', 'inherit'],

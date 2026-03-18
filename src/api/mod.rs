@@ -10,13 +10,13 @@ use serde_json::json;
 use crate::core::{
     AccessLog, AccessStats, AgentActionLog, EpisodicMemoryRecord, ExploreBudgetItem,
     ExploreCandidate, Link, MemoryError, MemoryResult, Node, NodeContent, NodeHistoryItem,
-    NodePatch, NodeVersion, ProjectRecord, SearchHit, SkillSearchHit,
+    NodePatch, NodeVersion, ProjectRecord, SearchHit, SkillRecord, SkillSearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
 use crate::markdown::{parse_markdown, parse_markdown_with_meta, render_node_markdown};
 use crate::promotion::{PromotionSignal, compute_importance};
-use crate::storage::{CachedVector, EmbeddingCache, FileStorage, IndexSnapshot};
+use crate::storage::{FileStorage, IndexSnapshot};
 use crate::versioning::VersionEngine;
 
 pub struct MemoryEngine {
@@ -143,8 +143,8 @@ impl EmbeddingClient {
         let api_key = env::var("EMBEDDING_API_KEY").ok()?;
         let base_url = env::var("EMBEDDING_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let model = env::var("EMBEDDING_MODEL")
-            .unwrap_or_else(|_| "text-embedding-3-small".to_string());
+        let model =
+            env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".to_string());
         let timeout_ms = env::var("EMBEDDING_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -447,6 +447,8 @@ pub enum ToolAction {
     ReadSkill {
         skill_id: String,
     },
+    /// List all skill records, newest first.
+    ListSkills {},
     // ── Project management ──────────────────────────────────────────────────
     /// Create or update a project (domain/knowledge-base category).
     CreateProject {
@@ -550,6 +552,10 @@ pub enum ToolResponse {
     /// Skill search results (BM25 hits).
     SkillResults {
         results: Vec<SkillSearchHit>,
+    },
+    /// Full list of agent skill records.
+    SkillList {
+        skills: Vec<SkillRecord>,
     },
     /// A single project record.
     ProjectResult {
@@ -766,9 +772,11 @@ impl MemoryEngine {
         let snapshot = IndexSnapshot {
             heads: self.heads.clone(),
             nodes: self.nodes.clone(),
+            access_state: self.access_state.clone(),
         };
         self.storage.persist_index_snapshot(&snapshot)?;
-        self.storage.persist_node_project_index(&self.node_project_index)?;
+        self.storage
+            .persist_node_project_index(&self.node_project_index)?;
         self.rebuild_index()?;
 
         Ok(versions_removed)
@@ -808,6 +816,7 @@ impl MemoryEngine {
         let snapshot = IndexSnapshot {
             heads: self.heads.clone(),
             nodes: self.nodes.clone(),
+            access_state: self.access_state.clone(),
         };
         self.storage.persist_index_snapshot(&snapshot)?;
 
@@ -831,16 +840,25 @@ impl MemoryEngine {
         let mut content = parse_markdown(markdown);
         // Honour explicit project/parent_node/node_type arguments, falling back
         // to values already embedded in the markdown frontmatter.
-        if let Some(p) = project { content.project = Some(p); }
-        if let Some(p) = parent_node { content.parent_node = Some(p); }
-        if let Some(t) = node_type { content.node_type = Some(t); }
+        if let Some(p) = project {
+            content.project = Some(p);
+        }
+        if let Some(p) = parent_node {
+            content.parent_node = Some(p);
+        }
+        if let Some(t) = node_type {
+            content.node_type = Some(t);
+        }
 
         let (linked_body, auto_links) = self.auto_wikilink_markdown_body(node_id, &content.body)?;
         if linked_body != content.body {
             content.body = linked_body;
         }
-        let mut existing_targets: HashSet<String> =
-            content.links.iter().map(|link| link.target.clone()).collect();
+        let mut existing_targets: HashSet<String> = content
+            .links
+            .iter()
+            .map(|link| link.target.clone())
+            .collect();
         for link in auto_links {
             if existing_targets.insert(link.target.clone()) {
                 content.links.push(link);
@@ -915,13 +933,16 @@ impl MemoryEngine {
         } else if let Some(path) = &path {
             std::fs::read_to_string(path)?
         } else if let Some(node_id) = &node_id {
-            let proj = self.node_project_index.get(node_id.as_str()).map(|s| s.as_str());
-            let (_, content) = self
-                .storage
-                .read_markdown_node(node_id, proj)?
-                .ok_or_else(|| {
-                    MemoryError::NotFound(format!("markdown for node {node_id} not found"))
-                })?;
+            let proj = self
+                .node_project_index
+                .get(node_id.as_str())
+                .map(|s| s.as_str());
+            let (_, content) =
+                self.storage
+                    .read_markdown_node(node_id, proj)?
+                    .ok_or_else(|| {
+                        MemoryError::NotFound(format!("markdown for node {node_id} not found"))
+                    })?;
             content
         } else {
             return Err(MemoryError::Invalid(
@@ -944,9 +965,8 @@ impl MemoryEngine {
             (None, Some(from_meta)) => from_meta,
             (None, None) => {
                 return Err(MemoryError::Invalid(
-                    "sync_markdown missing node_id (provide in action or frontmatter)"
-                        .to_string(),
-                ))
+                    "sync_markdown missing node_id (provide in action or frontmatter)".to_string(),
+                ));
             }
         };
 
@@ -984,9 +1004,15 @@ impl MemoryEngine {
             }
         }
         // Apply explicit overrides from the action arguments.
-        if let Some(p) = project { content.project = Some(p); }
-        if let Some(p) = parent_node { content.parent_node = Some(p); }
-        if let Some(t) = node_type { content.node_type = Some(t); }
+        if let Some(p) = project {
+            content.project = Some(p);
+        }
+        if let Some(p) = parent_node {
+            content.parent_node = Some(p);
+        }
+        if let Some(t) = node_type {
+            content.node_type = Some(t);
+        }
 
         content
             .structured_data
@@ -1140,7 +1166,10 @@ impl MemoryEngine {
                 if target.is_empty() {
                     continue;
                 }
-                let label = relation.label.clone().unwrap_or_else(|| "related".to_string());
+                let label = relation
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "related".to_string());
                 let weight = relation.weight.unwrap_or(0.8).max(0.0);
                 if !content
                     .links
@@ -1167,9 +1196,15 @@ impl MemoryEngine {
         let mut content = normalize_content(content);
         // Apply project-hierarchy fields. Values from explicit arguments take
         // precedence over those parsed from the markdown frontmatter.
-        if let Some(p) = project { content.project = Some(p); }
-        if let Some(p) = parent_node { content.parent_node = Some(p); }
-        if let Some(t) = node_type { content.node_type = Some(t); }
+        if let Some(p) = project {
+            content.project = Some(p);
+        }
+        if let Some(p) = parent_node {
+            content.parent_node = Some(p);
+        }
+        if let Some(t) = node_type {
+            content.node_type = Some(t);
+        }
 
         content
             .structured_data
@@ -1405,7 +1440,10 @@ impl MemoryEngine {
 
         let fused = rrf_fuse(
             vec![
-                (bm25_hits, bm25_weight.unwrap_or(self.retrieval_config.bm25_weight)),
+                (
+                    bm25_hits,
+                    bm25_weight.unwrap_or(self.retrieval_config.bm25_weight),
+                ),
                 (
                     vector_hits,
                     vector_weight.unwrap_or(self.retrieval_config.vector_weight),
@@ -1421,7 +1459,12 @@ impl MemoryEngine {
         Ok(fused)
     }
 
-    fn graph_candidates(&self, seeds: &[String], depth_limit: usize, limit: usize) -> Vec<SearchHit> {
+    fn graph_candidates(
+        &self,
+        seeds: &[String],
+        depth_limit: usize,
+        limit: usize,
+    ) -> Vec<SearchHit> {
         if seeds.is_empty() || limit == 0 {
             return Vec::new();
         }
@@ -1466,7 +1509,11 @@ impl MemoryEngine {
             .into_iter()
             .map(|(node_id, score)| SearchHit { node_id, score })
             .collect();
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+        hits.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
         if hits.len() > limit {
             hits.truncate(limit);
         }
@@ -1670,9 +1717,11 @@ impl MemoryEngine {
             };
             let candidate = self.get_version(candidate_head_id)?;
             let candidate_content_terms = extract_content_terms(&candidate.content);
-            let candidate_structured_terms = extract_structured_terms(&candidate.content.structured_data);
+            let candidate_structured_terms =
+                extract_structured_terms(&candidate.content.structured_data);
             let content_overlap = overlap_ratio(&head_content_terms, &candidate_content_terms);
-            let structured_overlap = overlap_ratio(&head_structured_terms, &candidate_structured_terms);
+            let structured_overlap =
+                overlap_ratio(&head_structured_terms, &candidate_structured_terms);
             if content_overlap <= 0.0 || structured_overlap <= 0.0 {
                 continue;
             }
@@ -1849,11 +1898,7 @@ impl MemoryEngine {
         let access_boost = self.auto_promotion.alpha * (stats.pending_access as f32).ln_1p();
         let new_importance = (decayed + access_boost).max(0.0);
 
-        let _ = self.update_node(
-            node_id,
-            NodePatch::default(),
-            new_importance,
-        )?;
+        let _ = self.update_node(node_id, NodePatch::default(), new_importance)?;
 
         if let Some(mutable_stats) = self.access_state.get_mut(node_id) {
             mutable_stats.pending_access = 0;
@@ -2031,8 +2076,15 @@ impl MemoryEngine {
                 node_type,
             } => self
                 .agent_upsert_markdown(
-                    &node_id, &markdown, importance, &agent_id, &reason, &source,
-                    project, parent_node, node_type,
+                    &node_id,
+                    &markdown,
+                    importance,
+                    &agent_id,
+                    &reason,
+                    &source,
+                    project,
+                    parent_node,
+                    node_type,
                 )
                 .map(|version| ToolResponse::Version { version }),
             ToolAction::Ingest {
@@ -2103,14 +2155,7 @@ impl MemoryEngine {
                 source,
                 importance,
             } => self
-                .set_node_links(
-                    &node_id,
-                    links,
-                    agent_id,
-                    reason,
-                    source,
-                    importance,
-                )
+                .set_node_links(&node_id, links, agent_id, reason, source, importance)
                 .map(|version| ToolResponse::Version { version }),
             ToolAction::RollbackNode {
                 node_id,
@@ -2188,7 +2233,10 @@ impl MemoryEngine {
                         agent_id,
                         source,
                     })
-                    .map(|_| ToolResponse::NodeList { nodes: Vec::new() })
+                    .and_then(|_| {
+                        self.rebuild_episodic_bm25()?;
+                        Ok(ToolResponse::NodeList { nodes: Vec::new() })
+                    })
             }
             ToolAction::RecordBehaviorPattern {
                 pattern_key,
@@ -2209,7 +2257,10 @@ impl MemoryEngine {
                         agent_id,
                         source,
                     })
-                    .map(|_| ToolResponse::NodeList { nodes: Vec::new() })
+                    .and_then(|_| {
+                        self.rebuild_episodic_bm25()?;
+                        Ok(ToolResponse::NodeList { nodes: Vec::new() })
+                    })
             }
             // ── Episodic memory ──────────────────────────────────────────────
             ToolAction::RecordEpisodic {
@@ -2225,7 +2276,8 @@ impl MemoryEngine {
                     let ts = now_ts();
                     // Include summary content (not just its length) to reduce collision risk
                     // when multiple episodes are recorded at the same millisecond.
-                    let hash_input = format!("{ts}:{scene_type}:{}", &summary[..summary.len().min(64)]);
+                    let hash_input =
+                        format!("{ts}:{scene_type}:{}", &summary[..summary.len().min(64)]);
                     let h = blake3::hash(hash_input.as_bytes()).to_hex();
                     format!("ep_{ts}_{}", &h[..8])
                 };
@@ -2239,15 +2291,14 @@ impl MemoryEngine {
                     core_knowledge_nodes: core_knowledge_nodes.unwrap_or_default(),
                     tags: tags.unwrap_or_default(),
                     agent_id,
+                    metadata: BTreeMap::new(),
                 };
-                self.storage
-                    .append_episodic_memory(&record)
-                    .and_then(|_| {
-                        self.rebuild_episodic_bm25()?;
-                        Ok(ToolResponse::EpisodicResults {
-                            memories: vec![record],
-                        })
+                self.storage.append_episodic_memory(&record).and_then(|_| {
+                    self.rebuild_episodic_bm25()?;
+                    Ok(ToolResponse::EpisodicResults {
+                        memories: vec![record],
                     })
+                })
             }
             ToolAction::SearchEpisodic { query, limit } => {
                 let limit = limit.unwrap_or(10);
@@ -2263,9 +2314,18 @@ impl MemoryEngine {
                             .collect();
                         // Keep ordering by BM25 score
                         results.sort_by(|a, b| {
-                            let sa = hits.iter().find(|h| h.node_id == a.id).map(|h| h.score).unwrap_or(0.0);
-                            let sb = hits.iter().find(|h| h.node_id == b.id).map(|h| h.score).unwrap_or(0.0);
-                            sb.total_cmp(&sa).then_with(|| b.timestamp.cmp(&a.timestamp))
+                            let sa = hits
+                                .iter()
+                                .find(|h| h.node_id == a.id)
+                                .map(|h| h.score)
+                                .unwrap_or(0.0);
+                            let sb = hits
+                                .iter()
+                                .find(|h| h.node_id == b.id)
+                                .map(|h| h.score)
+                                .unwrap_or(0.0);
+                            sb.total_cmp(&sa)
+                                .then_with(|| b.timestamp.cmp(&a.timestamp))
                         });
                         if results.len() > limit {
                             results.truncate(limit);
@@ -2315,14 +2375,21 @@ impl MemoryEngine {
                     let mut results: Vec<SkillSearchHit> = hits
                         .iter()
                         .filter_map(|h| {
-                            skills.iter().find(|s| s.id == h.node_id).map(|s| SkillSearchHit {
-                                skill_id: s.id.clone(),
-                                title: s.title.clone(),
-                                score: h.score,
-                            })
+                            skills
+                                .iter()
+                                .find(|s| s.id == h.node_id)
+                                .map(|s| SkillSearchHit {
+                                    skill_id: s.id.clone(),
+                                    title: s.title.clone(),
+                                    score: h.score,
+                                })
                         })
                         .collect();
-                    results.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.skill_id.cmp(&b.skill_id)));
+                    results.sort_by(|a, b| {
+                        b.score
+                            .total_cmp(&a.score)
+                            .then_with(|| a.skill_id.cmp(&b.skill_id))
+                    });
                     if results.len() > limit {
                         results.truncate(limit);
                     }
@@ -2343,6 +2410,10 @@ impl MemoryEngine {
                     },
                 })
             }
+            ToolAction::ListSkills {} => self
+                .storage
+                .list_skills()
+                .map(|skills| ToolResponse::SkillList { skills }),
             // ── Project management ────────────────────────────────────────────
             ToolAction::CreateProject {
                 project_id,
@@ -2369,19 +2440,19 @@ impl MemoryEngine {
                 .storage
                 .list_project_records()
                 .map(|projects| ToolResponse::ProjectList { projects }),
-            ToolAction::GetProject { project_id } => {
-                self.storage.read_project_record(&project_id).map(|opt| {
-                    match opt {
-                        Some(project) => ToolResponse::ProjectResult { project },
-                        None => ToolResponse::Error {
-                            message: format!("project {project_id} not found"),
-                        },
-                    }
-                })
-            }
+            ToolAction::GetProject { project_id } => self
+                .storage
+                .read_project_record(&project_id)
+                .map(|opt| match opt {
+                    Some(project) => ToolResponse::ProjectResult { project },
+                    None => ToolResponse::Error {
+                        message: format!("project {project_id} not found"),
+                    },
+                }),
             ToolAction::ListProjectNodes { project_id } => {
-                let mut nodes =
-                    self.storage.list_project_nodes(&project_id, &self.node_project_index);
+                let mut nodes = self
+                    .storage
+                    .list_project_nodes(&project_id, &self.node_project_index);
                 nodes.sort();
                 Ok(ToolResponse::ProjectNodes { project_id, nodes })
             }
@@ -2454,6 +2525,7 @@ impl MemoryEngine {
         IndexSnapshot {
             heads: self.heads.clone(),
             nodes: self.nodes.clone(),
+            access_state: self.access_state.clone(),
         }
     }
 
@@ -2465,11 +2537,8 @@ impl MemoryEngine {
         self.graph_index = GraphIndex::build(&self.storage, &self.heads)?;
         self.keyword_index = build_keyword_index(&self.storage, &self.heads)?;
         self.bm25_index = build_bm25_index(&self.storage, &self.heads)?;
-        self.vector_index = build_vector_index(
-            &self.storage,
-            &self.heads,
-            self.retrieval_config.vector_dim,
-        )?;
+        self.vector_index =
+            build_vector_index(&self.storage, &self.heads, self.retrieval_config.vector_dim)?;
         self.rebuild_episodic_bm25()?;
         self.rebuild_skills_bm25()?;
         Ok(())
@@ -2528,12 +2597,7 @@ impl MemoryEngine {
         let mut df: HashMap<String, usize> = HashMap::new();
 
         for skill in &skills {
-            let text = format!(
-                "{} {} {}",
-                skill.title,
-                skill.tags.join(" "),
-                skill.content
-            );
+            let text = format!("{} {} {}", skill.title, skill.tags.join(" "), skill.content);
             let tokens = tokenize(&text);
             let len = tokens.len() as f32;
             doc_len.insert(skill.id.clone(), len);
@@ -2580,12 +2644,16 @@ impl MemoryEngine {
                 .map(|p| p != proj)
                 .unwrap_or(true);
             if changed {
-                self.node_project_index.insert(node_id.to_string(), proj.to_string());
-                self.storage.persist_node_project_index(&self.node_project_index)?;
+                self.node_project_index
+                    .insert(node_id.to_string(), proj.to_string());
+                self.storage
+                    .persist_node_project_index(&self.node_project_index)?;
             }
         }
         let markdown = render_node_markdown(node_id, version);
-        let _ = self.storage.write_markdown_node(node_id, &markdown, project)?;
+        let _ = self
+            .storage
+            .write_markdown_node(node_id, &markdown, project)?;
         Ok(())
     }
 
@@ -2596,17 +2664,16 @@ impl MemoryEngine {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (node_id, version_id) in &heads_snapshot {
-            let project = self.node_project_index.get(node_id.as_str()).map(|s| s.as_str());
+            let project = self
+                .node_project_index
+                .get(node_id.as_str())
+                .map(|s| s.as_str());
             if self.storage.read_markdown_node(node_id, project)?.is_some() {
                 continue;
             }
             let version = self.storage.read_object(version_id)?;
             // Use project from content if available, fall back to index.
-            let proj = version
-                .content
-                .project
-                .as_deref()
-                .or(project);
+            let proj = version.content.project.as_deref().or(project);
             let markdown = render_node_markdown(node_id, &version);
             self.storage.write_markdown_node(node_id, &markdown, proj)?;
         }
@@ -2756,8 +2823,10 @@ impl MemoryEngine {
             }
             if !linked {
                 for keyword in &alias_keywords {
-                    let precise =
-                        keyword.contains('/') || keyword.contains('-') || keyword.contains('.') || keyword.contains('_');
+                    let precise = keyword.contains('/')
+                        || keyword.contains('-')
+                        || keyword.contains('.')
+                        || keyword.contains('_');
                     if !precise {
                         continue;
                     }
@@ -3193,7 +3262,10 @@ fn add_text_counts(counts: &mut HashMap<String, f32>, text: &str, weight: f32) {
     }
 }
 
-fn build_bm25_index(storage: &FileStorage, heads: &HashMap<String, String>) -> MemoryResult<Bm25Index> {
+fn build_bm25_index(
+    storage: &FileStorage,
+    heads: &HashMap<String, String>,
+) -> MemoryResult<Bm25Index> {
     let mut postings: HashMap<String, HashMap<String, f32>> = HashMap::new();
     let mut doc_len: HashMap<String, f32> = HashMap::new();
     let mut total_len = 0.0;
@@ -3266,7 +3338,11 @@ fn search_bm25_with_params(
     }
 
     let mut scores: HashMap<String, f32> = HashMap::new();
-    let avg_len = if index.avg_len > 0.0 { index.avg_len } else { 1.0 };
+    let avg_len = if index.avg_len > 0.0 {
+        index.avg_len
+    } else {
+        1.0
+    };
     let n = index.doc_count as f32;
 
     for (token, qtf) in query_counts {
@@ -3288,7 +3364,11 @@ fn search_bm25_with_params(
         .into_iter()
         .map(|(node_id, score)| SearchHit { node_id, score })
         .collect();
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
     if hits.len() > limit {
         hits.truncate(limit);
     }
@@ -3301,7 +3381,6 @@ fn build_vector_index(
     dim: usize,
 ) -> MemoryResult<VectorIndex> {
     let mut index = VectorIndex::new(dim);
-    let cache = storage.load_embedding_cache().unwrap_or_default();
     let client = EmbeddingClient::from_env();
     let mut expected_dim: Option<usize> = None;
 
@@ -3313,29 +3392,7 @@ fn build_vector_index(
         }
     }
 
-    let mut updated_cache = EmbeddingCache {
-        vectors: HashMap::new(),
-    };
-
     for (node_id, version_id) in heads {
-        if let Some(cached) = cache.vectors.get(node_id) {
-            if cached.version == *version_id && cached.dim > 0 {
-                if let Some(expected) = expected_dim {
-                    if cached.dim != expected {
-                        // Skip stale cache from a different embedding dimension.
-                        continue;
-                    }
-                } else if index.dim != cached.dim {
-                    index.dim = cached.dim;
-                }
-                index.vectors.insert(node_id.clone(), cached.vector.clone());
-                updated_cache
-                    .vectors
-                    .insert(node_id.clone(), cached.clone());
-                continue;
-            }
-        }
-
         let version = storage.read_object(version_id)?;
         let text = build_embedding_text(&version.content);
         let vector = if let Some(client) = &client {
@@ -3359,18 +3416,6 @@ fn build_vector_index(
             index.dim = vector.len();
         }
         index.vectors.insert(node_id.clone(), vector.clone());
-        updated_cache.vectors.insert(
-            node_id.clone(),
-            CachedVector {
-                version: version_id.clone(),
-                dim: vector.len(),
-                vector,
-            },
-        );
-    }
-
-    if !updated_cache.vectors.is_empty() {
-        storage.persist_embedding_cache(&updated_cache)?;
     }
 
     Ok(index)
@@ -3399,7 +3444,11 @@ fn search_vector(query: &str, limit: usize, index: &VectorIndex) -> Vec<SearchHi
             });
         }
     }
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
     if hits.len() > limit {
         hits.truncate(limit);
     }
@@ -3483,11 +3532,7 @@ fn build_embedding_text(content: &NodeContent) -> String {
     parts.join("\n\n")
 }
 
-fn rrf_fuse(
-    lists: Vec<(Vec<SearchHit>, f32)>,
-    k: usize,
-    limit: usize,
-) -> Vec<SearchHit> {
+fn rrf_fuse(lists: Vec<(Vec<SearchHit>, f32)>, k: usize, limit: usize) -> Vec<SearchHit> {
     let mut scores: HashMap<String, f32> = HashMap::new();
     let denom = k.max(1) as f32;
 
@@ -3495,7 +3540,11 @@ fn rrf_fuse(
         if weight <= 0.0 || list.is_empty() {
             continue;
         }
-        list.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+        list.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
         for (idx, item) in list.into_iter().enumerate() {
             let rank = (idx + 1) as f32;
             let score = weight / (denom + rank);
@@ -3507,7 +3556,11 @@ fn rrf_fuse(
         .into_iter()
         .map(|(node_id, score)| SearchHit { node_id, score })
         .collect();
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.node_id.cmp(&b.node_id)));
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
     if hits.len() > limit {
         hits.truncate(limit);
     }
@@ -3563,7 +3616,9 @@ fn build_exploration_query(content: &NodeContent) -> String {
 }
 
 fn extract_content_terms(content: &NodeContent) -> HashSet<String> {
-    tokenize(&build_exploration_query(content)).into_iter().collect()
+    tokenize(&build_exploration_query(content))
+        .into_iter()
+        .collect()
 }
 
 fn upsert_candidate(
@@ -3772,7 +3827,8 @@ fn extract_structured_alias_keywords(
             }
         }
 
-        if value.contains('/') || value.contains('-') || value.contains('_') || value.contains('.') {
+        if value.contains('/') || value.contains('-') || value.contains('_') || value.contains('.')
+        {
             add_alias(value);
         }
     }
@@ -3796,7 +3852,9 @@ fn extract_url_aliases(text: &str) -> Vec<String> {
     let rest = rest.trim_matches('/');
     let mut parts = rest.split('/').filter(|p| !p.trim().is_empty());
     let host = parts.next().unwrap_or("").trim();
-    let mut path_parts: Vec<String> = parts.map(|p| p.trim().trim_matches('/').to_string()).collect();
+    let mut path_parts: Vec<String> = parts
+        .map(|p| p.trim().trim_matches('/').to_string())
+        .collect();
     if !host.is_empty() {
         out.push(host.to_string());
     }
@@ -3996,7 +4054,8 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
-        let payload = r#"{"action":"traverse","start_node":"ProtocolNode","mode":"bfs","depth_limit":1}"#;
+        let payload =
+            r#"{"action":"traverse","start_node":"ProtocolNode","mode":"bfs","depth_limit":1}"#;
         let out = engine.execute_action_json(payload);
         assert!(out.contains("node_list"));
 
@@ -4081,8 +4140,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["graph-memory".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 1.6,
             )
             .expect("create node");
@@ -4119,8 +4178,8 @@ mod tests {
                     )]),
                     links: vec![],
                     highlights: vec!["circadian".to_string(), "fatigue".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 1.5,
             )
             .expect("create circadian");
@@ -4135,8 +4194,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["diet".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 1.0,
             )
             .expect("create nutrition");
@@ -4213,6 +4272,75 @@ mod tests {
     }
 
     #[test]
+    fn storage_layout_stays_within_documented_files() {
+        let dir = temp_data_dir("storage-layout");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node("LayoutNode", sample_content("Layout", "Body", "Ref"), 1.0)
+            .expect("create node");
+        engine
+            .log_access("agent-main", "LayoutNode")
+            .expect("log access");
+
+        let habit_resp = engine.execute_action(ToolAction::RecordUserHabit {
+            topic: "language".to_string(),
+            summary: "User prefers Chinese responses for architecture discussions.".to_string(),
+            details: "When discussing storage layout, default to Chinese unless asked otherwise."
+                .to_string(),
+            agent_id: "agent-main".to_string(),
+            source: "user_request".to_string(),
+        });
+        assert!(matches!(habit_resp, ToolResponse::NodeList { .. }));
+
+        let pattern_resp = engine.execute_action(ToolAction::RecordBehaviorPattern {
+            pattern_key: "storage_audit".to_string(),
+            summary: "Check actual disk layout before changing memory architecture.".to_string(),
+            details: "Inspect storage writes first, then align implementation with the documented layout."
+                .to_string(),
+            applicable_plan: Some("layout_regression_fix".to_string()),
+            agent_id: "agent-main".to_string(),
+            source: "agent_observation".to_string(),
+        });
+        assert!(matches!(pattern_resp, ToolResponse::NodeList { .. }));
+
+        let skill_resp = engine.execute_action(ToolAction::UpsertSkill {
+            skill_id: "layout-review".to_string(),
+            title: "Layout Review".to_string(),
+            content: "Verify documented files before adding any new storage artifact.".to_string(),
+            tags: Some(vec!["storage".to_string(), "layout".to_string()]),
+        });
+        assert!(matches!(skill_resp, ToolResponse::SkillResult { .. }));
+
+        let state_path = dir.join("index").join("state.json");
+        let state = fs::read_to_string(&state_path).expect("read state json");
+        assert!(state.contains("\"access_state\""));
+
+        let episodic_path = dir.join("episodic").join("memories.jsonl");
+        let episodic = fs::read_to_string(&episodic_path).expect("read episodic memories");
+        assert!(episodic.contains("\"scene_type\":\"user_habit\""));
+        assert!(episodic.contains("\"scene_type\":\"behavior_pattern\""));
+
+        let skill_files: Vec<String> = fs::read_dir(dir.join("skills"))
+            .expect("read skills dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(skill_files.iter().any(|name| name.ends_with(".md")));
+
+        assert!(!dir.join("index").join("access_state.json").exists());
+        assert!(!dir.join("index").join("embeddings.json").exists());
+        assert!(!dir.join("index").join("user_habits.jsonl").exists());
+        assert!(!dir.join("index").join("behavior_patterns.jsonl").exists());
+        assert!(!dir.join("index").join("user_habits_state.json").exists());
+        assert!(
+            !dir.join("index")
+                .join("behavior_patterns_state.json")
+                .exists()
+        );
+    }
+
+    #[test]
     fn suggest_exploration_prioritizes_links_then_keywords() {
         let dir = temp_data_dir("suggest-exploration");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
@@ -4237,8 +4365,8 @@ mod tests {
                         weight: 0.9,
                     }],
                     highlights: vec!["resources".to_string(), "inspiration".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.0,
             )
             .expect("create source");
@@ -4261,8 +4389,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["yc".to_string(), "startup".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 3.0,
             )
             .expect("create yc");
@@ -4310,8 +4438,8 @@ mod tests {
                         },
                     ],
                     highlights: vec!["memory".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.6,
             )
             .expect("create source");
@@ -4340,8 +4468,8 @@ mod tests {
                         },
                     ],
                     highlights: vec!["graph".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.4,
             )
             .expect("create candidate");
@@ -4389,8 +4517,8 @@ mod tests {
                     )]),
                     links: vec![],
                     highlights: vec!["yc".to_string(), "startup".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 3.5,
             )
             .expect("create yc");
@@ -4475,7 +4603,8 @@ mod tests {
             .auto_link_related("recent_doc_a", 2, 10.0)
             .expect_err("auto link should reject content-only overlap");
         assert!(
-            err.to_string().contains("no related candidates above min_score"),
+            err.to_string()
+                .contains("no related candidates above min_score"),
             "unexpected error: {err}"
         );
     }
@@ -4502,8 +4631,8 @@ mod tests {
                         weight: 0.9,
                     }],
                     highlights: vec!["swift".to_string(), "resources".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.0,
             )
             .expect("create root");
@@ -4522,8 +4651,8 @@ mod tests {
                         weight: 0.8,
                     }],
                     highlights: vec!["learning".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 1.8,
             )
             .expect("create middle");
@@ -4538,8 +4667,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["yc".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 3.2,
             )
             .expect("create leaf");
@@ -4590,7 +4719,7 @@ mod tests {
             agent_id: "agent-main".to_string(),
             reason: "同步新的知识规范".to_string(),
             source: "user_request".to_string(),
-                    project: None,
+            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4628,8 +4757,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["rust".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.0,
             )
             .expect("create related node");
@@ -4645,7 +4774,7 @@ mod tests {
             agent_id: "agent-main".to_string(),
             reason: "补充知识草案内容".to_string(),
             source: "user_request".to_string(),
-                    project: None,
+            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4679,8 +4808,8 @@ mod tests {
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["suna".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 2.0,
             )
             .expect("create related github node");
@@ -4696,7 +4825,7 @@ Notable repos include `kortix-ai/suna`.
             agent_id: "agent-main".to_string(),
             reason: "补充 top100 仓库引用信息".to_string(),
             source: "user_request".to_string(),
-                    project: None,
+            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4764,8 +4893,8 @@ Notable repos include `kortix-ai/suna`.
                     structured_data: BTreeMap::new(),
                     links: vec![],
                     highlights: vec!["检索".to_string()],
-                            ..Default::default()
-        },
+                    ..Default::default()
+                },
                 1.8,
             )
             .expect("create");
@@ -4850,7 +4979,8 @@ Notable repos include `kortix-ai/suna`.
         engine.execute_action(ToolAction::Ingest {
             node_id: Some("rust_lang".to_string()),
             title: Some("Rust Programming Language".to_string()),
-            text: "# Rust\n\nA systems programming language focused on safety and performance.".to_string(),
+            text: "# Rust\n\nA systems programming language focused on safety and performance."
+                .to_string(),
             summary: None,
             facts: None,
             relations: None,
@@ -4966,7 +5096,10 @@ Notable repos include `kortix-ai/suna`.
         });
 
         match resp {
-            ToolResponse::Deleted { node_id, versions_removed } => {
+            ToolResponse::Deleted {
+                node_id,
+                versions_removed,
+            } => {
                 assert_eq!(node_id, "arch_legacy");
                 assert_eq!(versions_removed, 2);
             }
@@ -5045,7 +5178,10 @@ Notable repos include `kortix-ai/suna`.
         });
 
         match resp {
-            ToolResponse::PrunedHistory { node_id, versions_removed } => {
+            ToolResponse::PrunedHistory {
+                node_id,
+                versions_removed,
+            } => {
                 assert_eq!(node_id, "arch_node");
                 assert_eq!(versions_removed, 2);
             }
@@ -5058,7 +5194,9 @@ Notable repos include `kortix-ai/suna`.
         assert_eq!(*engine.head("arch_node").unwrap(), head_before);
 
         // Current head version object should still be readable.
-        let head_version = engine.get_version(&head_before).expect("head version readable");
+        let head_version = engine
+            .get_version(&head_before)
+            .expect("head version readable");
         assert_eq!(head_version.node_id, "arch_node");
         assert!(head_version.content.body.contains("v3 current"));
 

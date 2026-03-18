@@ -28,6 +28,7 @@ export type ToolAction =
   | { action: 'upsert_skill'; skill_id: string; title: string; content: string; tags?: string[] }
   | { action: 'search_skills'; query: string; limit?: number }
   | { action: 'read_skill'; skill_id: string }
+  | { action: 'list_skills' }
   // Project management
   | { action: 'create_project'; project_id: string; name: string; description: string; owner?: string; tags?: string[] }
   | { action: 'list_projects' }
@@ -54,6 +55,15 @@ export type EpisodicMemoryRecord = {
   core_knowledge_nodes: string[];
   tags: string[];
   agent_id?: string;
+  metadata?: Record<string, string>;
+};
+
+export type SkillRecord = {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  updated_at: number;
 };
 
 export type SkillSearchHit = {
@@ -76,6 +86,7 @@ export type ToolResponse =
   | { kind: 'user_preferences'; content: string }
   | { kind: 'skill_result'; skill_id: string; title: string; content: string; tags: string[]; updated_at: number }
   | { kind: 'skill_results'; results: SkillSearchHit[] }
+  | { kind: 'skill_list'; skills: SkillRecord[] }
   | { kind: 'project_result'; project: ProjectRecord }
   | { kind: 'project_list'; projects: ProjectRecord[] }
   | { kind: 'project_nodes'; project_id: string; nodes: string[] }

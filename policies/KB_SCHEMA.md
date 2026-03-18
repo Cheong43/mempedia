@@ -65,7 +65,6 @@ Front matter fields:
 node_id: "<node_id>"
 version: "<version_id>"
 timestamp: <unix_seconds>
-confidence: <0.0-1.0>
 importance: <float_ge_0>
 title: "<title>"
 summary: "<summary>"

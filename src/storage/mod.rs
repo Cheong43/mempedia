@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,8 @@ pub struct CachedVector {
 pub struct IndexSnapshot {
     pub heads: HashMap<String, String>,
     pub nodes: HashMap<String, Node>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub access_state: HashMap<String, AccessStats>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,24 +105,12 @@ impl FileStorage {
         self.index_dir().join("behavior_patterns.jsonl")
     }
 
-    fn habits_state_path(&self) -> PathBuf {
-        self.index_dir().join("user_habits_state.json")
-    }
-
-    fn patterns_state_path(&self) -> PathBuf {
-        self.index_dir().join("behavior_patterns_state.json")
-    }
-
     fn access_state_path(&self) -> PathBuf {
         self.index_dir().join("access_state.json")
     }
 
     fn agent_action_log_path(&self) -> PathBuf {
         self.index_dir().join("agent_actions.log")
-    }
-
-    fn embeddings_path(&self) -> PathBuf {
-        self.index_dir().join("embeddings.json")
     }
 
     fn node_project_index_path(&self) -> PathBuf {
@@ -161,7 +151,8 @@ impl FileStorage {
     fn skill_path(&self, skill_id: &str) -> PathBuf {
         let safe = sanitize_node_id(skill_id);
         let digest = blake3::hash(skill_id.as_bytes()).to_hex();
-        self.skills_dir().join(format!("{safe}-{}.md", &digest[..8]))
+        self.skills_dir()
+            .join(format!("{safe}-{}.md", &digest[..8]))
     }
 
     pub fn load_index_snapshot(&self) -> MemoryResult<IndexSnapshot> {
@@ -174,35 +165,55 @@ impl FileStorage {
         Ok(IndexSnapshot {
             heads: self.load_json(self.heads_path())?,
             nodes: self.load_json(self.nodes_path())?,
+            access_state: HashMap::new(),
         })
     }
 
     pub fn persist_index_snapshot(&self, snapshot: &IndexSnapshot) -> MemoryResult<()> {
-        self.atomic_write_json(self.index_state_path(), snapshot)?;
+        let full_snapshot = IndexSnapshot {
+            heads: snapshot.heads.clone(),
+            nodes: snapshot.nodes.clone(),
+            access_state: self.load_access_state().unwrap_or_default(),
+        };
+        self.atomic_write_json(self.index_state_path(), &full_snapshot)?;
 
         // Keep legacy files in sync for readability/tools.
-        self.atomic_write_json(self.heads_path(), &snapshot.heads)?;
-        self.atomic_write_json(self.nodes_path(), &snapshot.nodes)?;
+        self.atomic_write_json(self.heads_path(), &full_snapshot.heads)?;
+        self.atomic_write_json(self.nodes_path(), &full_snapshot.nodes)?;
         Ok(())
     }
 
     pub fn load_access_state(&self) -> MemoryResult<HashMap<String, AccessStats>> {
-        self.load_json(self.access_state_path())
+        let snapshot = self.load_index_snapshot()?;
+        if !snapshot.access_state.is_empty() {
+            return Ok(snapshot.access_state);
+        }
+
+        let legacy_state: HashMap<String, AccessStats> =
+            self.load_json(self.access_state_path())?;
+        if !legacy_state.is_empty() {
+            return Ok(legacy_state);
+        }
+
+        self.derive_access_state_from_log()
     }
 
     pub fn persist_access_state(
         &self,
         access_state: &HashMap<String, AccessStats>,
     ) -> MemoryResult<()> {
-        self.atomic_write_json(self.access_state_path(), access_state)
+        let mut snapshot = self.load_index_snapshot()?;
+        snapshot.access_state = access_state.clone();
+        self.atomic_write_json(self.index_state_path(), &snapshot)
     }
 
     pub fn load_embedding_cache(&self) -> MemoryResult<EmbeddingCache> {
-        self.load_json(self.embeddings_path())
+        Ok(EmbeddingCache::default())
     }
 
     pub fn persist_embedding_cache(&self, cache: &EmbeddingCache) -> MemoryResult<()> {
-        self.atomic_write_json(self.embeddings_path(), cache)
+        let _ = cache;
+        Ok(())
     }
 
     fn load_json<T: serde::de::DeserializeOwned + Default>(
@@ -305,11 +316,7 @@ impl FileStorage {
     /// Delete the markdown projection file for a node.
     /// Tries the project-scoped path first, then the legacy `knowledge/nodes/` path.
     /// Returns `Ok(true)` if a file was removed.
-    pub fn delete_markdown_node(
-        &self,
-        node_id: &str,
-        project: Option<&str>,
-    ) -> MemoryResult<bool> {
+    pub fn delete_markdown_node(&self, node_id: &str, project: Option<&str>) -> MemoryResult<bool> {
         let path = self.markdown_node_path(node_id, project);
         if path.exists() {
             fs::remove_file(&path)?;
@@ -349,40 +356,118 @@ impl FileStorage {
     }
 
     pub fn append_user_habit(&self, record: &UserHabitEnv) -> MemoryResult<()> {
-        let line = serde_json::to_string(record)?;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.habits_path())?;
-        writeln!(f, "{line}")?;
-        f.sync_all()?;
-        let mut state: HashMap<String, UserHabitEnv> = self.load_json(self.habits_state_path())?;
-        state.insert(record.topic.clone(), record.clone());
-        self.atomic_write_json(self.habits_state_path(), &state)?;
-        Ok(())
+        let mut metadata = BTreeMap::new();
+        metadata.insert("topic".to_string(), record.topic.clone());
+        metadata.insert("details".to_string(), record.details.clone());
+        metadata.insert("source".to_string(), record.source.clone());
+
+        self.append_episodic_memory(&EpisodicMemoryRecord {
+            id: make_episodic_id("habit", &record.topic, record.timestamp),
+            timestamp: record.timestamp,
+            scene_type: "user_habit".to_string(),
+            summary: record.summary.clone(),
+            raw_conversation_id: None,
+            importance: 1.0,
+            core_knowledge_nodes: Vec::new(),
+            tags: vec![record.topic.clone()],
+            agent_id: Some(record.agent_id.clone()),
+            metadata,
+        })
     }
 
     pub fn append_behavior_pattern(&self, record: &BehaviorPatternRecord) -> MemoryResult<()> {
-        let line = serde_json::to_string(record)?;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.patterns_path())?;
-        writeln!(f, "{line}")?;
-        f.sync_all()?;
-        let mut state: HashMap<String, BehaviorPatternRecord> =
-            self.load_json(self.patterns_state_path())?;
-        state.insert(record.pattern_key.clone(), record.clone());
-        self.atomic_write_json(self.patterns_state_path(), &state)?;
-        Ok(())
+        let mut metadata = BTreeMap::new();
+        metadata.insert("pattern_key".to_string(), record.pattern_key.clone());
+        metadata.insert("details".to_string(), record.details.clone());
+        metadata.insert("source".to_string(), record.source.clone());
+        if let Some(plan) = &record.applicable_plan {
+            metadata.insert("applicable_plan".to_string(), plan.clone());
+        }
+
+        self.append_episodic_memory(&EpisodicMemoryRecord {
+            id: make_episodic_id("pattern", &record.pattern_key, record.timestamp),
+            timestamp: record.timestamp,
+            scene_type: "behavior_pattern".to_string(),
+            summary: record.summary.clone(),
+            raw_conversation_id: None,
+            importance: 1.0,
+            core_knowledge_nodes: Vec::new(),
+            tags: vec![record.pattern_key.clone()],
+            agent_id: Some(record.agent_id.clone()),
+            metadata,
+        })
     }
 
     pub fn read_user_habits(&self, limit: usize) -> MemoryResult<Vec<UserHabitEnv>> {
-        read_json_lines(self.habits_path(), limit)
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut habits: Vec<UserHabitEnv> = self
+            .list_episodic_memories(usize::MAX, None)?
+            .into_iter()
+            .filter(|record| record.scene_type == "user_habit")
+            .map(|record| UserHabitEnv {
+                topic: record
+                    .metadata
+                    .get("topic")
+                    .cloned()
+                    .or_else(|| record.tags.first().cloned())
+                    .unwrap_or_default(),
+                summary: record.summary,
+                details: record.metadata.get("details").cloned().unwrap_or_default(),
+                timestamp: record.timestamp,
+                agent_id: record.agent_id.unwrap_or_default(),
+                source: record.metadata.get("source").cloned().unwrap_or_default(),
+            })
+            .collect();
+
+        if habits.len() < limit {
+            let legacy_limit = limit - habits.len();
+            let legacy: Vec<UserHabitEnv> = read_json_lines(self.habits_path(), legacy_limit)?;
+            habits.extend(legacy);
+            habits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+
+        habits.truncate(limit);
+        Ok(habits)
     }
 
     pub fn read_behavior_patterns(&self, limit: usize) -> MemoryResult<Vec<BehaviorPatternRecord>> {
-        read_json_lines(self.patterns_path(), limit)
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut patterns: Vec<BehaviorPatternRecord> = self
+            .list_episodic_memories(usize::MAX, None)?
+            .into_iter()
+            .filter(|record| record.scene_type == "behavior_pattern")
+            .map(|record| BehaviorPatternRecord {
+                pattern_key: record
+                    .metadata
+                    .get("pattern_key")
+                    .cloned()
+                    .or_else(|| record.tags.first().cloned())
+                    .unwrap_or_default(),
+                summary: record.summary,
+                details: record.metadata.get("details").cloned().unwrap_or_default(),
+                applicable_plan: record.metadata.get("applicable_plan").cloned(),
+                timestamp: record.timestamp,
+                agent_id: record.agent_id.unwrap_or_default(),
+                source: record.metadata.get("source").cloned().unwrap_or_default(),
+            })
+            .collect();
+
+        if patterns.len() < limit {
+            let legacy_limit = limit - patterns.len();
+            let legacy: Vec<BehaviorPatternRecord> =
+                read_json_lines(self.patterns_path(), legacy_limit)?;
+            patterns.extend(legacy);
+            patterns.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+
+        patterns.truncate(limit);
+        Ok(patterns)
     }
 
     pub fn write_markdown_node(
@@ -536,10 +621,7 @@ impl FileStorage {
                 continue;
             }
             if let Ok(text) = fs::read_to_string(&path) {
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("skill");
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("skill");
                 // Derive skill_id: strip the trailing -<hash8> hex suffix added by skill_path().
                 let skill_id = if let Some(pos) = stem.rfind('-') {
                     let suffix = &stem[pos + 1..];
@@ -567,10 +649,7 @@ impl FileStorage {
     }
 
     /// Persist the node_id → project_id mapping to disk.
-    pub fn persist_node_project_index(
-        &self,
-        index: &HashMap<String, String>,
-    ) -> MemoryResult<()> {
+    pub fn persist_node_project_index(&self, index: &HashMap<String, String>) -> MemoryResult<()> {
         self.atomic_write_json(self.node_project_index_path(), index)
     }
 
@@ -591,15 +670,13 @@ impl FileStorage {
 
     /// Read a single project metadata record by id.
     pub fn read_project_record(&self, project_id: &str) -> MemoryResult<Option<ProjectRecord>> {
-        let index: HashMap<String, ProjectRecord> =
-            self.load_json(self.projects_index_path())?;
+        let index: HashMap<String, ProjectRecord> = self.load_json(self.projects_index_path())?;
         Ok(index.get(project_id).cloned())
     }
 
     /// List all project metadata records, sorted by name.
     pub fn list_project_records(&self) -> MemoryResult<Vec<ProjectRecord>> {
-        let index: HashMap<String, ProjectRecord> =
-            self.load_json(self.projects_index_path())?;
+        let index: HashMap<String, ProjectRecord> = self.load_json(self.projects_index_path())?;
         let mut records: Vec<ProjectRecord> = index.into_values().collect();
         records.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(records)
@@ -630,6 +707,39 @@ fn sync_parent_dir(path: &Path) -> MemoryResult<()> {
         dir.sync_all()?;
     }
     Ok(())
+}
+
+fn make_episodic_id(kind: &str, stable_key: &str, timestamp: u64) -> String {
+    let input = format!("{kind}:{stable_key}:{timestamp}");
+    let digest = blake3::hash(input.as_bytes()).to_hex();
+    format!("ep_{kind}_{timestamp}_{}", &digest[..8])
+}
+
+impl FileStorage {
+    fn derive_access_state_from_log(&self) -> MemoryResult<HashMap<String, AccessStats>> {
+        let path = self.access_log_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let text = fs::read_to_string(path)?;
+        let mut state = HashMap::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(log) = serde_json::from_str::<AccessLog>(trimmed) else {
+                continue;
+            };
+            let stats = state
+                .entry(log.node_id)
+                .or_insert_with(AccessStats::default);
+            stats.total_access = stats.total_access.saturating_add(1);
+            stats.last_access_ts = stats.last_access_ts.max(log.timestamp);
+        }
+        Ok(state)
+    }
 }
 
 fn read_json_lines<T: serde::de::DeserializeOwned>(
@@ -713,7 +823,11 @@ fn parse_skill_file(skill_id: &str, text: &str) -> SkillRecord {
         }
 
         SkillRecord {
-            id: if parsed_skill_id.is_empty() { skill_id.to_string() } else { parsed_skill_id },
+            id: if parsed_skill_id.is_empty() {
+                skill_id.to_string()
+            } else {
+                parsed_skill_id
+            },
             title,
             content: body,
             tags,
@@ -725,7 +839,11 @@ fn parse_skill_file(skill_id: &str, text: &str) -> SkillRecord {
             .lines()
             .find_map(|line| {
                 let l = line.trim();
-                if l.starts_with("# ") { Some(l[2..].trim().to_string()) } else { None }
+                if l.starts_with("# ") {
+                    Some(l[2..].trim().to_string())
+                } else {
+                    None
+                }
             })
             .unwrap_or_else(|| skill_id.to_string());
         SkillRecord {

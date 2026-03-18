@@ -7,14 +7,15 @@ import { fileURLToPath } from 'url';
 
 import { App } from './components/App.js';
 import { importDocCommand } from './import-doc.js';
+import { resolveProjectRoot } from './config/projectPaths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-const projectRoot =
-  process.env.MEMPEDIA_PROJECT_ROOT || path.resolve(__dirname, '../..');
+const projectRoot = resolveProjectRoot(__dirname);
+console.log(`[CodeCLI] Using projectRoot: ${projectRoot}`);
 
 // ── import-doc sub-command ────────────────────────────────────────────────────
 // Usage:

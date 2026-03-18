@@ -32,7 +32,6 @@ For `agent_upsert_markdown` and `ingest`, the runtime must enforce:
 - `agent_id` is non-empty.
 - `reason` length >= configured minimum (`min_reason_chars`).
 - `source` is non-empty.
-- `confidence` >= configured minimum (`min_confidence`).
 - markdown payload size <= configured limit (`max_markdown_bytes`).
 
 If any check fails, the update must be rejected.

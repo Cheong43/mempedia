@@ -5,6 +5,13 @@ import { Agent, TraceEvent } from '../agent/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
+import { fileURLToPath } from 'url';
+import { resolveCodeCliRoot } from '../config/projectPaths.js';
+import { installWorkspaceSkillFromLibrary, listSkillsViaCli, readSkillViaCli, upsertSkillViaCli } from '../mempedia/cli.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const codeCliRoot = resolveCodeCliRoot(__dirname);
 
 interface AppProps {
   apiKey: string;
@@ -27,6 +34,10 @@ interface LocalSkill {
   name: string;
   description: string;
   content: string;
+  category?: string;
+  priority?: number;
+  alwaysInclude?: boolean;
+  tags?: string[];
   source?: 'local' | 'remote';
   location?: string;
   repository?: string;
@@ -184,32 +195,15 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   }, [agent]);
 
   useEffect(() => {
-    const loadSkills = () => {
-      const skillsRoot = path.join(projectRoot, 'skills');
-      if (!fs.existsSync(skillsRoot)) {
+    const loadSkills = async () => {
+      try {
+        setSkills(loadWorkspaceSkills());
+      } catch {
         setSkills([]);
-        return;
       }
-      const entries = fs.readdirSync(skillsRoot, { withFileTypes: true });
-      const parsed: LocalSkill[] = [];
-      for (const entry of entries) {
-        if (!entry.isDirectory()) {
-          continue;
-        }
-        const skillPath = path.join(skillsRoot, entry.name, 'SKILL.md');
-        if (!fs.existsSync(skillPath)) {
-          continue;
-        }
-        const raw = fs.readFileSync(skillPath, 'utf-8');
-        parsed.push(parseSkillMarkdown(raw, entry.name, {
-          source: 'local',
-          location: normalizePath(path.relative(projectRoot, skillPath))
-        }));
-      }
-      setSkills(sortSkills(parsed));
     };
-    loadSkills();
-  }, [projectRoot]);
+    void loadSkills();
+  }, [agent]);
 
   const mimeType = (filePath: string) => {
     if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
@@ -282,7 +276,30 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     return files;
   };
 
-  const loadMemorySnapshot = () => {
+  const loadWorkspaceSkills = (): LocalSkill[] => {
+    const skillRoots = [
+      path.join(codeCliRoot, 'skills'),
+      path.join(codeCliRoot, '.github', 'skills'),
+    ];
+    const loaded: LocalSkill[] = [];
+    for (const root of skillRoots) {
+      if (!fs.existsSync(root)) continue;
+      const skillFiles = listFiles(root).filter((filePath) => path.basename(filePath) === 'SKILL.md');
+      for (const filePath of skillFiles) {
+        try {
+          const markdown = fs.readFileSync(filePath, 'utf-8');
+          const fallbackName = path.basename(path.dirname(filePath)) || 'unnamed-skill';
+          loaded.push(parseSkillMarkdown(markdown, fallbackName, {
+            source: 'local',
+            location: normalizePath(path.relative(projectRoot, filePath)),
+          }));
+        } catch {}
+      }
+    }
+    return sortSkills(loaded);
+  };
+
+  const loadMemorySnapshot = async () => {
     const memoryRoot = path.join(projectRoot, '.mempedia', 'memory');
     const indexDir = path.join(memoryRoot, 'index');
     const objectsDir = path.join(memoryRoot, 'objects');
@@ -305,34 +322,14 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     }
     const accessLogs = readJsonLines(path.join(indexDir, 'access.log'), (row) => row && typeof row.node_id === 'string');
     const agentActions = readJsonLines(path.join(indexDir, 'agent_actions.log'), (row) => row && typeof row.node_id === 'string');
-    const preferencesPath = path.join(memoryRoot, 'preferences.md');
-    const preferences = fs.existsSync(preferencesPath) ? fs.readFileSync(preferencesPath, 'utf-8') : '';
-    const skillsDir = path.join(memoryRoot, 'skills');
-    const skills: Array<{ skill_id: string; title?: string; tags?: string[]; updated_at?: number }> = [];
-    if (fs.existsSync(skillsDir)) {
-      const skillFiles = listFiles(skillsDir).filter((f) => f.endsWith('.md'));
-      for (const file of skillFiles) {
-        try {
-          const raw = fs.readFileSync(file, 'utf-8');
-          const frontmatter = raw.match(/^---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---\s*[\r\n]*/);
-          const meta = frontmatter ? frontmatter[1] : '';
-          const skillId = path.basename(file).replace(/-[0-9a-f]{8}\.md$/i, '');
-          const title = meta.match(/title:\s*"?([^"\n]+)"?/i)?.[1]?.trim();
-          const tagsLine = meta.match(/tags:\s*\[(.*?)\]/i)?.[1] || '';
-          const tags = tagsLine
-            .split(',')
-            .map((item) => item.replace(/["']/g, '').trim())
-            .filter(Boolean);
-          const updatedAtRaw = meta.match(/updated_at:\s*(\d+)/i)?.[1];
-          skills.push({
-            skill_id: skillId,
-            title,
-            tags,
-            updated_at: updatedAtRaw ? Number(updatedAtRaw) : undefined,
-          });
-        } catch {}
-      }
-    }
+    const [preferencesRes, skillsRes, episodicRes] = await Promise.all([
+      agent.sendMempediaAction({ action: 'read_user_preferences' }).catch(() => ({ kind: 'user_preferences', content: '' } as any)),
+      listSkillsViaCli(projectRoot).catch(() => ({ kind: 'skill_list', skills: [] } as any)),
+      agent.sendMempediaAction({ action: 'list_episodic', limit: 50 }).catch(() => ({ kind: 'episodic_results', memories: [] } as any)),
+    ]);
+    const preferences = (preferencesRes as any)?.kind === 'user_preferences' ? String((preferencesRes as any).content || '') : '';
+    const skills = (skillsRes as any)?.kind === 'skill_list' ? (skillsRes as any).skills || [] : [];
+    const episodic = (episodicRes as any)?.kind === 'episodic_results' ? (episodicRes as any).memories || [] : [];
     const nodeConversations = readJsonLines(path.join(indexDir, 'node_conversations.jsonl'), (row) => row && typeof row.node_id === 'string');
     const conversationDir = path.join(indexDir, 'conversations');
     const conversations: Array<{ id: string; timestamp?: string; input?: string; answer?: string }> = [];
@@ -376,6 +373,7 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       versions,
       accessLogs,
       agentActions,
+      episodic,
       preferences,
       skills,
       nodeConversations,
@@ -392,10 +390,29 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     const meta = frontmatter ? frontmatter[1] : '';
     const name = meta.match(/name:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || fallbackName;
     const description = meta.match(/description:\s*"?([^"\n]+)"?/i)?.[1]?.trim() || 'No description';
+    const category = meta.match(/category:\s*"?([^"\n]+)"?/i)?.[1]?.trim();
+    const rawPriority = meta.match(/priority:\s*"?([^"\n]+)"?/i)?.[1]?.trim().toLowerCase();
+    const priority = rawPriority === 'high'
+      ? 100
+      : rawPriority === 'medium'
+        ? 50
+        : rawPriority === 'low'
+          ? 10
+          : Number(rawPriority || 0);
+    const alwaysInclude = /always_include:\s*(true|yes|1)/i.test(meta);
+    const tagBlock = meta.match(/tags:\s*\[([^\]]*)\]/i)?.[1] || '';
+    const tags = tagBlock
+      .split(',')
+      .map((value) => value.replace(/["']/g, '').trim())
+      .filter(Boolean);
     return {
       name,
       description,
       content: body,
+      category,
+      priority: Number.isFinite(priority) ? priority : 0,
+      alwaysInclude,
+      tags,
       ...extra,
     };
   };
@@ -416,6 +433,61 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   };
 
   const availableSkills = () => mergeSkills(skills, remoteSkills);
+
+  const tokenizeForSkillMatch = (value: string) => {
+    const matches = value.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) || [];
+    return [...new Set(matches.filter((token) => token.length >= 2))];
+  };
+
+  const scoreSkillMatch = (query: string, skill: LocalSkill) => {
+    const queryTokens = tokenizeForSkillMatch(query);
+    if (queryTokens.length === 0) return 0;
+    const skillName = skill.name.toLowerCase();
+    const skillDescription = skill.description.toLowerCase();
+    const skillBody = skill.content.toLowerCase().slice(0, 1600);
+    let score = 0;
+    for (const token of queryTokens) {
+      if (skillName.includes(token)) {
+        score += 3;
+      } else if (skillDescription.includes(token)) {
+        score += 2;
+      } else if (skillBody.includes(token)) {
+        score += 1;
+      }
+    }
+    return score / queryTokens.length;
+  };
+
+  const isMempediaSkill = (skill: LocalSkill) => {
+    return skill.category === 'mempedia' || (skill.tags || []).includes('mempedia');
+  };
+
+  const selectAutoSkills = (query: string) => {
+    const pinned = skills
+      .filter((skill) => skill.alwaysInclude && isMempediaSkill(skill))
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.name.localeCompare(b.name));
+
+    const ranked = skills
+      .map((skill) => {
+        const score = scoreSkillMatch(query, skill);
+        const priorityBonus = (skill.priority || 0) / 100;
+        const mempediaBonus = isMempediaSkill(skill) ? 0.5 : 0;
+        return { skill, score: score + priorityBonus + mempediaBonus };
+      })
+      .filter((item) => item.skill.alwaysInclude || item.score >= (isMempediaSkill(item.skill) ? 0.75 : 1))
+      .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name))
+      .map((item) => item.skill);
+
+    const merged = new Map<string, LocalSkill>();
+    for (const skill of [...pinned, ...ranked]) {
+      const key = `${skill.source || 'local'}::${skill.location || skill.name}`;
+      if (!merged.has(key)) {
+        merged.set(key, skill);
+      }
+    }
+
+    return [...merged.values()].slice(0, 3);
+  };
 
   const formatSkillLabel = (skill: LocalSkill) => {
     const source = skill.source === 'remote' ? `remote${skill.repository ? `:${skill.repository}` : ''}` : 'local';
@@ -495,19 +567,15 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
   };
 
   const formatPromptWithSkill = (query: string, oneShotSkill?: LocalSkill | null) => {
-    const skillToUse = oneShotSkill || activeSkill;
-    return skillToUse
-      ? `Claude Code Skill Active: ${skillToUse.name}
-
-Skill Description:
-${skillToUse.description}
-
-Skill Content:
-${skillToUse.content}
-
-User Request:
-${query}`
-      : query;
+    const explicitSkill = oneShotSkill || activeSkill;
+    const selectedSkills = explicitSkill ? [explicitSkill] : selectAutoSkills(query);
+    if (selectedSkills.length === 0) {
+      return query;
+    }
+    const rendered = selectedSkills
+      .map((skill) => `Skill: ${skill.name}\nDescription: ${skill.description}\nContent:\n${skill.content}`)
+      .join('\n\n---\n\n');
+    return `Internal skill guidance for this turn:\nThese skills are internal behavioral guidance only. They are not part of the user's request, not evidence to analyze, not files to verify, and not content to summarize back to the user unless the user explicitly asks about skills. Do not inspect the skills directory just to confirm they exist. Do not emit a skill name in tool_calls.name. Use only actual tool names from the system tool catalog.\n\n${rendered}\n\nActual User Request:\n${query}`;
   };
 
   // ── Branch state pure updater (shared by terminal UI and thread chat) ────────
@@ -652,7 +720,80 @@ ${query}`
       }
       if (rawPath === '/api/memory/snapshot' && method === 'GET') {
         try {
-          writeJson(res, 200, { ok: true, ...loadMemorySnapshot() });
+          writeJson(res, 200, { ok: true, ...(await loadMemorySnapshot()) });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/preferences' && method === 'GET') {
+        try {
+          const result = await agent.sendMempediaAction({ action: 'read_user_preferences' });
+          writeJson(res, 200, { ok: true, result });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/preferences' && method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const result = await agent.sendMempediaAction({
+            action: 'update_user_preferences',
+            content: String(body?.content || ''),
+          });
+          writeJson(res, 200, { ok: true, result });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/episodic' && method === 'GET') {
+        try {
+          const query = String(requestUrl.searchParams.get('query') || '').trim();
+          const limitRaw = Number(requestUrl.searchParams.get('limit') || 20);
+          const beforeTsRaw = requestUrl.searchParams.get('before_ts');
+          const beforeTs = beforeTsRaw ? Number(beforeTsRaw) : undefined;
+          const result = query
+            ? await agent.sendMempediaAction({ action: 'search_episodic', query, limit: Number.isFinite(limitRaw) ? limitRaw : undefined })
+            : await agent.sendMempediaAction({ action: 'list_episodic', limit: Number.isFinite(limitRaw) ? limitRaw : undefined, before_ts: Number.isFinite(beforeTs) ? beforeTs : undefined });
+          writeJson(res, 200, { ok: true, result });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/skills' && method === 'GET') {
+        try {
+          const query = String(requestUrl.searchParams.get('query') || '').trim();
+          const limitRaw = Number(requestUrl.searchParams.get('limit') || 20);
+          const result = await listSkillsViaCli(projectRoot, query || undefined, Number.isFinite(limitRaw) ? limitRaw : undefined);
+          writeJson(res, 200, { ok: true, result });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      if (rawPath === '/api/memory/skills' && method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const result = await upsertSkillViaCli(projectRoot, {
+            skill_id: String(body?.skill_id || ''),
+            title: String(body?.title || ''),
+            content: String(body?.content || ''),
+            tags: Array.isArray(body?.tags) ? body.tags.map((value: unknown) => String(value)).filter(Boolean) : undefined,
+          });
+          writeJson(res, 200, { ok: true, result });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
+      const skillPathMatch = rawPath.match(/^\/api\/memory\/skills\/([^/]+)$/);
+      if (skillPathMatch && method === 'GET') {
+        try {
+          const result = await readSkillViaCli(projectRoot, decodeURIComponent(skillPathMatch[1]));
+          writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
         }
@@ -751,7 +892,7 @@ ${query}`
             result,
             linkResult,
             opened,
-            snapshot: loadMemorySnapshot(),
+            snapshot: await loadMemorySnapshot(),
           });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -1160,7 +1301,7 @@ ${query}`
     if (trimmed === '/help') {
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'info',
-        content: 'Commands: /help | /clear | /tracelog | /skills | /skills search <query> | /skills clear-remote | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
+        content: 'Commands: /help | /clear | /tracelog | /skills | /skills library [query] | /skills download <skill_id> | /skills search <query> | /skills clear-remote | /skill <name> | /skill off | /skill <name> <task> | /ui start [port] | /ui stop | /ui status'
       }]);
       return;
     }
@@ -1210,7 +1351,7 @@ ${query}`
         const listedSkills = availableSkills();
         const lines = listedSkills.length > 0
           ? listedSkills.map((s) => `${activeSkill?.name === s.name ? '* ' : '- '}${formatSkillLabel(s)}: ${s.description}`).join('\n')
-          : 'No local skills found under ./skills. Use /skills search <query> to search GitHub.';
+          : 'No local skills found under ./skills. Use /skills library [query] to inspect the mempedia skills library.';
         setHistory((prev: HistoryItem[]) => [...prev, {
           type: 'info',
           content: `Available skills:\n${lines}`
@@ -1218,6 +1359,57 @@ ${query}`
         return;
       }
       const action = parts[0];
+      if (action === 'library') {
+        const libraryQuery = parts.slice(1).join(' ').trim();
+        setStatus(libraryQuery ? `Searching mempedia skills library for ${libraryQuery}...` : 'Listing mempedia skills library...');
+        try {
+          const res = await listSkillsViaCli(projectRoot, libraryQuery || undefined, 12);
+          const lines = (res as any)?.kind === 'skill_results'
+            ? (((res as any).results || []) as Array<any>).map((skill) => `- ${skill.skill_id}: score=${Number(skill.score || 0).toFixed(2)}${skill.title ? ` | ${skill.title}` : ''}`).join('\n')
+            : (res as any)?.kind === 'skill_list'
+              ? (((res as any).skills || []) as Array<any>).map((skill) => `- ${skill.id}: ${skill.title || 'No title'}`).join('\n')
+              : 'No library skills matched.';
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `Mempedia skills library${libraryQuery ? ` for "${libraryQuery}"` : ''}:\n${lines || 'No library skills matched.'}`
+          }]);
+          setStatus('Ready');
+        } catch (error: any) {
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `Mempedia skills library query failed: ${error.message}`
+          }]);
+          setStatus('Error');
+        }
+        return;
+      }
+      if (action === 'download') {
+        const skillId = parts[1]?.trim();
+        if (!skillId) {
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: 'Usage: /skills download <skill_id>'
+          }]);
+          return;
+        }
+        setStatus(`Downloading ${skillId} from mempedia skills library...`);
+        try {
+          const res = await installWorkspaceSkillFromLibrary(projectRoot, codeCliRoot, skillId);
+          setSkills(loadWorkspaceSkills());
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `${res.message}${res.path ? `: ${normalizePath(path.relative(projectRoot, res.path))}` : ''}`
+          }]);
+          setStatus('Ready');
+        } catch (error: any) {
+          setHistory((prev: HistoryItem[]) => [...prev, {
+            type: 'info',
+            content: `Skill download failed: ${error.message}`
+          }]);
+          setStatus('Error');
+        }
+        return;
+      }
       if (action === 'search') {
         const searchQuery = parts.slice(1).join(' ').trim();
         if (!searchQuery) {
@@ -1261,7 +1453,7 @@ ${query}`
       }
       setHistory((prev: HistoryItem[]) => [...prev, {
         type: 'info',
-        content: 'Usage: /skills | /skills search <query> | /skills clear-remote'
+        content: 'Usage: /skills | /skills library [query] | /skills download <skill_id> | /skills search <query> | /skills clear-remote'
       }]);
       return;
     }
@@ -1288,7 +1480,7 @@ ${query}`
       if (!selected) {
         setHistory((prev: HistoryItem[]) => [...prev, {
           type: 'info',
-          content: `Skill not found: ${targetName}. Use /skills or /skills search <query>.`
+          content: `Skill not found: ${targetName}. Use /skills for local skills, /skills library [query] to inspect the mempedia library, or /skills download <skill_id> to install one locally.`
         }]);
         return;
       }

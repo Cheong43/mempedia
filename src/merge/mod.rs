@@ -47,19 +47,40 @@ pub fn merge_content(left: &NodeVersion, right: &NodeVersion) -> (NodeContent, V
 
     // For project-hierarchy fields, prefer the newer side.
     let project = if pick_right {
-        right.content.project.clone().or_else(|| left.content.project.clone())
+        right
+            .content
+            .project
+            .clone()
+            .or_else(|| left.content.project.clone())
     } else {
-        left.content.project.clone().or_else(|| right.content.project.clone())
+        left.content
+            .project
+            .clone()
+            .or_else(|| right.content.project.clone())
     };
     let parent_node = if pick_right {
-        right.content.parent_node.clone().or_else(|| left.content.parent_node.clone())
+        right
+            .content
+            .parent_node
+            .clone()
+            .or_else(|| left.content.parent_node.clone())
     } else {
-        left.content.parent_node.clone().or_else(|| right.content.parent_node.clone())
+        left.content
+            .parent_node
+            .clone()
+            .or_else(|| right.content.parent_node.clone())
     };
     let node_type = if pick_right {
-        right.content.node_type.clone().or_else(|| left.content.node_type.clone())
+        right
+            .content
+            .node_type
+            .clone()
+            .or_else(|| left.content.node_type.clone())
     } else {
-        left.content.node_type.clone().or_else(|| right.content.node_type.clone())
+        left.content
+            .node_type
+            .clone()
+            .or_else(|| right.content.node_type.clone())
     };
 
     (

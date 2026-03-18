@@ -43,7 +43,7 @@ export const DEFAULT_POLICY: Policy = {
     externalDir: true,
     shellSafety: {
       enabled: true,
-      decision: 'deny',
+      decision: 'ask',
     },
     doomLoop: {
       enabled: true,

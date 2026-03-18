@@ -5,6 +5,7 @@ import { Agent } from './agent/index.js';
 import * as os from 'os';
 import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
+import { resolveMempediaBinaryPath } from './config/projectPaths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,7 +25,7 @@ const memoryHmacSecretKey = process.env.MEMORY_HMAC_SECRET_KEY?.trim();
 const gatewayApiKey = process.env.GATEWAY_API_KEY?.trim();
 const memoryGatewayApiKey = process.env.MEMORY_GATEWAY_API_KEY?.trim();
 
-const binaryPath = path.resolve(process.cwd(), '../target/release/mempedia');
+const binaryPath = resolveMempediaBinaryPath(__dirname);
 
 
 if (!dataFile || !outFile) {

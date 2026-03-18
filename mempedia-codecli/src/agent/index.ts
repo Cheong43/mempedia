@@ -6,438 +6,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { z } from 'zod';
+import { resolveCodeCliRoot } from '../config/projectPaths.js';
 import { AgentRuntime, createRuntime, RuntimeHandle } from '../runtime/index.js';
 import type { AgentBranchState, BranchSynthesisInput } from '../runtime/agent/AgentRuntime.js';
+import { installWorkspaceSkillFromLibrary as installWorkspaceSkillFromLibraryViaCli } from '../mempedia/cli.js';
+import { TOOLS, TOOL_NAMES } from '../tools/definitions.js';
+import { MemoryClassifierAgent } from './MemoryClassifierAgent.js';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-// Define tools manually for OpenAI API to avoid type issues with imported definitions
-const TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_search',
-      description: 'Search for knowledge or past interactions in mempedia.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query' },
-          limit: { type: 'number', description: 'Max number of results' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_search_hybrid',
-      description: 'Hybrid search using BM25/keyword + vector + graph with RRF fusion.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query' },
-          limit: { type: 'number', description: 'Max number of results' },
-          rrf_k: { type: 'number', description: 'RRF k parameter (optional)' },
-          bm25_weight: { type: 'number', description: 'Weight for BM25 list (optional)' },
-          vector_weight: { type: 'number', description: 'Weight for vector list (optional)' },
-          graph_weight: { type: 'number', description: 'Weight for graph list (optional)' },
-          graph_depth: { type: 'number', description: 'Graph expansion depth (optional)' },
-          graph_seed_limit: { type: 'number', description: 'Seed count from lexical/vector hits (optional)' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_read',
-      description: 'Read the content of a specific mempedia node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'The ID of the node to read' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_conversation_lookup',
-      description: 'Lookup local raw conversation records mapped to a mempedia node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'The node ID to lookup mapped conversations for' },
-          limit: { type: 'number', description: 'Max number of mapped conversation records' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_save',
-      description: 'Save or update knowledge in mempedia using structured fields. Prefer title, summary, body, facts, evidence, and relations instead of markdown sections.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'The ID of the node (unique)' },
-          title: { type: 'string', description: 'Human-readable title of the node' },
-          summary: { type: 'string', description: 'Short summary for retrieval and display' },
-          body: { type: 'string', description: 'Main narrative body text; do not encode facts or evidence as markdown sections here' },
-          facts: {
-            type: 'object',
-            description: 'Structured facts as key-value pairs',
-            additionalProperties: { type: 'string' },
-          },
-          evidence: {
-            type: 'array',
-            description: 'Evidence strings stored in structured fields',
-            items: { type: 'string' },
-          },
-          relations: {
-            type: 'array',
-            description: 'Graph relations to other nodes',
-            items: {
-              type: 'object',
-              properties: {
-                target: { type: 'string', description: 'Target node id or keyword' },
-                label: { type: 'string', description: 'Optional relation label' },
-                weight: { type: 'number', description: 'Optional relation weight' },
-              },
-              required: ['target'],
-            },
-          },
-          source: { type: 'string', description: 'Optional source tag for this save' },
-          content: { type: 'string', description: 'Legacy markdown content. Supported for compatibility, but structured fields are preferred.' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'queue_memory_save',
-      description: 'Queue an asynchronous memory save job for valuable knowledge and the raw conversation snapshot without blocking the main reasoning loop.',
-      parameters: {
-        type: 'object',
-        properties: {
-          reason: { type: 'string', description: 'Why this memory is worth saving now.' },
-          focus: { type: 'string', description: 'Optional summary of the valuable information to preserve.' },
-          save_preferences: { type: 'boolean', description: 'Whether to update Layer 3 user preferences from this snapshot.' },
-          save_skills: { type: 'boolean', description: 'Whether to upsert Layer 4 agent skills from reusable workflows in this snapshot.' },
-          save_atomic: { type: 'boolean', description: 'Whether to upsert Layer 1 core knowledge nodes from this snapshot.' },
-          save_episodic: { type: 'boolean', description: 'Whether to write a Layer 2 episodic memory record for this snapshot.' },
-        },
-        required: ['reason'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_traverse',
-      description: 'Traverse the knowledge graph from a start node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          start_node: { type: 'string', description: 'Start node id' },
-          mode: { type: 'string', description: 'Traversal mode: bfs | dfs | importance_first' },
-          depth_limit: { type: 'number', description: 'Depth limit (optional)' },
-        },
-        required: ['start_node', 'mode'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_history',
-      description: 'Inspect the version history of a node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Node id' },
-          limit: { type: 'number', description: 'Max number of versions (optional)' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_suggest_exploration',
-      description: 'Suggest related nodes to explore from a starting node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Start node id' },
-          limit: { type: 'number', description: 'Max number of suggestions (optional)' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_explore_with_budget',
-      description: 'Explore related nodes with explicit traversal budget controls.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Start node id' },
-          depth_budget: { type: 'number', description: 'Traversal depth budget (optional)' },
-          per_layer_limit: { type: 'number', description: 'Per depth layer candidate limit (optional)' },
-          total_limit: { type: 'number', description: 'Total max returned results (optional)' },
-          min_score: { type: 'number', description: 'Minimum relevance score threshold (optional)' },
-          depth_limit: { type: 'number', description: 'Backward-compatible alias of depth_budget (optional)' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_auto_link_related',
-      description: 'Auto-discover and score related nodes for link suggestions.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Node id to auto-link from' },
-          limit: { type: 'number', description: 'Max related links (optional)' },
-          min_score: { type: 'number', description: 'Minimum score threshold (optional)' },
-          threshold: { type: 'number', description: 'Backward-compatible alias of min_score (optional)' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_sync_markdown',
-      description: 'Sync markdown content to a node while preserving source/governance metadata.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Target node id (optional if path is provided)' },
-          path: { type: 'string', description: 'File path to sync from (optional)' },
-          markdown: { type: 'string', description: 'Markdown content to sync (optional)' },
-          content: { type: 'string', description: 'Backward-compatible alias of markdown (optional)' },
-          agent_id: { type: 'string', description: 'Agent id for governance/audit (optional)' },
-          reason: { type: 'string', description: 'Reason for this write (optional)' },
-          source: { type: 'string', description: 'Source tag (optional)' },
-          importance: { type: 'number', description: 'Optional importance score' },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_set_node_links',
-      description: 'Set explicit graph links for a node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          node_id: { type: 'string', description: 'Node id to set links on' },
-          links: {
-            type: 'array',
-            description: 'Link list in target/label/weight structure',
-            items: {
-              type: 'object',
-              properties: {
-                target: { type: 'string', description: 'Target node id' },
-                label: { type: 'string', description: 'Optional relation label' },
-                weight: { type: 'number', description: 'Optional relation weight' },
-              },
-              required: ['target'],
-            },
-          },
-          relations: {
-            type: 'array',
-            description: 'Backward-compatible alias of links',
-            items: {
-              type: 'object',
-              properties: {
-                target: { type: 'string', description: 'Target node id' },
-                label: { type: 'string', description: 'Optional relation label' },
-                weight: { type: 'number', description: 'Optional relation weight' },
-              },
-              required: ['target'],
-            },
-          },
-          agent_id: { type: 'string', description: 'Agent id for governance/audit (optional)' },
-          reason: { type: 'string', description: 'Reason for this write (optional)' },
-          source: { type: 'string', description: 'Source tag (optional)' },
-          importance: { type: 'number', description: 'Optional importance score' },
-        },
-        required: ['node_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_shell',
-      description: 'Run a shell command inside the local sandbox. Repository clone/pull/fetch, privilege escalation, remote shell/file transfer, and download-then-exec patterns are blocked.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: 'The command to run' },
-        },
-        required: ['command'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Read a UTF-8 file from inside the current project root.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The path to the file' },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: 'Write UTF-8 content to a file inside the current project root.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The path to the file' },
-          content: { type: 'string', description: 'The content to write' },
-        },
-        required: ['path', 'content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_search_episodic',
-      description: 'BM25 keyword search over episodic memory records (scene-based, time-ordered).',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query' },
-          limit: { type: 'number', description: 'Max number of results' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_list_episodic',
-      description: 'List recent episodic memory records in reverse-chronological order.',
-      parameters: {
-        type: 'object',
-        properties: {
-          limit: { type: 'number', description: 'Max number of records (default 20)' },
-          before_ts: { type: 'number', description: 'Only records before this Unix timestamp (ms)' },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_read_preferences',
-      description: 'Read the project-scoped user preferences markdown file.',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_update_preferences',
-      description: 'Overwrite the project-scoped user preferences markdown file.',
-      parameters: {
-        type: 'object',
-        properties: {
-          content: { type: 'string', description: 'Full markdown content of the preferences file' },
-        },
-        required: ['content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_search_skills',
-      description: 'BM25 keyword search over agent skill files.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query' },
-          limit: { type: 'number', description: 'Max number of results' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'mempedia_read_skill',
-      description: 'Read the full content of a specific agent skill.',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill_id: { type: 'string', description: 'The skill ID to read' },
-        },
-        required: ['skill_id'],
-      },
-    },
-  },
-];
-
-const AGENT_TOOL_NAMES = [
-  'mempedia_search',
-  'mempedia_search_hybrid',
-  'mempedia_read',
-  'mempedia_conversation_lookup',
-  'mempedia_save',
-  'queue_memory_save',
-  'mempedia_traverse',
-  'mempedia_history',
-  'mempedia_suggest_exploration',
-  'mempedia_explore_with_budget',
-  'mempedia_auto_link_related',
-  'mempedia_sync_markdown',
-  'mempedia_set_node_links',
-  'mempedia_search_episodic',
-  'mempedia_list_episodic',
-  'mempedia_read_preferences',
-  'mempedia_update_preferences',
-  'mempedia_search_skills',
-  'mempedia_read_skill',
-  'run_shell',
-  'read_file',
-  'write_file',
-] as const;
-
-const PlannerToolNameSchema = z.enum(AGENT_TOOL_NAMES);
+const PlannerToolNameSchema = z.enum(TOOL_NAMES);
 
 const PlannerToolCallSchema = z.object({
   name: PlannerToolNameSchema,
@@ -677,6 +259,7 @@ type MempediaActionSender = (action: ToolAction) => Promise<any>;
 
 export class Agent {
   private readonly projectRoot: string;
+  private readonly codeCliRoot: string;
   private openai: ChatClient;
   private memoryOpenai: ChatClient;
   private mempedia: MempediaClient;
@@ -710,9 +293,11 @@ export class Agent {
   private readonly branchConcurrency: number;
   /** Governed runtime handle — routes mempedia actions through policy + guards. */
   private readonly runtimeHandle: RuntimeHandle;
+  private readonly memoryClassifier: MemoryClassifierAgent;
 
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.projectRoot = projectRoot;
+    this.codeCliRoot = resolveCodeCliRoot(__dirname);
     this.openai = config.hmacAccessKey && config.hmacSecretKey
       ? createHmacClient(config.baseURL, config.hmacAccessKey, config.hmacSecretKey)
       : config.gatewayApiKey
@@ -776,6 +361,17 @@ export class Agent {
     // Bootstrap the governed runtime.  The MempediaClient is shared so the
     // runtime re-uses the already-started process connection.
     this.runtimeHandle = createRuntime({ projectRoot, agentId: 'agent-main' }, this.mempedia);
+    this.memoryClassifier = new MemoryClassifierAgent({
+      chatClient: this.memoryOpenai,
+      model: this.memoryModel,
+      codeCliRoot: this.codeCliRoot,
+      extractionMaxChars: this.extractionMaxChars,
+      memoryExtractTimeoutMs: this.memoryExtractTimeoutMs,
+      memoryActionTimeoutMs: this.memoryActionTimeoutMs,
+      autoLinkEnabled: this.autoLinkEnabled,
+      autoLinkMaxNodes: this.autoLinkMaxNodes,
+      autoLinkLimit: this.autoLinkLimit,
+    });
   }
 
   onBackgroundTask(callback: (task: string, status: 'started' | 'completed') => void) {
@@ -869,6 +465,40 @@ export class Agent {
 
   private stableNodeId(type: 'atomic', text: string): string {
     return `kg_${type}_${this.toSlug(text)}`;
+  }
+
+  private ensureSkillMarkdown(skillId: string, title: string, content: string, tags: string[] = []): string {
+    const trimmed = content.trim();
+    if (/^---\s*[\r\n]+[\s\S]*?[\r\n]+---\s*/.test(trimmed)) {
+      return trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`;
+    }
+    const description = this.yamlEscape(this.firstSentence(trimmed) || title || skillId);
+    const tagLine = tags.length > 0
+      ? `tags: [${tags.map((tag) => `"${this.yamlEscape(tag)}"`).join(', ')}]\n`
+      : '';
+    return `---\nname: ${this.yamlEscape(skillId)}\ndescription: "${description}"\n${tagLine}---\n\n${trimmed}\n`;
+  }
+
+  async installWorkspaceSkillFromLibrary(skillId: string, overwrite = false): Promise<{ kind: string; skill_id: string; path?: string; message: string }> {
+    return await installWorkspaceSkillFromLibraryViaCli(this.projectRoot, this.codeCliRoot, skillId, overwrite);
+  }
+
+  private loadSoulsMarkdown(): string {
+    const candidates = [
+      path.join(this.codeCliRoot, 'souls.md'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (!fs.existsSync(candidate)) {
+          continue;
+        }
+        const content = fs.readFileSync(candidate, 'utf-8').trim();
+        if (content) {
+          return this.clipText(content, 8000);
+        }
+      } catch {}
+    }
+    return '';
   }
 
   /**
@@ -1167,6 +797,200 @@ export class Agent {
     }
 
     return candidates.slice(0, 8);
+  }
+
+  private isIgnoredWorkspacePath(relativePath: string): boolean {
+    return relativePath.startsWith('.git/')
+      || relativePath === '.git'
+      || relativePath.startsWith('node_modules/')
+      || relativePath === 'node_modules'
+      || relativePath.startsWith('target/')
+      || relativePath === 'target'
+      || relativePath.startsWith('.mempedia/sandbox/')
+      || relativePath === '.mempedia/sandbox';
+  }
+
+  private listWorkspaceFiles(dir = this.projectRoot, prefix = ''): string[] {
+    if (!fs.existsSync(dir)) {
+      return [];
+    }
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (this.isIgnoredWorkspacePath(relativePath)) {
+        continue;
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...this.listWorkspaceFiles(fullPath, relativePath));
+      } else {
+        files.push(relativePath.replace(/\\/g, '/'));
+      }
+    }
+    return files;
+  }
+
+  private globToRegExp(pattern: string): RegExp {
+    let regex = '^';
+    for (let index = 0; index < pattern.length; index += 1) {
+      const char = pattern[index];
+      const next = pattern[index + 1];
+      if (char === '*') {
+        if (next === '*') {
+          regex += '.*';
+          index += 1;
+        } else {
+          regex += '[^/]*';
+        }
+      } else if (char === '?') {
+        regex += '.';
+      } else if ('\\^$+.|(){}[]'.includes(char)) {
+        regex += `\\${char}`;
+      } else {
+        regex += char;
+      }
+    }
+    regex += '$';
+    return new RegExp(regex, 'i');
+  }
+
+  private async executeReadTool(args: Record<string, unknown>, runtimeHandle: RuntimeHandle): Promise<string> {
+    const target = String(args.target || '').trim();
+    if (target === 'workspace') {
+      const toolRes = await runtimeHandle.executeTool('read_file', { path: String(args.path || '') });
+      if (!toolRes.success) {
+        return `Error: ${toolRes.error ?? 'workspace read failed'}`;
+      }
+      return typeof toolRes.result === 'string' ? toolRes.result : JSON.stringify(toolRes.result);
+    }
+    return 'Error: read only supports target=workspace. Use bash with mempedia CLI for Mempedia operations.';
+  }
+
+  private async executeSearchTool(args: Record<string, unknown>, runtimeHandle: RuntimeHandle): Promise<string> {
+    const target = String(args.target || '').trim();
+    const mode = String(args.mode || '').trim();
+    const limit = Number(args.limit || 20);
+    if (target === 'workspace' && mode === 'glob') {
+      const pattern = String(args.pattern || '**/*').trim() || '**/*';
+      const matcher = this.globToRegExp(pattern);
+      const files = this.listWorkspaceFiles()
+        .filter((filePath) => matcher.test(filePath))
+        .slice(0, Math.max(1, Math.min(200, Number.isFinite(limit) ? Math.floor(limit) : 20)));
+      return JSON.stringify({ kind: 'workspace_glob_results', pattern, results: files });
+    }
+    if (target === 'workspace' && mode === 'grep') {
+      const query = String(args.query || '').trim();
+      if (!query) {
+        return JSON.stringify({ kind: 'error', message: 'search grep requires query' });
+      }
+      const results: Array<{ path: string; line: number; text: string }> = [];
+      const matcher = new RegExp(query, 'i');
+      for (const relativePath of this.listWorkspaceFiles()) {
+        if (results.length >= Math.max(1, Math.min(200, Number.isFinite(limit) ? Math.floor(limit) : 20))) {
+          break;
+        }
+        const absolutePath = path.join(this.projectRoot, relativePath);
+        let content = '';
+        try {
+          content = fs.readFileSync(absolutePath, 'utf-8');
+        } catch {
+          continue;
+        }
+        const lines = content.split(/\r?\n/);
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          if (!matcher.test(lines[lineIndex])) {
+            continue;
+          }
+          results.push({
+            path: relativePath,
+            line: lineIndex + 1,
+            text: lines[lineIndex].trim().slice(0, 240),
+          });
+          if (results.length >= Math.max(1, Math.min(200, Number.isFinite(limit) ? Math.floor(limit) : 20))) {
+            break;
+          }
+        }
+      }
+      return JSON.stringify({ kind: 'workspace_grep_results', query, results });
+    }
+    return JSON.stringify({ kind: 'error', message: 'search only supports workspace grep/glob. Use bash with mempedia CLI for Mempedia operations.' });
+  }
+
+  private async executeEditTool(args: Record<string, unknown>, runtimeHandle: RuntimeHandle): Promise<string> {
+    const target = String(args.target || '').trim();
+    if (target === 'workspace') {
+      const toolRes = await runtimeHandle.executeTool('write_file', {
+        path: String(args.path || ''),
+        content: String(args.content || ''),
+      });
+      if (!toolRes.success) {
+        return `Error: ${toolRes.error ?? 'workspace edit failed'}`;
+      }
+      return typeof toolRes.result === 'string' ? toolRes.result : JSON.stringify(toolRes.result);
+    }
+    return JSON.stringify({ kind: 'error', message: 'edit only supports target=workspace. Use bash with mempedia CLI for Mempedia operations.' });
+  }
+
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private async executeWebTool(args: Record<string, unknown>): Promise<string> {
+    const mode = String(args.mode || '').trim();
+    if (mode === 'fetch') {
+      const url = String(args.url || '').trim();
+      if (!url) {
+        return JSON.stringify({ kind: 'error', message: 'web fetch requires url' });
+      }
+      const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' } });
+      const html = await response.text();
+      if (!response.ok) {
+        return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+      }
+      const title = html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim() || url;
+      return JSON.stringify({
+        kind: 'web_fetch',
+        url,
+        title,
+        content: this.stripHtml(html).slice(0, 8000),
+      });
+    }
+
+    if (mode === 'search') {
+      const query = String(args.query || '').trim();
+      if (!query) {
+        return JSON.stringify({ kind: 'error', message: 'web search requires query' });
+      }
+      const limit = Math.max(1, Math.min(10, Number.isFinite(Number(args.limit)) ? Math.floor(Number(args.limit)) : 5));
+      const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' } });
+      const html = await response.text();
+      if (!response.ok) {
+        return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+      }
+      const results: Array<{ title: string; url: string }> = [];
+      const linkRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      let match: RegExpExecArray | null = null;
+      while ((match = linkRegex.exec(html)) && results.length < limit) {
+        results.push({
+          url: match[1],
+          title: this.stripHtml(match[2]),
+        });
+      }
+      return JSON.stringify({ kind: 'web_search', query, results });
+    }
+
+    return JSON.stringify({ kind: 'error', message: 'unsupported web mode' });
   }
 
   private fallbackExtractAtomic(input: string, answer: string): Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }> {
@@ -1610,6 +1434,62 @@ export class Agent {
     }
   }
 
+  private extractOriginalUserRequest(input: string): string {
+    const match = input.match(/^Original user request:\n([\s\S]*?)(?:\n\nActive branch:|$)/);
+    return (match?.[1] || input).trim();
+  }
+
+  private isTrivialMemoryCandidate(text: string): boolean {
+    const compact = text.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!compact) {
+      return true;
+    }
+    if (compact.length <= 24 && compact.split(/\s+/).length <= 5) {
+      return /^(hi|hello|hey|thanks|thank you|yo|sup|你好|嗨|哈喽|谢谢|在吗|早上好|下午好|晚上好)\b/.test(compact);
+    }
+    return /^(hi|hello|hey|yo|sup|你好|嗨|哈喽)\b/.test(compact);
+  }
+
+  private shouldAutoSaveAtomicKnowledge(input: string, traces: TraceEvent[], answer: string): boolean {
+    const request = this.extractOriginalUserRequest(input);
+    const normalizedAnswer = answer.replace(/\s+/g, ' ').trim();
+    if (normalizedAnswer.length < 140) {
+      return false;
+    }
+    if (this.isTrivialMemoryCandidate(request) || this.isTrivialMemoryCandidate(normalizedAnswer)) {
+      return false;
+    }
+
+    const groundedInProjectFiles = traces.some((trace) => {
+      const toolName = String(trace.metadata?.toolName || '');
+      if (toolName === 'read') {
+        const args = trace.metadata?.args as Record<string, unknown> | undefined;
+        const target = typeof args?.target === 'string' ? args.target.toLowerCase() : '';
+        const filePath = typeof args?.path === 'string' ? args.path.toLowerCase() : '';
+        if (target === 'memory' || target === 'project' || target === 'preferences' || target === 'skill') {
+          return true;
+        }
+        return /readme|package\.json|cargo\.toml|tsconfig\.json|requirements\.txt|src\/|docs?\/|policies\/|mempedia-codecli\/|mempedia-ui\//.test(filePath);
+      }
+      if (toolName === 'search') {
+        const args = trace.metadata?.args as Record<string, unknown> | undefined;
+        const target = typeof args?.target === 'string' ? args.target.toLowerCase() : '';
+        return target === 'memory' || target === 'workspace' || target === 'projects';
+      }
+      return false;
+    });
+    if (!groundedInProjectFiles) {
+      return false;
+    }
+
+    const requestLooksLikeProjectDiscovery = /(check|inspect|summari[sz]e|what(?:'s| is)? in|readme|repo|repository|project|codebase|architecture|structure|features|documentation|analy[sz]e|查看|总结|项目|仓库|代码库|结构|功能|文档)/i.test(request);
+    const answerLooksReusable = /(implements|architecture|storage structure|key features|knowledge system|api|layer|module|repository|project|rust|typescript|markdown|jsonl|目录|结构|功能|实现|支持|接口|存储|分层)/i.test(normalizedAnswer)
+      || /(^|\n)\d+\./.test(answer)
+      || answer.includes('- ');
+
+    return requestLooksLikeProjectDiscovery && answerLooksReusable;
+  }
+
   private isLikelyFollowUp(input: string): boolean {
     const text = input.trim().toLowerCase();
     if (!text) {
@@ -1935,10 +1815,12 @@ export class Agent {
 
 规则：
 1. Layer 1 Core Knowledge：atomic_knowledge 必须是可独立复用的知识点。
+1.1 如果内容明确来自 README、源码、配置、项目目录或其他仓库文件，并且回答总结了项目架构、模块职责、存储结构、接口能力、构建方式等稳定事实，应优先提取到 atomic_knowledge。
 2. Layer 3 User Preferences：仅提取稳定偏好，不要临时状态。
 3. Layer 4 Agent Skills：只提取可复用流程/策略，避免一次性日志。
 4. 不要逐字复制对话；保留抽象、可复用长期知识。
-5. 严禁输出寒暄、临时上下文、错误堆栈。`;
+5. 严禁输出寒暄、临时上下文、错误堆栈。
+6. 忽略类似“Original user request”“Active branch”“Branch goal”这类调度包装文本，不要把它们当作知识点。`;
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
@@ -2092,230 +1974,23 @@ export class Agent {
       answer_chars: answer.length
     });
     try {
-      await this.withTimeout((async () => {
-        const extractionStartedAt = Date.now();
-        const extractionInput = [
-          `保存原因: ${job.reason}`,
-          job.focus ? `保存重点: ${job.focus}` : '',
-          `类别选择: preferences=${job.savePreferences} skills=${job.saveSkills} atomic=${job.saveAtomic} episodic=${job.saveEpisodic}`,
-          '',
-          input,
-        ].filter(Boolean).join('\n');
-        let payload = await this.measure(perfEntries, 'memory_extract', async () =>
-          this.withTimeout(
-            this.extractMemoryPayload(extractionInput, traces, answer),
-            this.memoryExtractTimeoutMs,
-            'memory extraction'
-          )
-        );
-        if (!job.savePreferences) {
-          payload.user_preferences = [];
-        }
-        if (!job.saveSkills) {
-          payload.agent_skills = [];
-        }
-        if (!job.saveAtomic) {
-          payload.atomic_knowledge = [];
-        }
-        if (
-          payload.user_preferences.length === 0 &&
-          payload.agent_skills.length === 0 &&
-          payload.atomic_knowledge.length === 0
-        ) {
-          const fallbackPayload = this.fallbackExtractMemory(extractionInput, answer);
-          if (!job.savePreferences) {
-            fallbackPayload.user_preferences = [];
-          }
-          if (!job.saveSkills) {
-            fallbackPayload.agent_skills = [];
-          }
-          if (!job.saveAtomic) {
-            fallbackPayload.atomic_knowledge = [];
-          }
-          if (
-            fallbackPayload.user_preferences.length > 0 ||
-            fallbackPayload.agent_skills.length > 0 ||
-            fallbackPayload.atomic_knowledge.length > 0
-          ) {
-            payload = fallbackPayload;
-          }
-        }
-        this.appendMemoryLog(runId, 'memory_extract_done', {
-          elapsed_ms: Date.now() - extractionStartedAt,
-          preferences: payload.user_preferences.length,
-          skills: payload.agent_skills.length,
-          atomic: payload.atomic_knowledge.length
-        });
-
-        const nowIso = new Date().toISOString();
-        const sendWithTimeout = (action: ToolAction) =>
-          this.withTimeout(
-            this.sendMempediaAction(action),
-            this.memoryActionTimeoutMs,
-            `memory action ${action.action}`
-          );
-        const runAction = async (stage: string, action: ToolAction) => {
-          const stageStartedAt = Date.now();
-          const nodeId = (action as any).node_id;
-          this.appendMemoryLog(runId, `${stage}_started`, {
-            action: action.action,
-            node_id: typeof nodeId === 'string' ? nodeId : null
-          });
-          const result = await sendWithTimeout(action);
-          if (result && (result as any).kind === 'error') {
-            this.appendMemoryLog(runId, `${stage}_error`, {
-              action: action.action,
-              node_id: typeof nodeId === 'string' ? nodeId : null,
-              message: (result as any).message || 'unknown error'
-            });
-          }
-          this.appendMemoryLog(runId, `${stage}_done`, {
-            action: action.action,
-            node_id: typeof nodeId === 'string' ? nodeId : null,
-            elapsed_ms: Date.now() - stageStartedAt
-          });
-        };
-        const linkedNodes = new Set<string>();
-
-        if (payload.atomic_knowledge.length > 0) {
-          const atomicMap = new Map<string, { keyword: string; summary: string; description: string; evolution: string; relations: string[] }>();
-          for (const item of payload.atomic_knowledge) {
-            atomicMap.set(this.stableNodeId('atomic', item.keyword), item);
-          }
-          for (const [nodeId, item] of atomicMap) {
-            const resolvedRelations = await this.resolveRelationTargets(item.relations || []);
-            const evolutionSection = item.evolution && item.evolution.trim().length > 0
-              ? item.evolution
-              : '暂无';
-            const descriptionSection = item.description && item.description.trim().length > 0
-              ? item.description
-              : item.summary;
-            await runAction('atomic_upsert', {
-              action: 'ingest',
-              node_id: nodeId,
-              title: item.keyword,
-              text: `${descriptionSection}\n\nEvolution\n${evolutionSection}`,
-              summary: item.summary,
-              facts: {
-                type: 'atomic_knowledge',
-                updated_at: nowIso,
-              },
-              relations: resolvedRelations
-                .filter((rel) => rel.target)
-                .map((rel) => ({ target: rel.target as string, label: 'related', weight: 0.8 })),
-              evidence: [
-                `conversation:${conversationId}`,
-                `memory_run:${runId}`,
-              ],
-              importance: 1.9,
-              agent_id: 'mempedia-codecli',
-              reason: 'Atomic knowledge update',
-              source: 'kg_atomic'
-            });
-            linkedNodes.add(nodeId);
-            this.appendNodeConversationMap(nodeId, conversationId, 'atomic_knowledge');
-          }
-        }
-
-        if (payload.agent_skills.length > 0) {
-          const skillMap = new Map<string, { skill_id: string; title: string; content: string; tags: string[] }>();
-          for (const item of payload.agent_skills) {
-            const skillId = this.toSlug(item.skill_id || item.title || 'general_skill').slice(0, 64);
-            skillMap.set(skillId, {
-              skill_id: skillId,
-              title: item.title,
-              content: item.content,
-              tags: item.tags || [],
-            });
-          }
-          for (const item of skillMap.values()) {
-            await runAction('skill_upsert', {
-              action: 'upsert_skill',
-              skill_id: item.skill_id,
-              title: item.title,
-              content: item.content,
-              tags: item.tags,
-            });
-          }
-        }
-
-        if (linkedNodes.size === 0) {
-          this.appendMemoryLog(runId, 'memory_payload_empty', { note: 'no selected memory nodes generated' });
-        }
-
-        if (this.autoLinkEnabled && this.autoLinkMaxNodes > 0 && linkedNodes.size > 0) {
-          const nodeIds = Array.from(linkedNodes).slice(0, this.autoLinkMaxNodes);
-          this.appendMemoryLog(runId, 'auto_link_batch_started', {
-            node_count: nodeIds.length,
-            limit: this.autoLinkLimit
-          });
-          for (const nodeId of nodeIds) {
-            await runAction('auto_link', {
-              action: 'auto_link_related',
-              node_id: nodeId,
-              limit: this.autoLinkLimit,
-              min_score: 0.6
-            });
-          }
-          this.appendMemoryLog(runId, 'auto_link_batch_done', { node_count: nodeIds.length });
-        }
-
-        if (job.saveEpisodic) {
-          try {
-            const episodicSummary = this.clipText(answer, 400)
-              || this.clipText(input, 200)
-              || `unspecified interaction at ${nowIso}`;
-            const episodicTags = [
-              ...payload.atomic_knowledge.slice(0, 5).map((k) => k.keyword),
-              ...payload.user_preferences.slice(0, 3).map((p) => p.topic),
-              ...payload.agent_skills.slice(0, 3).map((s) => s.skill_id),
-            ].filter(Boolean);
-            await sendWithTimeout({
-              action: 'record_episodic',
-              scene_type: 'conversation',
-              summary: episodicSummary,
-              raw_conversation_id: conversationId,
-              importance: 1.0,
-              core_knowledge_nodes: Array.from(linkedNodes),
-              tags: episodicTags,
-              agent_id: 'mempedia-codecli',
-            });
-            this.appendMemoryLog(runId, 'episodic_recorded', {
-              conversation_id: conversationId,
-              core_nodes: linkedNodes.size,
-            });
-          } catch (e: any) {
-            this.appendMemoryLog(runId, 'episodic_record_failed', {
-              error: String(e?.message || e || 'unknown')
-            });
-          }
-        }
-
-        if (payload.user_preferences.length > 0) {
-          try {
-            const prefRes = await sendWithTimeout({ action: 'read_user_preferences' });
-            const existing = (prefRes as any).kind === 'user_preferences'
-              ? String((prefRes as any).content || '')
-              : '';
-            const updatedPrefs = this.mergeUserPreferencesMarkdown(
-              existing,
-              payload.user_preferences,
-              nowIso
-            );
-            await sendWithTimeout({
-              action: 'update_user_preferences',
-              content: updatedPrefs,
-            });
-            this.appendMemoryLog(runId, 'preferences_synced', {
-              preferences: payload.user_preferences.length,
-            });
-          } catch (e: any) {
-            this.appendMemoryLog(runId, 'preferences_sync_failed', {
-              error: String(e?.message || e || 'unknown')
-            });
-          }
-        }
-      })(), this.memoryTaskTimeoutMs, 'memory background task');
+      await this.withTimeout(
+        this.measure(perfEntries, 'memory_classifier_persist', async () =>
+          this.memoryClassifier.persist(job, {
+            runId,
+            conversationId,
+            sendAction: (action) => this.sendMempediaAction(action),
+            appendMemoryLog: (phase, data = {}) => this.appendMemoryLog(runId, phase, data),
+            appendNodeConversationMap: (nodeId, mappedConversationId, reason) =>
+              this.appendNodeConversationMap(nodeId, mappedConversationId, reason),
+            resolveRelationTargets: (relations) => this.resolveRelationTargets(relations),
+            mergeUserPreferencesMarkdown: (existing, preferences, updatedAt) =>
+              this.mergeUserPreferencesMarkdown(existing, preferences, updatedAt),
+          })
+        ),
+        this.memoryTaskTimeoutMs,
+        'memory background task'
+      );
       this.appendMemoryLog(runId, 'memory_save_done', {
         elapsed_ms: Date.now() - startedAt
       });
@@ -2404,6 +2079,7 @@ export class Agent {
     let context = '';
     let recalledNodeIds: string[] = [];
     let selectedNodeIds: string[] = [];
+    const soulsGuidance = this.loadSoulsMarkdown();
     const rawAutoQueueMemorySave = String(process.env.AUTO_QUEUE_MEMORY_SAVE ?? '1').toLowerCase();
     const autoQueueMemorySave = rawAutoQueueMemorySave !== '0' && rawAutoQueueMemorySave !== 'false' && rawAutoQueueMemorySave !== 'off';
     let memoryQueuedThisRun = false;
@@ -2433,14 +2109,29 @@ export class Agent {
       return `- ${fn.name}: ${fn.description}\n  params: ${JSON.stringify(fn.parameters)}`;
     }).join('\n');
 
-    const systemPrompt = `You are a branching ReAct agent powered by Mempedia.
+    const systemPrompt = `You are a branching ReAct agent operating inside Mempedia, an enterprise knowledge base.
 Treat ReAct as a functional loop. A branch is an independent child loop with its own thought -> action -> observation state.
 
-You have access to a 4-layer knowledge system stored in Mempedia and local tools:
-  Layer 1 – Core Knowledge: hierarchical graph nodes (mempedia_search_hybrid, mempedia_read, mempedia_save, mempedia_traverse)
-  Layer 2 – Episodic Memory: time-ordered scene records with BM25 search (mempedia_search_episodic, mempedia_list_episodic)
-  Layer 3 – User Preferences: single markdown config file per project (mempedia_read_preferences, mempedia_update_preferences)
-  Layer 4 – Agent Skills: fast-retrieval skill files (mempedia_search_skills, mempedia_read_skill)
+Mempedia uses a four-layer memory model:
+  Layer 1 - Core Knowledge: stable reusable project knowledge
+  Layer 2 - Episodic Memory: time-ordered conversation or task events
+  Layer 3 - User Preferences: stable user constraints and working style
+  Layer 4 - Skills Library: reusable project procedures and skill documents
+
+You only use five top-level tools:
+  read   -> read workspace files
+  search -> grep/glob workspace files
+  edit   -> edit workspace files
+  bash   -> run sandboxed shell commands
+  web    -> search/fetch external web content when repository evidence is insufficient
+
+Important: do not use built-in codecli routing for Mempedia operations. If you need to read, search, or update Mempedia memory, preferences, skills, or projects, use bash to call the mempedia CLI, following the active SKILL.md guidance.
+
+Local codecli skills come from workspace SKILL.md files under mempedia-codecli/skills/*/SKILL.md and are available by default.
+Mempedia Layer 4 is the project skill library. It is part of the enterprise KB, but not every library skill is auto-installed locally.
+Skills are guidance documents, not tool names. Never emit skill names such as project-discovery in tool_calls.name.
+If skill guidance has been injected for the turn, treat it as internal policy only. Do not inspect the skills directory, verify skill files, or summarize skill text back to the user unless the user explicitly asked about skills.
+An independent post-turn MemoryClassifierAgent handles automatic four-layer memory classification and persistence after the answer is complete.
 
 You must return exactly one JSON object on every loop iteration. Do not use markdown fences.
 
@@ -2459,19 +2150,16 @@ Rules:
 2. Use kind="branch" only when there are multiple materially distinct strategies worth trying.
 3. A branch must represent a genuinely different hypothesis, search path, or execution strategy.
 4. Never create more than ${this.branchMaxWidth} child branches in one step.
-5. Prefer mempedia_search_hybrid for high-recall core-knowledge retrieval, then mempedia_read, mempedia_traverse, mempedia_history.
-6. Use mempedia_suggest_exploration or mempedia_explore_with_budget when you need guided graph expansion around a node.
-7. Use mempedia_auto_link_related before setting links if relation candidates are unclear.
-8. Use mempedia_sync_markdown or mempedia_set_node_links for precise node content/link maintenance.
-9. Use mempedia_search_episodic or mempedia_list_episodic to recall past interactions or time-bound context.
-10. Use mempedia_read_preferences to check user preferences before making preference-sensitive decisions.
-11. Use mempedia_search_skills or mempedia_read_skill to find relevant agent skills.
-12. When you finish, return kind="final" with a direct user-facing answer.
-13. Consider mempedia_save only for atomic reusable knowledge, not transient chatter. When you call it, prefer structured fields (title, summary, body, facts, evidence, relations) instead of markdown sections.
-14. If needed, use mempedia_conversation_lookup to inspect raw local conversation records mapped to a node.
-15. Never reuse an unrelated personal, preference, or habit node for project/code documentation. Prefer descriptive ids such as kg_code_*, kg_project_*, or kg_doc_*.
-16. Treat run_shell as a last resort. It runs inside a local sandbox and blocks repository sync, privilege escalation, remote shell, and download-then-exec patterns.
-17. Use queue_memory_save when a branch has discovered valuable reusable information worth preserving asynchronously. Do not wait for the whole session to end. Use it sparingly.
+5. Prefer search before edit when the correct answer may already exist in repository files or in Mempedia.
+6. For repository discovery, prefer read and search on workspace evidence before using web.
+7. Prefer relative file paths rooted at the current project. Use absolute paths only when necessary for clarity or when the tool requires them.
+8. If you need Layer 1, Layer 2, Layer 3, Layer 4, or project operations, use bash with the mempedia CLI instead of read/search/edit routing.
+9. Local skills that are already auto-injected usually do not need to be read again manually.
+10. Do not answer a project-overview question by listing local skills unless the user explicitly asked about the skill system.
+11. Use bash whenever shell is the practical tool, but remember dangerous shell operations are sandboxed and should require confirmation.
+12. Use web only when repository and Mempedia evidence are insufficient.
+13. The independent post-turn memory agent will classify the completed turn across all four layers. Do not invent your own background save workflow.
+14. When you finish, return kind="final" with a direct user-facing answer.
 
 Available tools:
 ${toolCatalog}
@@ -2481,7 +2169,10 @@ ${context || '(no context found)'}
 
 Selected context node ids:
 ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
-`;
+
+${soulsGuidance ? `Global souls.md guidance:
+${soulsGuidance}
+` : ''}`;
 
     const extractText = (content: any): string => {
       if (typeof content === 'string') {
@@ -2591,9 +2282,9 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
         answer: branchSummary,
         reason,
         focus: focus?.trim() || branch.goal,
-        savePreferences: flags?.savePreferences ?? true,
-        saveSkills: flags?.saveSkills ?? true,
-        saveAtomic: flags?.saveAtomic ?? true,
+        savePreferences: flags?.savePreferences ?? false,
+        saveSkills: flags?.saveSkills ?? false,
+        saveAtomic: flags?.saveAtomic ?? false,
         saveEpisodic: flags?.saveEpisodic ?? true,
         branchId: branch.id,
       };
@@ -2620,148 +2311,14 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
       const toolStart = Date.now();
       let result = '';
       try {
-        if (fnName === 'mempedia_search') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'search_nodes',
-            query: args.query,
-            limit: args.limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_search_hybrid') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'search_hybrid',
-            query: args.query,
-            limit: args.limit,
-            rrf_k: args.rrf_k,
-            bm25_weight: args.bm25_weight,
-            vector_weight: args.vector_weight,
-            graph_weight: args.graph_weight,
-            graph_depth: args.graph_depth,
-            graph_seed_limit: args.graph_seed_limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_read') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'open_node',
-            node_id: args.node_id,
-            markdown: true,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_traverse') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'traverse',
-            start_node: args.start_node,
-            mode: args.mode,
-            depth_limit: args.depth_limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_history') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'node_history',
-            node_id: args.node_id,
-            limit: args.limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_suggest_exploration') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'suggest_exploration',
-            node_id: String(args.node_id || args.start_node || ''),
-            limit: args.limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_explore_with_budget') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'explore_with_budget',
-            node_id: String(args.node_id || args.start_node || ''),
-            depth_budget: args.depth_budget ?? args.depth_limit,
-            per_layer_limit: args.per_layer_limit,
-            total_limit: args.total_limit ?? args.limit,
-            min_score: args.min_score,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_auto_link_related') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'auto_link_related',
-            node_id: String(args.node_id || args.start_node || ''),
-            limit: args.limit,
-            min_score: args.min_score ?? args.threshold,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_sync_markdown') {
-          const markdown = typeof args.markdown === 'string' && args.markdown.trim()
-            ? String(args.markdown)
-            : String(args.content || '');
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'sync_markdown',
-            node_id: typeof args.node_id === 'string' ? args.node_id : undefined,
-            path: typeof args.path === 'string' ? args.path : undefined,
-            markdown: markdown || undefined,
-            agent_id: typeof args.agent_id === 'string' ? args.agent_id : undefined,
-            reason: typeof args.reason === 'string' ? args.reason : undefined,
-            source: typeof args.source === 'string' ? args.source : undefined,
-            importance: typeof args.importance === 'number' ? args.importance : undefined,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_set_node_links') {
-          const links = Array.isArray(args.links)
-            ? args.links
-            : (Array.isArray(args.relations) ? args.relations : []);
-          const normalizedLinks = links
-            .map((link: any) => ({
-              target: typeof link?.target === 'string' ? link.target.trim() : '',
-              label: typeof link?.label === 'string' ? link.label.trim() || undefined : undefined,
-              weight: typeof link?.weight === 'number' ? link.weight : undefined,
-            }))
-            .filter((link: any) => link.target.length > 0);
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'set_node_links',
-            node_id: String(args.node_id || ''),
-            links: normalizedLinks,
-            agent_id: typeof args.agent_id === 'string' ? args.agent_id : undefined,
-            reason: typeof args.reason === 'string' ? args.reason : undefined,
-            source: typeof args.source === 'string' ? args.source : undefined,
-            importance: typeof args.importance === 'number' ? args.importance : undefined,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_conversation_lookup') {
-          const records = this.lookupMappedConversations(String(args.node_id || ''), Number(args.limit || 3));
-          result = JSON.stringify({ kind: 'local_conversation_records', node_id: args.node_id, records });
-        } else if (fnName === 'mempedia_save') {
-          const res = await this.guardedMempediaSaveWithSender(args as Record<string, unknown>, (action) => runRuntimeHandle.sendMempediaAction(action));
-          result = JSON.stringify(res);
-        } else if (fnName === 'queue_memory_save') {
-          const reason = String(args.reason || '').trim();
-          if (!reason) {
-            result = JSON.stringify({ kind: 'error', message: 'queue_memory_save requires reason' });
-          } else {
-            const prefFlag = typeof args.save_preferences === 'boolean' ? args.save_preferences : true;
-            const skillFlag = typeof args.save_skills === 'boolean' ? args.save_skills : true;
-            const job = buildBranchMemoryJob(branch, reason, typeof args.focus === 'string' ? args.focus : '', {
-              savePreferences: prefFlag,
-              saveSkills: skillFlag,
-              saveAtomic: typeof args.save_atomic === 'boolean' ? args.save_atomic : true,
-              saveEpisodic: typeof args.save_episodic === 'boolean' ? args.save_episodic : true,
-            });
-            this.scheduleMemorySave(job);
-            memoryQueuedThisRun = true;
-            result = JSON.stringify({
-              kind: 'queued_memory_save',
-              branch_id: branch.id,
-              reason,
-              focus: job.focus,
-              save_preferences: job.savePreferences,
-              save_skills: job.saveSkills,
-              save_atomic: job.saveAtomic,
-              save_episodic: job.saveEpisodic,
-              traces_count: job.traces.length,
-            });
-          }
-        } else if (
-          fnName === 'run_shell'
-          || fnName === 'read_file'
-          || fnName === 'write_file'
-        ) {
-          const toolRes = await runRuntimeHandle.executeTool(fnName, args as Record<string, unknown>);
+        if (fnName === 'read') {
+          result = await this.executeReadTool(args as Record<string, unknown>, runRuntimeHandle);
+        } else if (fnName === 'search') {
+          result = await this.executeSearchTool(args as Record<string, unknown>, runRuntimeHandle);
+        } else if (fnName === 'edit') {
+          result = await this.executeEditTool(args as Record<string, unknown>, runRuntimeHandle);
+        } else if (fnName === 'bash') {
+          const toolRes = await runRuntimeHandle.executeTool('run_shell', { command: String(args.command || '') });
           if (!toolRes.success) {
             result = `Error: ${toolRes.error ?? 'unknown tool error'}`;
           } else if (typeof toolRes.result === 'string') {
@@ -2769,42 +2326,8 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
           } else {
             result = JSON.stringify(toolRes.result);
           }
-        } else if (fnName === 'mempedia_search_episodic') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'search_episodic',
-            query: args.query,
-            limit: args.limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_list_episodic') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'list_episodic',
-            limit: args.limit,
-            before_ts: args.before_ts,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_read_preferences') {
-          const res = await runRuntimeHandle.sendMempediaAction({ action: 'read_user_preferences' });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_update_preferences') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'update_user_preferences',
-            content: String(args.content || ''),
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_search_skills') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'search_skills',
-            query: args.query,
-            limit: args.limit,
-          });
-          result = JSON.stringify(res);
-        } else if (fnName === 'mempedia_read_skill') {
-          const res = await runRuntimeHandle.sendMempediaAction({
-            action: 'read_skill',
-            skill_id: String(args.skill_id || ''),
-          });
-          result = JSON.stringify(res);
+        } else if (fnName === 'web') {
+          result = await this.executeWebTool(args as Record<string, unknown>);
         } else {
           result = `Unknown tool: ${fnName}`;
         }
@@ -2817,7 +2340,9 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
       }
 
       const clipped = this.clipText(String(result), 7000);
-      const savedNodeId = fnName === 'mempedia_save' ? this.extractSavedNodeId(clipped) : null;
+      const savedNodeId = fnName === 'edit' && String(args.target || '') === 'memory'
+        ? this.extractSavedNodeId(clipped)
+        : null;
       if (savedNodeId && !branch.savedNodeIds.includes(savedNodeId)) {
         branch.savedNodeIds.push(savedNodeId);
       }
@@ -2932,54 +2457,54 @@ ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '(none)'}
         if (event.type === 'final') {
           return;
         }
-        emitTrace(event as TraceEvent);
-      },
-    });
-
-    const finalAnswer = await runtime.run(
-      `Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`,
-    );
-    if (autoQueueMemorySave && !memoryQueuedThisRun) {
-      const bestBranch = completedBranchesForRun[0];
-      if (finalAnswer.trim().length >= 24) {
-        const autoJob = buildBranchMemoryJob(
-          bestBranch
-            ? ({
-                id: bestBranch.id,
-                parentId: null,
-                depth: 0,
-                label: bestBranch.label,
-                goal: bestBranch.goal,
-                priority: 1,
-                steps: 0,
-                transcript: [],
-                savedNodeIds: bestBranch.savedNodeIds,
-                completionSummary: bestBranch.completionSummary,
-                finalAnswer: bestBranch.finalAnswer,
-              } as BranchState)
-            : ({
-                id: 'B0',
-                parentId: null,
-                depth: 0,
-                label: 'root',
-                goal: 'Solve the user request end-to-end.',
-                priority: 1,
-                steps: 0,
-                transcript: [],
-                savedNodeIds: [],
-                finalAnswer,
-              } as BranchState),
-          'auto post-run memory capture',
-          this.firstSentence(finalAnswer),
-          { savePreferences: true, saveSkills: true, saveAtomic: true, saveEpisodic: true }
-        );
-        this.scheduleMemorySave(autoJob);
-        memoryQueuedThisRun = true;
         emitTrace({
-          type: 'observation',
-          content: `Auto-queued async memory save from branch ${bestBranch.id}.`,
+          type: event.type,
+          content: event.content,
+          metadata: event.metadata,
         });
       }
+    });
+    const finalAnswer = await runtime.run(`Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`);
+    if (autoQueueMemorySave && !memoryQueuedThisRun) {
+      const bestBranch = completedBranchesForRun[0];
+      const autoBranch = bestBranch
+        ? {
+          id: bestBranch.id,
+          parentId: null,
+          depth: 0,
+          label: bestBranch.label,
+          goal: bestBranch.goal,
+          priority: 1,
+          steps: 0,
+          transcript: [],
+          savedNodeIds: bestBranch.savedNodeIds,
+          completionSummary: bestBranch.completionSummary,
+          finalAnswer: bestBranch.finalAnswer,
+        }
+        : {
+          id: 'B0',
+          parentId: null,
+          depth: 0,
+          label: 'root',
+          goal: 'Solve the user request end-to-end.',
+          priority: 1,
+          steps: 0,
+          transcript: [],
+          savedNodeIds: [],
+          finalAnswer,
+        };
+      const autoJob = buildBranchMemoryJob(
+        autoBranch,
+        'automatic post-turn four-layer memory classification',
+        this.firstSentence(finalAnswer),
+        { savePreferences: true, saveSkills: true, saveAtomic: true, saveEpisodic: true }
+      );
+      this.scheduleMemorySave(autoJob);
+      memoryQueuedThisRun = true;
+      emitTrace({
+        type: 'observation',
+        content: `Auto-queued independent four-layer memory classification from branch ${(bestBranch?.id) || 'B0'}.`,
+      });
     }
     this.appendConversationTurn(conversationId, { user: input, assistant: finalAnswer });
     if (perfEntries && perfEntries.length > 0) {

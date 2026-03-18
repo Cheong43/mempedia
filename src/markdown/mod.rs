@@ -474,10 +474,7 @@ summary: A summary long enough.
 "#;
         let parsed = parse_markdown(input);
         assert_eq!(
-            parsed
-                .structured_data
-                .get("fact.owner")
-                .map(String::as_str),
+            parsed.structured_data.get("fact.owner").map(String::as_str),
             Some("Team Alpha")
         );
         assert_eq!(

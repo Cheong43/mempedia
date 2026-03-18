@@ -299,6 +299,7 @@ fn persist_index(
     storage.persist_index_snapshot(&IndexSnapshot {
         heads: heads.clone(),
         nodes: nodes.clone(),
+        access_state: HashMap::new(),
     })
 }
 

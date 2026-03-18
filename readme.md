@@ -154,6 +154,8 @@ Notes:
 - Objects are bucketed by hash prefix
 - Index files are atomically written (`tmp + rename + fsync`)
 - Episodic memories are stored chronologically in JSONL; importance decays over time
+- User habits and behavior patterns are stored as Layer 2 episodic records (`scene_type = user_habit | behavior_pattern`) instead of separate files
+- Access statistics are embedded in `index/state.json`; no extra runtime state files are written outside the documented layout
 - Project node directories are created on first write
 
 ### 4. Rust API
@@ -200,6 +202,15 @@ For agent-side direct calls:
 - `sync_markdown` *(supports `project`, `parent_node`, `node_type`)*
 - `rollback_node`
 - `node_history`
+- `record_episodic`
+- `search_episodic`
+- `list_episodic`
+- `read_user_preferences`
+- `update_user_preferences`
+- `upsert_skill`
+- `list_skills`
+- `search_skills`
+- `read_skill`
 - `create_project`
 - `list_projects`
 - `get_project`
@@ -351,6 +362,10 @@ data/
         <sanitized_node_id>-<hash8>.md
 ```
 
+说明：
+- 用户习惯与行为模式会作为 Layer 2 episodic 记录写入 `episodic/memories.jsonl`，不再单独生成额外文件
+- 访问统计写入 `index/state.json` 内部，不再额外生成运行时状态文件
+
 ### 4. API 与 Action
 
 Rust API 入口：`src/api/mod.rs`。
@@ -373,6 +388,15 @@ Rust API 入口：`src/api/mod.rs`。
 - `sync_markdown`（支持 `project`、`parent_node`、`node_type`）
 - `rollback_node`
 - `node_history`
+- `record_episodic`
+- `search_episodic`
+- `list_episodic`
+- `read_user_preferences`
+- `update_user_preferences`
+- `upsert_skill`
+- `list_skills`
+- `search_skills`
+- `read_skill`
 - `create_project`
 - `list_projects`
 - `get_project`

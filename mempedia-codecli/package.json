@@ -7,7 +7,7 @@
     "start": "node --loader ts-node/esm src/index.tsx",
     "build": "tsc",
     "dev": "node --loader ts-node/esm src/index.tsx",
-    "test": "npm run build && node --test dist/runtime/agent/*.test.js dist/agent/*.test.js"
+    "test": "npm run build && (cd .. && cargo build --quiet --bin mempedia) && node --test dist/runtime/agent/*.test.js dist/agent/*.test.js dist/mempedia/*.test.js"
   },
   "keywords": [],
   "author": "",

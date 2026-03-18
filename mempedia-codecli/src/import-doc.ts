@@ -12,7 +12,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { MempediaClient } from './mempedia/client.js';
+import { resolveMempediaBinaryPath } from './config/projectPaths.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const SUPPORTED_EXTENSIONS = new Set(['.md', '.txt', '.mdx']);
 // 8000 characters per chunk keeps each ingested node well within the LLM
@@ -241,8 +246,7 @@ export async function importDocCommand(
     return 1;
   }
 
-  const binaryPath = process.env.MEMPEDIA_BINARY_PATH
-    || path.resolve(projectRoot, '../target/release/mempedia');
+  const binaryPath = resolveMempediaBinaryPath(__dirname);
 
   const client = new MempediaClient(projectRoot, binaryPath);
   client.start();

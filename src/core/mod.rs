@@ -174,6 +174,9 @@ pub struct EpisodicMemoryRecord {
     /// Agent or user that created this record.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// Optional structured metadata for scene-specific payloads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 /// Lightweight metadata for a single agent-skill stored as a markdown file.
