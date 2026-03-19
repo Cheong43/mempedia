@@ -5,12 +5,13 @@ This policy defines mandatory behavior for autonomous updates to the local knowl
 ## 1. Core Principles
 
 1. Markdown-first:
-- Canonical human-readable content must remain in local markdown projection files under `knowledge/nodes/`.
+- Canonical human-readable content must remain in local markdown projection files, organized by project under `knowledge/projects/<project_id>/` or in `knowledge/nodes/` for unclassified nodes.
 - Agent updates must preserve original meaning, respect facts, and be as detailed as the source material allows. Stylistic rewrites are prohibited; information density must not decrease.
 
-2. Hierarchical organization:
-- Knowledge can be organized with `parent_node` links and `node_type` classifications.
-- Index nodes should describe scope and link to major sub-topics.
+2. Project-based classification:
+- Knowledge is organized by domain/project. Each piece of knowledge should be assigned to the most appropriate project.
+- Every project begins with an `index` node that describes the project scope and links to its major sub-topics.
+- Nodes within a project should form a coherent hierarchy using `parent_node` links.
 
 3. Append-only versioning:
 - Every update creates a new immutable version.
@@ -39,11 +40,21 @@ If any check fails, the update must be rejected.
 
 1. Validate input and governance gates.
 2. Parse markdown to structured node content.
-3. Apply `parent_node` and `node_type` fields if provided.
+3. Apply project, parent_node, and node_type fields if provided.
 4. Create or update node version (append-only).
-5. Sync markdown projection to `knowledge/nodes/`.
+5. Sync markdown projection to the project-scoped path (or legacy nodes path).
+6. Update `node_project_index` if project has changed.
 7. Rebuild retrieval indexes.
 8. Append audit log entry.
+
+## 4. Project Management Workflow
+
+To add a new knowledge domain:
+
+1. `create_project` – register the project with name, description, owner, and tags.
+2. Create an `index` node with `node_type: index` and `project: <project_id>` that describes the scope.
+3. Add domain nodes with appropriate `project`, `parent_node`, and `node_type`.
+4. Use `list_project_nodes` to audit the project's contents.
 
 ## 5. Knowledge Quality Requirements
 
@@ -61,7 +72,7 @@ If any check fails, the update must be rejected.
 - Silent batch rewrites of existing node bodies that reduce information density.
 - Bypassing audit log for autonomous updates.
 - Rewriting history objects for rollback.
-- Writing hierarchy metadata that does not match the intended node structure.
+- Moving nodes between projects without updating `node_project_index`.
 
 ## 7. Suggested Operational Guardrails
 
@@ -69,5 +80,5 @@ If any check fails, the update must be rejected.
 - Keep `reason` concrete (what changed and why).
 - Keep `source` concrete (ticket, chat id, URL, or input channel id).
 - Periodically back up `.mempedia/memory` and store Git snapshots of policy and tooling files.
-- When ingesting human-uploaded files, use `ingest` or `sync_markdown` with `node_type` set when appropriate.
+- When ingesting human-uploaded files, use `ingest` or `sync_markdown` with `project` and `node_type` set.
 

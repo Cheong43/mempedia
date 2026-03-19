@@ -58,7 +58,7 @@ Do **not** save every branch by default.
    Validate how a fact evolved over time, or resolve conflicts.
 
 5. `mempedia_save`  
-   Persist new systematic knowledge nodes or updates after the task.
+   Persist new atomic knowledge or updates after the task.
 
 ## Search Patterns
 
@@ -69,10 +69,9 @@ Do **not** save every branch by default.
 
 ## Save Discipline
 
-- Save only reusable, systematic knowledge nodes.
+- Save only reusable, atomic knowledge.
 - Avoid storing transient or conversational noise.
 - Always include a clean title and concise summary in the markdown.
 - Do not stop at a terse summary when richer evidence exists. Preserve facts, numbers, version details, timeline changes, viewpoints, caveats, and evidence in structured markdown sections.
-- Prefer fewer, denser nodes that organize one topic or subsystem coherently instead of scattering related facts across many tiny entries.
 - Prefer explicit sections such as `Facts`, `Data`, `History`, `Viewpoints`, `Uncertainties`, `Relations`, and `Evidence` when they help future retrieval.
 - Never invent missing facts.
