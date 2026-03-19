@@ -50,18 +50,8 @@ test('mempedia CLI exposes help and resolves the project data dir', () => {
   assert.equal(dataDir.stdout.trim(), path.join(projectRoot, '.mempedia', 'memory'));
 });
 
-test('mempedia CLI supports Layer 1 and project operations used by skills', () => {
+test('mempedia CLI supports Layer 1 operations within the selected project root', () => {
   const projectRoot = createTempProjectRoot('mempedia-cli-layer1-');
-
-  const project = runCli(projectRoot, {
-    action: 'create_project',
-    project_id: 'cli_project',
-    name: 'CLI Project',
-    description: 'Regression coverage for project actions',
-    tags: ['cli'],
-  }, 'action');
-  assert.equal(project.kind, 'project_result');
-  assert.equal(project.project.project_id, 'cli_project');
 
   const version = runCli(projectRoot, {
     action: 'ingest',
@@ -70,7 +60,6 @@ test('mempedia CLI supports Layer 1 and project operations used by skills', () =
     text: 'Regression body text for mempedia CLI tests.',
     summary: 'Regression summary',
     source: 'codecli-test',
-    project: 'cli_project',
     importance: 0.8,
   });
   assert.equal(version.kind, 'version');
@@ -88,14 +77,6 @@ test('mempedia CLI supports Layer 1 and project operations used by skills', () =
   assert.equal(history.kind, 'history');
   assert.ok(Array.isArray(history.items));
   assert.ok(history.items.length >= 1);
-
-  const projects = runCli(projectRoot, { action: 'list_projects' });
-  assert.equal(projects.kind, 'project_list');
-  assert.ok(projects.projects.some((item: any) => item.project_id === 'cli_project'));
-
-  const projectNodes = runCli(projectRoot, { action: 'list_project_nodes', project_id: 'cli_project' });
-  assert.equal(projectNodes.kind, 'project_nodes');
-  assert.ok(projectNodes.nodes.includes('cli_regression_node'));
 });
 
 test('mempedia CLI supports episodic memory and preferences operations used by skills', () => {

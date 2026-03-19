@@ -17,7 +17,7 @@ Keep the agent operating as part of an enterprise knowledge system rather than a
 
 1. Search before asserting when repository or memory evidence may exist.
 2. Prefer the five top-level tools only: `read`, `search`, `edit`, `bash`, `web`.
-3. Treat `read/search/edit` as workspace-only tools. All Mempedia Layer 1/2/3/4 and project operations must go through `bash` by calling the `mempedia` CLI.
+3. Treat `read/search/edit` as workspace-only tools. All Mempedia Layer 1/2/3/4 operations must go through `bash` by calling the `mempedia` CLI.
 4. Prefer the narrowest valid memory layer instead of over-promoting information.
 5. Let the independent post-turn memory agent classify the full turn across all four layers.
 

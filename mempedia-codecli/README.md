@@ -145,7 +145,7 @@ Set `MEMPEDIA_PROJECT_ROOT` only if you intentionally want `.mempedia` written s
    - continue linearly with one tool plan,
    - fork into multiple child branches when there are materially different strategies,
    - or finish with a final answer.
-- **Five Top-Level Tools**: The planner sees only `read`, `search`, `edit`, `bash`, and `web`. `read/search/edit` are workspace-only; all Mempedia memory, preference, skill, and project operations happen through `bash` calling the `mempedia` CLI under SKILL.md guidance.
+- **Five Top-Level Tools**: The planner sees only `read`, `search`, `edit`, `bash`, and `web`. `read/search/edit` are workspace-only; all Mempedia memory, preference, and skill operations happen through `bash` calling the `mempedia` CLI under SKILL.md guidance.
 - **Independent Memory Classifier Agent**: After every completed turn, a dedicated `MemoryClassifierAgent` classifies the interaction against all four Mempedia layers and persists only the qualifying content asynchronously.
 - **Branch Synthesizer**: Completed branches are merged into one final user answer.
 - **Mempedia Client**: Communicates with `mempedia` binary via NDJSON over stdin/stdout.

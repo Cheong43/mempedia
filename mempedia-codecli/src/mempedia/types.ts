@@ -10,9 +10,9 @@ export type ToolAction =
   | { action: 'suggest_exploration'; node_id: string; limit?: number }
   | { action: 'explore_with_budget'; node_id: string; depth_budget?: number; per_layer_limit?: number; total_limit?: number; min_score?: number }
   | { action: 'auto_link_related'; node_id: string; limit?: number; min_score?: number }
-  | { action: 'agent_upsert_markdown'; node_id: string; markdown: string; importance: number; agent_id: string; reason: string; source: string; project?: string; parent_node?: string; node_type?: string }
-  | { action: 'ingest'; node_id?: string; title?: string; text: string; summary?: string; facts?: Record<string, string>; relations?: { target: string; label?: string; weight?: number }[]; highlights?: string[]; evidence?: string[]; source: string; agent_id?: string; reason?: string; importance?: number; project?: string; parent_node?: string; node_type?: string }
-  | { action: 'sync_markdown'; node_id?: string; path?: string; markdown?: string; agent_id?: string; reason?: string; source?: string; importance?: number; project?: string; parent_node?: string; node_type?: string }
+  | { action: 'agent_upsert_markdown'; node_id: string; markdown: string; importance: number; agent_id: string; reason: string; source: string; parent_node?: string; node_type?: string }
+  | { action: 'ingest'; node_id?: string; title?: string; text: string; summary?: string; facts?: Record<string, string>; relations?: { target: string; label?: string; weight?: number }[]; highlights?: string[]; evidence?: string[]; source: string; agent_id?: string; reason?: string; importance?: number; parent_node?: string; node_type?: string }
+  | { action: 'sync_markdown'; node_id?: string; path?: string; markdown?: string; agent_id?: string; reason?: string; source?: string; importance?: number; parent_node?: string; node_type?: string }
   | { action: 'set_node_links'; node_id: string; links: { target: string; label?: string; weight?: number }[]; agent_id?: string; reason?: string; source?: string; importance?: number }
   | { action: 'rollback_node'; node_id: string; target_version: string; importance: number; agent_id?: string; reason: string }
   | { action: 'open_node'; node_id: string; markdown?: boolean; agent_id?: string }
@@ -29,21 +29,7 @@ export type ToolAction =
   | { action: 'search_skills'; query: string; limit?: number }
   | { action: 'read_skill'; skill_id: string }
   | { action: 'list_skills' }
-  // Project management
-  | { action: 'create_project'; project_id: string; name: string; description: string; owner?: string; tags?: string[] }
-  | { action: 'list_projects' }
-  | { action: 'get_project'; project_id: string }
-  | { action: 'list_project_nodes'; project_id: string };
-
-export type ProjectRecord = {
-  project_id: string;
-  name: string;
-  description: string;
-  created_at: number;
-  updated_at: number;
-  owner?: string;
-  tags: string[];
-};
+  ;
 
 export type EpisodicMemoryRecord = {
   id: string;
@@ -87,8 +73,5 @@ export type ToolResponse =
   | { kind: 'skill_result'; skill_id: string; title: string; content: string; tags: string[]; updated_at: number }
   | { kind: 'skill_results'; results: SkillSearchHit[] }
   | { kind: 'skill_list'; skills: SkillRecord[] }
-  | { kind: 'project_result'; project: ProjectRecord }
-  | { kind: 'project_list'; projects: ProjectRecord[] }
-  | { kind: 'project_nodes'; project_id: string; nodes: string[] }
   | { kind: 'ack'; message: string }
   | { kind: 'error'; message: string };

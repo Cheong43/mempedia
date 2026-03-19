@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{
     AccessLog, AccessStats, AgentActionLog, BehaviorPatternRecord, EpisodicMemoryRecord,
-    MemoryError, MemoryResult, Node, NodeVersion, ProjectRecord, SkillRecord, UserHabitEnv,
+    MemoryError, MemoryResult, Node, NodeVersion, SkillRecord, UserHabitEnv,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,7 +47,6 @@ impl FileStorage {
         fs::create_dir_all(self.index_dir())?;
         fs::create_dir_all(self.objects_dir())?;
         fs::create_dir_all(self.knowledge_nodes_dir())?;
-        fs::create_dir_all(self.projects_dir())?;
         fs::create_dir_all(self.episodic_dir())?;
         fs::create_dir_all(self.skills_dir())?;
         Ok(())
@@ -71,14 +70,6 @@ impl FileStorage {
 
     fn knowledge_nodes_dir(&self) -> PathBuf {
         self.knowledge_dir().join("nodes")
-    }
-
-    fn projects_dir(&self) -> PathBuf {
-        self.knowledge_dir().join("projects")
-    }
-
-    fn project_dir(&self, project_id: &str) -> PathBuf {
-        self.projects_dir().join(sanitize_node_id(project_id))
     }
 
     fn nodes_path(&self) -> PathBuf {
@@ -113,23 +104,11 @@ impl FileStorage {
         self.index_dir().join("agent_actions.log")
     }
 
-    fn node_project_index_path(&self) -> PathBuf {
-        self.index_dir().join("node_project_index.json")
-    }
-
-    fn projects_index_path(&self) -> PathBuf {
-        self.projects_dir().join("_index.json")
-    }
-
-    fn markdown_node_path(&self, node_id: &str, project: Option<&str>) -> PathBuf {
+    fn markdown_node_path(&self, node_id: &str) -> PathBuf {
         let digest = blake3::hash(node_id.as_bytes()).to_hex();
         let safe_name = sanitize_node_id(node_id);
         let filename = format!("{safe_name}-{}.md", &digest[..8]);
-        if let Some(proj) = project.filter(|p| !p.trim().is_empty()) {
-            self.project_dir(proj).join(filename)
-        } else {
-            self.knowledge_nodes_dir().join(filename)
-        }
+        self.knowledge_nodes_dir().join(filename)
     }
 
     fn episodic_dir(&self) -> PathBuf {
@@ -314,23 +293,14 @@ impl FileStorage {
     }
 
     /// Delete the markdown projection file for a node.
-    /// Tries the project-scoped path first, then the legacy `knowledge/nodes/` path.
     /// Returns `Ok(true)` if a file was removed.
-    pub fn delete_markdown_node(&self, node_id: &str, project: Option<&str>) -> MemoryResult<bool> {
-        let path = self.markdown_node_path(node_id, project);
-        if path.exists() {
-            fs::remove_file(&path)?;
-            return Ok(true);
+    pub fn delete_markdown_node(&self, node_id: &str) -> MemoryResult<bool> {
+        let path = self.markdown_node_path(node_id);
+        if !path.exists() {
+            return Ok(false);
         }
-        // Also clean up legacy path when node was previously stored without a project.
-        if project.is_some() {
-            let legacy = self.markdown_node_path(node_id, None);
-            if legacy.exists() {
-                fs::remove_file(&legacy)?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        fs::remove_file(&path)?;
+        Ok(true)
     }
 
     pub fn append_access_log(&self, log: &AccessLog) -> MemoryResult<()> {
@@ -474,9 +444,8 @@ impl FileStorage {
         &self,
         node_id: &str,
         markdown: &str,
-        project: Option<&str>,
     ) -> MemoryResult<PathBuf> {
-        let path = self.markdown_node_path(node_id, project);
+        let path = self.markdown_node_path(node_id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -488,22 +457,11 @@ impl FileStorage {
     pub fn read_markdown_node(
         &self,
         node_id: &str,
-        project: Option<&str>,
     ) -> MemoryResult<Option<(PathBuf, String)>> {
-        // Try the primary path first (project-scoped or nodes/).
-        let path = self.markdown_node_path(node_id, project);
+        let path = self.markdown_node_path(node_id);
         if path.exists() {
             let content = fs::read_to_string(&path)?;
             return Ok(Some((path, content)));
-        }
-        // Backward-compatibility: if a project was requested but the file
-        // doesn't exist there yet, also check the legacy `knowledge/nodes/` dir.
-        if project.is_some() {
-            let legacy = self.markdown_node_path(node_id, None);
-            if legacy.exists() {
-                let content = fs::read_to_string(&legacy)?;
-                return Ok(Some((legacy, content)));
-            }
         }
         Ok(None)
     }
@@ -641,64 +599,6 @@ impl FileStorage {
         Ok(skills)
     }
 
-    // ── Node-project index ────────────────────────────────────────────────────
-
-    /// Load the mapping of node_id → project_id from disk.
-    pub fn load_node_project_index(&self) -> MemoryResult<HashMap<String, String>> {
-        self.load_json(self.node_project_index_path())
-    }
-
-    /// Persist the node_id → project_id mapping to disk.
-    pub fn persist_node_project_index(&self, index: &HashMap<String, String>) -> MemoryResult<()> {
-        self.atomic_write_json(self.node_project_index_path(), index)
-    }
-
-    // ── Project metadata ─────────────────────────────────────────────────────
-
-    /// Create or update a project metadata record.
-    pub fn upsert_project_record(&self, record: &ProjectRecord) -> MemoryResult<()> {
-        let safe_id = sanitize_node_id(&record.project_id);
-        // Ensure the project directory exists.
-        let dir = self.projects_dir().join(&safe_id);
-        fs::create_dir_all(&dir)?;
-
-        let mut index: HashMap<String, ProjectRecord> =
-            self.load_json(self.projects_index_path())?;
-        index.insert(record.project_id.clone(), record.clone());
-        self.atomic_write_json(self.projects_index_path(), &index)
-    }
-
-    /// Read a single project metadata record by id.
-    pub fn read_project_record(&self, project_id: &str) -> MemoryResult<Option<ProjectRecord>> {
-        let index: HashMap<String, ProjectRecord> = self.load_json(self.projects_index_path())?;
-        Ok(index.get(project_id).cloned())
-    }
-
-    /// List all project metadata records, sorted by name.
-    pub fn list_project_records(&self) -> MemoryResult<Vec<ProjectRecord>> {
-        let index: HashMap<String, ProjectRecord> = self.load_json(self.projects_index_path())?;
-        let mut records: Vec<ProjectRecord> = index.into_values().collect();
-        records.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(records)
-    }
-
-    /// List all node ids belonging to a given project.
-    pub fn list_project_nodes(
-        &self,
-        project_id: &str,
-        node_project_index: &HashMap<String, String>,
-    ) -> Vec<String> {
-        node_project_index
-            .iter()
-            .filter_map(|(node_id, proj)| {
-                if proj == project_id {
-                    Some(node_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
 }
 
 fn sync_parent_dir(path: &Path) -> MemoryResult<()> {

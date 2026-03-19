@@ -2143,7 +2143,7 @@ Rules:
 5. Prefer search before edit when the correct answer may already exist in repository files or in Mempedia.
 6. For repository discovery, prefer read and search on workspace evidence before using web.
 7. Prefer relative file paths rooted at the current project. Use absolute paths only when necessary for clarity or when the tool requires them.
-8. If you need Layer 1, Layer 2, Layer 3, Layer 4, or project operations, use bash with the mempedia CLI instead of read/search/edit routing.
+8. If you need Layer 1, Layer 2, Layer 3, or Layer 4 operations, use bash with the mempedia CLI instead of read/search/edit routing.
 9. Local skills that are already auto-injected usually do not need to be read again manually.
 10. Do not answer a project-overview question by listing local skills unless the user explicitly asked about the skill system.
 11. Use bash whenever shell is the practical tool, but remember dangerous shell operations are sandboxed and should require confirmation.

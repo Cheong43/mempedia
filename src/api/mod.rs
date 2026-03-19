@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::core::{
     AccessLog, AccessStats, AgentActionLog, EpisodicMemoryRecord, ExploreBudgetItem,
     ExploreCandidate, Link, MemoryError, MemoryResult, Node, NodeContent, NodeHistoryItem,
-    NodePatch, NodeVersion, ProjectRecord, SearchHit, SkillRecord, SkillSearchHit,
+    NodePatch, NodeVersion, SearchHit, SkillRecord, SkillSearchHit,
 };
 use crate::decay::exponential_decay;
 use crate::graph::GraphIndex;
@@ -35,8 +35,6 @@ pub struct MemoryEngine {
     episodic_bm25: Bm25Index,
     /// BM25 index over agent-skill content.
     skills_bm25: Bm25Index,
-    /// Maps node_id → project_id for project-scoped markdown paths.
-    node_project_index: HashMap<String, String>,
 }
 
 pub type SharedMemoryEngine = Arc<RwLock<MemoryEngine>>;
@@ -285,8 +283,6 @@ pub enum ToolAction {
         reason: String,
         source: String,
         #[serde(default)]
-        project: Option<String>,
-        #[serde(default)]
         parent_node: Option<String>,
         #[serde(default)]
         node_type: Option<String>,
@@ -315,8 +311,6 @@ pub enum ToolAction {
         #[serde(default)]
         importance: Option<f32>,
         #[serde(default)]
-        project: Option<String>,
-        #[serde(default)]
         parent_node: Option<String>,
         #[serde(default)]
         node_type: Option<String>,
@@ -336,8 +330,6 @@ pub enum ToolAction {
         source: Option<String>,
         #[serde(default)]
         importance: Option<f32>,
-        #[serde(default)]
-        project: Option<String>,
         #[serde(default)]
         parent_node: Option<String>,
         #[serde(default)]
@@ -422,9 +414,9 @@ pub enum ToolAction {
         before_ts: Option<u64>,
     },
     // ── Layer 3: User preferences ───────────────────────────────────────────
-    /// Read the project-scoped user-preferences markdown file.
+    /// Read the user-preferences markdown file.
     ReadUserPreferences {},
-    /// Overwrite the project-scoped user-preferences markdown file.
+    /// Overwrite the user-preferences markdown file.
     UpdateUserPreferences {
         content: String,
     },
@@ -449,27 +441,6 @@ pub enum ToolAction {
     },
     /// List all skill records, newest first.
     ListSkills {},
-    // ── Project management ──────────────────────────────────────────────────
-    /// Create or update a project (domain/knowledge-base category).
-    CreateProject {
-        project_id: String,
-        name: String,
-        description: String,
-        #[serde(default)]
-        owner: Option<String>,
-        #[serde(default)]
-        tags: Option<Vec<String>>,
-    },
-    /// List all projects with their metadata.
-    ListProjects {},
-    /// Get metadata for a single project.
-    GetProject {
-        project_id: String,
-    },
-    /// List all node ids that belong to a project.
-    ListProjectNodes {
-        project_id: String,
-    },
     // ── Node lifecycle ──────────────────────────────────────────────────────
     /// Permanently delete a node and all of its version objects from storage.
     DeleteNode {
@@ -557,19 +528,6 @@ pub enum ToolResponse {
     SkillList {
         skills: Vec<SkillRecord>,
     },
-    /// A single project record.
-    ProjectResult {
-        project: ProjectRecord,
-    },
-    /// A list of project records.
-    ProjectList {
-        projects: Vec<ProjectRecord>,
-    },
-    /// A list of node ids within a project.
-    ProjectNodes {
-        project_id: String,
-        nodes: Vec<String>,
-    },
     /// Confirmation that a node was successfully deleted.
     Deleted {
         node_id: String,
@@ -590,7 +548,6 @@ impl MemoryEngine {
         let storage = FileStorage::new(data_root)?;
         let snapshot = storage.load_index_snapshot()?;
         let access_state = storage.load_access_state()?;
-        let node_project_index = storage.load_node_project_index()?;
         let retrieval_config = RetrievalConfig::default();
         let mut engine = Self {
             storage,
@@ -606,7 +563,6 @@ impl MemoryEngine {
             retrieval_config,
             episodic_bm25: Bm25Index::default(),
             skills_bm25: Bm25Index::default(),
-            node_project_index,
         };
         engine.rebuild_index()?;
         engine.ensure_markdown_projection()?;
@@ -759,13 +715,11 @@ impl MemoryEngine {
         }
 
         // Remove the markdown projection.
-        let project = self.node_project_index.get(node_id).map(|s| s.as_str());
-        self.storage.delete_markdown_node(node_id, project)?;
+        self.storage.delete_markdown_node(node_id)?;
 
         // Remove from in-memory indexes.
         self.heads.remove(node_id);
         self.nodes.remove(node_id);
-        self.node_project_index.remove(node_id);
         self.access_state.remove(node_id);
 
         // Persist index and rebuild search indexes.
@@ -775,8 +729,6 @@ impl MemoryEngine {
             access_state: self.access_state.clone(),
         };
         self.storage.persist_index_snapshot(&snapshot)?;
-        self.storage
-            .persist_node_project_index(&self.node_project_index)?;
         self.rebuild_index()?;
 
         Ok(versions_removed)
@@ -831,18 +783,14 @@ impl MemoryEngine {
         agent_id: &str,
         reason: &str,
         source: &str,
-        project: Option<String>,
         parent_node: Option<String>,
         node_type: Option<String>,
     ) -> MemoryResult<NodeVersion> {
         self.validate_agent_markdown_request(markdown, agent_id, reason, source)?;
 
         let mut content = parse_markdown(markdown);
-        // Honour explicit project/parent_node/node_type arguments, falling back
-        // to values already embedded in the markdown frontmatter.
-        if let Some(p) = project {
-            content.project = Some(p);
-        }
+        // Honour explicit hierarchy arguments, falling back to values already
+        // embedded in the markdown frontmatter.
         if let Some(p) = parent_node {
             content.parent_node = Some(p);
         }
@@ -893,7 +841,6 @@ impl MemoryEngine {
                 structured_upserts: content.structured_data.clone(),
                 add_links: content.links.clone(),
                 add_highlights: content.highlights.clone(),
-                project: content.project.clone(),
                 parent_node: content.parent_node.clone(),
                 node_type: content.node_type.clone(),
             };
@@ -924,7 +871,6 @@ impl MemoryEngine {
         reason: Option<String>,
         source: Option<String>,
         importance: Option<f32>,
-        project: Option<String>,
         parent_node: Option<String>,
         node_type: Option<String>,
     ) -> MemoryResult<NodeVersion> {
@@ -933,13 +879,9 @@ impl MemoryEngine {
         } else if let Some(path) = &path {
             std::fs::read_to_string(path)?
         } else if let Some(node_id) = &node_id {
-            let proj = self
-                .node_project_index
-                .get(node_id.as_str())
-                .map(|s| s.as_str());
             let (_, content) =
                 self.storage
-                    .read_markdown_node(node_id, proj)?
+                    .read_markdown_node(node_id)?
                     .ok_or_else(|| {
                         MemoryError::NotFound(format!("markdown for node {node_id} not found"))
                     })?;
@@ -992,10 +934,7 @@ impl MemoryEngine {
         let mut content = normalize_content(parsed.content);
         if let Some(head) = &existing_head {
             content.links = head.content.links.clone();
-            // Preserve existing project/parent/type if not overridden.
-            if content.project.is_none() {
-                content.project = head.content.project.clone();
-            }
+            // Preserve existing hierarchy/type if not overridden.
             if content.parent_node.is_none() {
                 content.parent_node = head.content.parent_node.clone();
             }
@@ -1004,9 +943,6 @@ impl MemoryEngine {
             }
         }
         // Apply explicit overrides from the action arguments.
-        if let Some(p) = project {
-            content.project = Some(p);
-        }
         if let Some(p) = parent_node {
             content.parent_node = Some(p);
         }
@@ -1116,7 +1052,6 @@ impl MemoryEngine {
         agent_id: Option<String>,
         reason: Option<String>,
         importance: Option<f32>,
-        project: Option<String>,
         parent_node: Option<String>,
         node_type: Option<String>,
     ) -> MemoryResult<NodeVersion> {
@@ -1194,11 +1129,8 @@ impl MemoryEngine {
         }
 
         let mut content = normalize_content(content);
-        // Apply project-hierarchy fields. Values from explicit arguments take
+        // Apply hierarchy fields. Values from explicit arguments take
         // precedence over those parsed from the markdown frontmatter.
-        if let Some(p) = project {
-            content.project = Some(p);
-        }
         if let Some(p) = parent_node {
             content.parent_node = Some(p);
         }
@@ -1238,7 +1170,6 @@ impl MemoryEngine {
                 structured_upserts: content.structured_data.clone(),
                 add_links: content.links.clone(),
                 add_highlights: content.highlights.clone(),
-                project: content.project.clone(),
                 parent_node: content.parent_node.clone(),
                 node_type: content.node_type.clone(),
             };
@@ -1264,8 +1195,7 @@ impl MemoryEngine {
         &self,
         node_id: &str,
     ) -> MemoryResult<Option<(String, String, Option<String>)>> {
-        let project = self.node_project_index.get(node_id).map(|s| s.as_str());
-        let (path, markdown) = match self.storage.read_markdown_node(node_id, project)? {
+        let (path, markdown) = match self.storage.read_markdown_node(node_id)? {
             Some(pair) => pair,
             None => return Ok(None),
         };
@@ -1937,7 +1867,6 @@ impl MemoryEngine {
                             structured_upserts: content.structured_data,
                             add_links: content.links,
                             add_highlights: content.highlights,
-                            project: content.project,
                             parent_node: content.parent_node,
                             node_type: content.node_type,
                         };
@@ -2071,7 +2000,6 @@ impl MemoryEngine {
                 agent_id,
                 reason,
                 source,
-                project,
                 parent_node,
                 node_type,
             } => self
@@ -2082,7 +2010,6 @@ impl MemoryEngine {
                     &agent_id,
                     &reason,
                     &source,
-                    project,
                     parent_node,
                     node_type,
                 )
@@ -2100,7 +2027,6 @@ impl MemoryEngine {
                 agent_id,
                 reason,
                 importance,
-                project,
                 parent_node,
                 node_type,
             } => self
@@ -2117,7 +2043,6 @@ impl MemoryEngine {
                     agent_id,
                     reason,
                     importance,
-                    project,
                     parent_node,
                     node_type,
                 )
@@ -2130,7 +2055,6 @@ impl MemoryEngine {
                 reason,
                 source,
                 importance,
-                project,
                 parent_node,
                 node_type,
             } => self
@@ -2142,7 +2066,6 @@ impl MemoryEngine {
                     reason,
                     source,
                     importance,
-                    project,
                     parent_node,
                     node_type,
                 )
@@ -2414,48 +2337,6 @@ impl MemoryEngine {
                 .storage
                 .list_skills()
                 .map(|skills| ToolResponse::SkillList { skills }),
-            // ── Project management ────────────────────────────────────────────
-            ToolAction::CreateProject {
-                project_id,
-                name,
-                description,
-                owner,
-                tags,
-            } => {
-                let ts = now_ts();
-                let record = ProjectRecord {
-                    project_id: project_id.clone(),
-                    name,
-                    description,
-                    created_at: ts,
-                    updated_at: ts,
-                    owner,
-                    tags: tags.unwrap_or_default(),
-                };
-                self.storage
-                    .upsert_project_record(&record)
-                    .map(|_| ToolResponse::ProjectResult { project: record })
-            }
-            ToolAction::ListProjects {} => self
-                .storage
-                .list_project_records()
-                .map(|projects| ToolResponse::ProjectList { projects }),
-            ToolAction::GetProject { project_id } => self
-                .storage
-                .read_project_record(&project_id)
-                .map(|opt| match opt {
-                    Some(project) => ToolResponse::ProjectResult { project },
-                    None => ToolResponse::Error {
-                        message: format!("project {project_id} not found"),
-                    },
-                }),
-            ToolAction::ListProjectNodes { project_id } => {
-                let mut nodes = self
-                    .storage
-                    .list_project_nodes(&project_id, &self.node_project_index);
-                nodes.sort();
-                Ok(ToolResponse::ProjectNodes { project_id, nodes })
-            }
             ToolAction::DeleteNode {
                 node_id,
                 agent_id,
@@ -2635,25 +2516,8 @@ impl MemoryEngine {
         node_id: &str,
         version: &NodeVersion,
     ) -> MemoryResult<()> {
-        let project = version.content.project.as_deref();
-        // Keep the node-project index up to date.
-        if let Some(proj) = project {
-            let changed = self
-                .node_project_index
-                .get(node_id)
-                .map(|p| p != proj)
-                .unwrap_or(true);
-            if changed {
-                self.node_project_index
-                    .insert(node_id.to_string(), proj.to_string());
-                self.storage
-                    .persist_node_project_index(&self.node_project_index)?;
-            }
-        }
         let markdown = render_node_markdown(node_id, version);
-        let _ = self
-            .storage
-            .write_markdown_node(node_id, &markdown, project)?;
+        let _ = self.storage.write_markdown_node(node_id, &markdown)?;
         Ok(())
     }
 
@@ -2664,18 +2528,12 @@ impl MemoryEngine {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (node_id, version_id) in &heads_snapshot {
-            let project = self
-                .node_project_index
-                .get(node_id.as_str())
-                .map(|s| s.as_str());
-            if self.storage.read_markdown_node(node_id, project)?.is_some() {
+            if self.storage.read_markdown_node(node_id)?.is_some() {
                 continue;
             }
             let version = self.storage.read_object(version_id)?;
-            // Use project from content if available, fall back to index.
-            let proj = version.content.project.as_deref().or(project);
             let markdown = render_node_markdown(node_id, &version);
-            self.storage.write_markdown_node(node_id, &markdown, proj)?;
+            self.storage.write_markdown_node(node_id, &markdown)?;
         }
         Ok(())
     }
@@ -4719,7 +4577,6 @@ mod tests {
             agent_id: "agent-main".to_string(),
             reason: "同步新的知识规范".to_string(),
             source: "user_request".to_string(),
-            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4774,7 +4631,6 @@ mod tests {
             agent_id: "agent-main".to_string(),
             reason: "补充知识草案内容".to_string(),
             source: "user_request".to_string(),
-            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4825,7 +4681,6 @@ Notable repos include `kortix-ai/suna`.
             agent_id: "agent-main".to_string(),
             reason: "补充 top100 仓库引用信息".to_string(),
             source: "user_request".to_string(),
-            project: None,
             parent_node: None,
             node_type: None,
         });
@@ -4906,122 +4761,8 @@ Notable repos include `kortix-ai/suna`.
     }
 
     #[test]
-    fn project_create_and_list() {
-        let dir = temp_data_dir("project-create-list");
-        let mut engine = MemoryEngine::open(&dir).expect("open engine");
-
-        let resp = engine.execute_action(ToolAction::CreateProject {
-            project_id: "real_estate".to_string(),
-            name: "Real Estate KB".to_string(),
-            description: "Domain knowledge for real estate analysis.".to_string(),
-            owner: Some("team-re".to_string()),
-            tags: Some(vec!["property".to_string(), "investment".to_string()]),
-        });
-        match resp {
-            ToolResponse::ProjectResult { project } => {
-                assert_eq!(project.project_id, "real_estate");
-                assert_eq!(project.name, "Real Estate KB");
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-
-        let list_resp = engine.execute_action(ToolAction::ListProjects {});
-        match list_resp {
-            ToolResponse::ProjectList { projects } => {
-                assert_eq!(projects.len(), 1);
-                assert_eq!(projects[0].project_id, "real_estate");
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn project_scoped_ingest_and_list_nodes() {
-        let dir = temp_data_dir("project-ingest-nodes");
-        let mut engine = MemoryEngine::open(&dir).expect("open engine");
-
-        // Create project
-        engine.execute_action(ToolAction::CreateProject {
-            project_id: "tech".to_string(),
-            name: "Technology KB".to_string(),
-            description: "Technology domain knowledge.".to_string(),
-            owner: None,
-            tags: None,
-        });
-
-        // Ingest index node
-        let resp = engine.execute_action(ToolAction::Ingest {
-            node_id: Some("tech_index".to_string()),
-            title: Some("Technology Index".to_string()),
-            text: "# Technology Knowledge Base\n\nRoot index for tech domain.".to_string(),
-            summary: None,
-            facts: None,
-            relations: None,
-            highlights: None,
-            evidence: None,
-            source: "test".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            reason: Some("create index node for project".to_string()),
-            importance: Some(1.5),
-            project: Some("tech".to_string()),
-            parent_node: None,
-            node_type: Some("index".to_string()),
-        });
-        match &resp {
-            ToolResponse::Version { version } => {
-                assert_eq!(version.content.project, Some("tech".to_string()));
-                assert_eq!(version.content.node_type, Some("index".to_string()));
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-
-        // Ingest a concept child node
-        engine.execute_action(ToolAction::Ingest {
-            node_id: Some("rust_lang".to_string()),
-            title: Some("Rust Programming Language".to_string()),
-            text: "# Rust\n\nA systems programming language focused on safety and performance."
-                .to_string(),
-            summary: None,
-            facts: None,
-            relations: None,
-            highlights: None,
-            evidence: None,
-            source: "test".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            reason: Some("add rust concept to tech project".to_string()),
-            importance: Some(1.2),
-            project: Some("tech".to_string()),
-            parent_node: Some("tech_index".to_string()),
-            node_type: Some("concept".to_string()),
-        });
-
-        // Verify markdown was written to project directory
-        let md_path = dir.join("knowledge").join("projects").join("tech");
-        assert!(md_path.exists(), "project directory should exist");
-
-        // List project nodes
-        let nodes_resp = engine.execute_action(ToolAction::ListProjectNodes {
-            project_id: "tech".to_string(),
-        });
-        match nodes_resp {
-            ToolResponse::ProjectNodes { project_id, nodes } => {
-                assert_eq!(project_id, "tech");
-                assert_eq!(nodes.len(), 2);
-                assert!(nodes.contains(&"tech_index".to_string()));
-                assert!(nodes.contains(&"rust_lang".to_string()));
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-
-        // Reload engine and verify project index is persisted
-        let engine2 = MemoryEngine::open(&dir).expect("reload engine");
-        assert!(engine2.head("tech_index").is_some());
-        assert!(engine2.head("rust_lang").is_some());
-    }
-
-    #[test]
-    fn project_frontmatter_roundtrip() {
-        let dir = temp_data_dir("project-frontmatter");
+    fn hierarchy_frontmatter_roundtrip() {
+        let dir = temp_data_dir("hierarchy-frontmatter");
         let mut engine = MemoryEngine::open(&dir).expect("open engine");
 
         engine.execute_action(ToolAction::Ingest {
@@ -5035,9 +4776,8 @@ Notable repos include `kortix-ai/suna`.
             evidence: None,
             source: "test".to_string(),
             agent_id: Some("test-agent".to_string()),
-            reason: Some("test project frontmatter roundtrip".to_string()),
+            reason: Some("test hierarchy frontmatter roundtrip".to_string()),
             importance: Some(1.0),
-            project: Some("test_project".to_string()),
             parent_node: Some("root_node".to_string()),
             node_type: Some("concept".to_string()),
         });
@@ -5047,7 +4787,6 @@ Notable repos include `kortix-ai/suna`.
             .expect("read ok")
             .expect("node exists");
 
-        assert!(md.contains("project: \"test_project\""));
         assert!(md.contains("parent_node: \"root_node\""));
         assert!(md.contains("node_type: \"concept\""));
     }

@@ -39,11 +39,7 @@ pub fn parse_markdown_with_meta(markdown: &str) -> ParsedMarkdown {
         insert_evidence(&mut structured_data, &evidence);
     }
 
-    // Extract project-hierarchy fields from frontmatter.
-    let project = frontmatter
-        .get("project")
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+    // Extract hierarchy fields from frontmatter.
     let parent_node = frontmatter
         .get("parent_node")
         .map(|v| v.trim().to_string())
@@ -61,7 +57,6 @@ pub fn parse_markdown_with_meta(markdown: &str) -> ParsedMarkdown {
             structured_data,
             links: vec![],
             highlights,
-            project,
             parent_node,
             node_type,
         },
@@ -98,14 +93,6 @@ pub fn render_node_markdown(node_id: &str, version: &NodeVersion) -> String {
         .filter(|v| !v.is_empty())
     {
         out.push_str(&format!("origin: {}\n", yaml_escape(origin)));
-    }
-    if let Some(project) = version
-        .content
-        .project
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        out.push_str(&format!("project: {}\n", yaml_escape(project)));
     }
     if let Some(parent_node) = version
         .content

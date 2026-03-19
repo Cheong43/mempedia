@@ -28,8 +28,8 @@ Produce a grounded summary of the repository based on actual files.
 ## Tool Guidance
 
 - Prefer `read` for authoritative files and `search` for `grep` or `glob` repository discovery.
-- If existing enterprise knowledge may already cover the project, use `bash` plus `search_nodes` or `list_projects`.
-- If you deliberately persist normalized project facts, do it through `bash` with Layer 1 or project CLI actions, not through `read/search/edit` routing.
+- If existing enterprise knowledge may already cover the project, use `bash` plus `search_nodes`.
+- If you deliberately persist normalized project facts, do it through `bash` with Layer 1 CLI actions, not through `read/search/edit` routing.
 - Let the independent post-turn memory agent handle routine async persistence.
 
 ## Avoid
@@ -57,7 +57,7 @@ Keep the agent operating as part of an enterprise knowledge system rather than a
 
 1. Search before asserting when repository or memory evidence may exist.
 2. Prefer the five top-level tools only: `read`, `search`, `edit`, `bash`, `web`.
-3. Treat `read/search/edit` as routed interfaces that may target workspace files, Layer 1 knowledge, Layer 2 episodes, Layer 3 preferences, Layer 4 skills, or project records.
+3. Treat `read/search/edit` as routed interfaces that may target workspace files, Layer 1 knowledge, Layer 2 episodes, Layer 3 preferences, or Layer 4 skills.
 4. Prefer the narrowest valid memory layer instead of over-promoting information.
 5. Let the independent post-turn memory agent classify the full turn across all four layers.
 

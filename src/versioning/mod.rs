@@ -280,9 +280,6 @@ fn apply_patch(content: &mut NodeContent, patch: NodePatch) {
         }
     }
 
-    if let Some(project) = patch.project {
-        content.project = Some(project).filter(|v| !v.trim().is_empty());
-    }
     if let Some(parent_node) = patch.parent_node {
         content.parent_node = Some(parent_node).filter(|v| !v.trim().is_empty());
     }
