@@ -27,6 +27,49 @@ function ensureSandboxLayout(projectRoot: string): {
   return { sandboxRoot, homeDir, tmpDir, cacheDir, configDir };
 }
 
+/**
+ * Resolve the mempedia binary path for injection into the shell environment.
+ * Checks several candidate locations relative to projectRoot and returns the
+ * first existing executable, preferring the most recently modified build.
+ * If the env var MEMPEDIA_BINARY_PATH is already set, that value is used as-is.
+ */
+function resolveBinaryPathForShell(projectRoot: string): string | undefined {
+  const existing = process.env.MEMPEDIA_BINARY_PATH?.trim();
+  if (existing) {
+    return existing;
+  }
+  const candidates = [
+    path.join(projectRoot, 'target', 'debug', 'mempedia'),
+    path.join(projectRoot, 'target', 'release', 'mempedia'),
+    path.join(projectRoot, '..', 'target', 'debug', 'mempedia'),
+    path.join(projectRoot, '..', 'target', 'release', 'mempedia'),
+  ].map((p) => path.resolve(p));
+
+  const deduplicated = [...new Set(candidates)].filter((p) => {
+    try {
+      return fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  });
+
+  if (deduplicated.length === 0) {
+    return undefined;
+  }
+
+  // Prefer most recently modified; favour debug over release.
+  deduplicated.sort((a, b) => {
+    const mtA = fs.statSync(a).mtimeMs;
+    const mtB = fs.statSync(b).mtimeMs;
+    if (mtB !== mtA) {
+      return mtB - mtA;
+    }
+    return a.includes(`${path.sep}release${path.sep}`) ? 1 : -1;
+  });
+
+  return deduplicated[0];
+}
+
 export class RunShellTool implements ToolDefinition<RunShellArgs, string> {
   readonly name = 'run_shell';
   readonly description = 'Run a shell command inside the project-local sandbox. Repository clone/pull/fetch operations are blocked.';
@@ -45,6 +88,11 @@ export class RunShellTool implements ToolDefinition<RunShellArgs, string> {
 
     const { homeDir, tmpDir, cacheDir, configDir } = ensureSandboxLayout(ctx.projectRoot);
     const timeoutMs = Number(process.env.MEMPEDIA_SHELL_TIMEOUT_MS ?? 15000);
+    // Resolve the binary path once and inject it so the skill's
+    // ${MEMPEDIA_BINARY_PATH:-./target/debug/mempedia} pattern always resolves
+    // even when the binary lives outside the projectRoot (e.g. ../target/).
+    const resolvedBinary = resolveBinaryPathForShell(ctx.projectRoot);
+    const binaryEnv = resolvedBinary ? { MEMPEDIA_BINARY_PATH: resolvedBinary } : {};
 
     return await new Promise<ToolExecutionResult<string>>((resolve) => {
       exec(command, {
@@ -54,6 +102,7 @@ export class RunShellTool implements ToolDefinition<RunShellArgs, string> {
         maxBuffer: 1024 * 1024,
         env: {
           ...process.env,
+          ...binaryEnv,
           HOME: homeDir,
           TMPDIR: tmpDir,
           XDG_CACHE_HOME: cacheDir,

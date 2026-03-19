@@ -1451,6 +1451,13 @@ export class Agent {
     if (this.isTrivialMemoryCandidate(request) || this.isTrivialMemoryCandidate(normalizedAnswer)) {
       return false;
     }
+    // Don't save atomic knowledge when the answer is an error/failure message.
+    if (/\b(no such file or directory|binary not found|inaccessible or invalid|failed to fetch|connection refused|permission denied|requested wikipedia url)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
+    if (normalizedAnswer.length < 300 && /^(error|an error|the system encountered|failed to|could not|unable to|sorry,|unfortunately)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
 
     const groundedInProjectFiles = traces.some((trace) => {
       const toolName = String(trace.metadata?.toolName || '');
@@ -1480,6 +1487,25 @@ export class Agent {
       || answer.includes('- ');
 
     return requestLooksLikeProjectDiscovery && answerLooksReusable;
+  }
+
+  private shouldAutoSaveEpisodic(input: string, answer: string): boolean {
+    const request = this.extractOriginalUserRequest(input);
+    const normalizedAnswer = answer.replace(/\s+/g, ' ').trim();
+    if (normalizedAnswer.length < 20) {
+      return false;
+    }
+    if (this.isTrivialMemoryCandidate(request)) {
+      return false;
+    }
+    // Don't record episodic entries for error/failure answers — they have no useful knowledge.
+    if (/\b(no such file or directory|binary not found|inaccessible or invalid|failed to fetch|connection refused|permission denied|requested wikipedia url)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
+    if (normalizedAnswer.length < 300 && /^(error|an error|the system encountered|failed to|could not|unable to|sorry,|unfortunately)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
+    return true;
   }
 
   private isLikelyFollowUp(input: string): boolean {
@@ -2496,7 +2522,7 @@ ${soulsGuidance}
           savePreferences: true,
           saveSkills: true,
           saveAtomic: this.shouldAutoSaveAtomicKnowledge(input, traceBuffer, finalAnswer),
-          saveEpisodic: true,
+          saveEpisodic: this.shouldAutoSaveEpisodic(input, finalAnswer),
         }
       );
       this.scheduleMemorySave(autoJob);

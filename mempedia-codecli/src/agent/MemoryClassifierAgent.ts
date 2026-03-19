@@ -303,16 +303,40 @@ export class MemoryClassifierAgent {
     }
   }
 
+  /**
+   * Strips the "Internal skill guidance for this turn:" block that the agent framework
+   * injects into job.input. These blocks contain Mempedia skill docs (including
+   * backtick-quoted tool names like `edit`, `bash`, `read`, `search`, `web`) that the
+   * LLM classifier would otherwise extract as false knowledge keywords.
+   */
+  private stripSkillGuidance(text: string): string {
+    // Prefer the explicit "Actual User Request:" marker if present.
+    const actualMatch = text.match(/\bActual User Request:\s*([\s\S]*?)(?:\n\nActive branch:|\n\nBranch goal:|$)/i);
+    if (actualMatch) {
+      return actualMatch[1].trim();
+    }
+    return text
+      .replace(/\bInternal skill guidance for this turn:[\s\S]*?(?=\n\nActive branch:|\n\nBranch goal:|$)/gi, '')
+      .replace(/^Original user request:\s*/im, '')
+      .replace(/\n\nActive branch:[\s\S]*$/i, '')
+      .replace(/\n\nBranch goal:[\s\S]*$/i, '')
+      .trim() || text;
+  }
+
   private async extractMemoryPayload(input: string, traces: MemoryClassifierTraceEvent[], answer: string): Promise<MemoryExtraction> {
     const traceLines = traces
       .slice(-30)
       .map((trace) => `${trace.type.toUpperCase()}: ${trace.content}`)
       .join('\n');
-    const compactInput = this.clipText(input, this.extractionMaxChars);
+    // Strip skill guidance injected by the framework before sending to the LLM classifier.
+    // Without this, tool names like `edit`, `bash`, `read` appear in backtick-quoted text
+    // and the LLM may extract them as knowledge keywords.
+    const strippedInput = this.stripSkillGuidance(input);
+    const compactInput = this.clipText(strippedInput || input, this.extractionMaxChars);
     const compactTraces = this.clipText(traceLines, Math.max(2000, Math.floor(this.extractionMaxChars / 2)));
     const compactAnswer = this.clipText(answer, Math.max(1000, Math.floor(this.extractionMaxChars / 3)));
     const classifierSkill = this.loadMemoryClassifierSkill();
-    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    {\n      "keyword": "知识主题或实体名",\n      "summary": "短摘要",\n      "description": "完整描述，保留关键细节",\n      "facts": ["稳定事实1", "稳定事实2"],\n      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],\n      "truths": ["已验证结论或明确为真的断言"],\n      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],\n      "history": ["历史变迁、版本演进、前后变化"],\n      "uncertainties": ["尚未确认、条件性限制、已知未知"],\n      "evidence": ["README/源码/配置/回答中的证据摘要"],\n      "relations": ["相关项"]\n    }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构、已验证接口或用户明确提供的数据，应优先进入 atomic_knowledge。\n6. atomic_knowledge 要优先少而精，不要拆成很多空洞节点；每个节点都应尽可能完整，保留事实、描述、历史、真值结论、观点、数据和不确定性。\n7. 观点和事实必须分开；如果某段内容是评价、偏好、判断或立场，放入 viewpoints，并保留“谁这样认为/语气来源”这类归属信息。\n8. 严禁伪造事实；没有证据就不要补写。拿不准就放入 uncertainties，或者留空数组。\n9. 忽略寒暄、临时状态、报错噪音、调度包装文本，以及类似 “Original user request”“Active branch”“Branch goal” 的控制信息。\n10. 如果某一层没有内容，返回空数组。`;
+    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    {\n      "keyword": "知识主题或实体名",\n      "summary": "短摘要",\n      "description": "完整描述，保留关键细节",\n      "facts": ["稳定事实1", "稳定事实2"],\n      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],\n      "truths": ["已验证结论或明确为真的断言"],\n      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],\n      "history": ["历史变迁、版本演进、前后变化"],\n      "uncertainties": ["尚未确认、条件性限制、已知未知"],\n      "evidence": ["README/源码/配置/回答中的证据摘要"],\n      "relations": ["相关项"]\n    }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构、已验证接口或用户明确提供的数据，应优先进入 atomic_knowledge。\n6. atomic_knowledge 要优先少而精，不要拆成很多空洞节点；每个节点都应尽可能完整，保留事实、描述、历史、真值结论、观点、数据和不确定性。\n7. 观点和事实必须分开；如果某段内容是评价、偏好、判断或立场，放入 viewpoints，并保留“谁这样认为/语气来源”这类归属信息。\n8. 严禁伪造事实；没有证据就不要补写。拿不准就放入 uncertainties，或者留空数组。\n9. 忽略寒暄、临时状态、报错噪音、调度包装文本。忽略所有框架控制文本（“Original user request”“Active branch”“Branch goal”“Internal skill guidance”“Actual User Request”）。工具名称 read、search、edit、bash、web 是框架内部工具，绝对不能成为 atomic_knowledge 的 keyword。\n10. 如果「最终回答」主要是报错、失败通知、无法完成说明，则 atomic_knowledge 必须返回空数组。\n11. 如果某一层没有内容，返回空数组。`;
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
@@ -526,9 +550,11 @@ export class MemoryClassifierAgent {
     if (!trimmed) {
       return '';
     }
-    const match = trimmed.match(/^[^。.!?\n]{12,200}[。.!?\n]/u);
+    // Mask URLs so dots inside them don't trigger false sentence boundaries.
+    const masked = trimmed.replace(/https?:\/\/\S+/gi, (url) => 'U'.repeat(url.length));
+    const match = masked.match(/^[^。.!?\n]{12,200}[。.!?\n]/u);
     if (match) {
-      return match[0].replace(/[\n\r]+/g, ' ').trim();
+      return trimmed.slice(0, match[0].length).replace(/[\n\r]+/g, ' ').trim();
     }
     return trimmed.slice(0, 200);
   }
@@ -556,7 +582,9 @@ export class MemoryClassifierAgent {
     const quotedRegex = /"([^"]{2,80})"/g;
     const pathRegex = /\b[\w.-]+\/[\w./-]+\b/g;
 
-    const textPool = `${answer}\n${input}`;
+    // Only scan the answer text — scanning input (which contains skill guidance with
+    // backtick-wrapped tool names) causes framework tool names to be extracted as keywords.
+    const textPool = answer;
     let match: RegExpExecArray | null = null;
     while ((match = backtickRegex.exec(textPool))) {
       push(match[1]);
@@ -585,16 +613,35 @@ export class MemoryClassifierAgent {
       }
     }
 
-    const inputLine = input.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length >= 8);
-    if (inputLine) {
-      const trimmed = inputLine.replace(/[\p{P}\p{S}]+/gu, ' ').trim();
+    // For the user request line, strip skill guidance first so we don't extract tool names.
+    const strippedRequest = this.stripSkillGuidance(input);
+    const requestFirstLine = strippedRequest.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length >= 8);
+    if (requestFirstLine) {
+      const trimmed = requestFirstLine.replace(/[\p{P}\p{S}]+/gu, ' ').trim();
       push(trimmed.slice(0, 60));
     }
 
     return candidates.slice(0, 8);
   }
 
+  private isErrorOrFailureAnswer(answer: string): boolean {
+    const compact = answer.replace(/\s+/g, ' ').trim();
+    if (compact.length < 20) {
+      return false;
+    }
+    if (/\b(no such file or directory|binary not found|command not found|cannot connect|connection refused|inaccessible or invalid|failed to fetch|unable to access|permission denied|404 not found|403 forbidden|requested wikipedia url)\b/i.test(compact)) {
+      return true;
+    }
+    if (compact.length < 300 && /^(error|an error|the system encountered an error|failed to|could not|unable to|sorry|unfortunately)\b/i.test(compact)) {
+      return true;
+    }
+    return false;
+  }
+
   private fallbackExtractAtomic(input: string, answer: string): AtomicKnowledgeItem[] {
+    if (this.isErrorOrFailureAnswer(answer)) {
+      return [];
+    }
     const candidates = this.collectAtomicCandidates(input, answer);
     if (candidates.length === 0) {
       return [];
@@ -673,7 +720,20 @@ export class MemoryClassifierAgent {
 
   private isWeakAtomicKeyword(keyword: string): boolean {
     const lower = keyword.trim().toLowerCase();
-    return /^(with|using|use|instead of|when|how|why|what|that|this|these|those|then|for|to|if|because)\b/.test(lower);
+    if (/^(with|using|use|instead of|when|how|why|what|that|this|these|those|then|for|to|if|because)\b/.test(lower)) {
+      return true;
+    }
+    // Reject framework tool names and generic programming/infra noise words.
+    const toolAndNoiseWords = new Set([
+      'edit', 'read', 'search', 'bash', 'web', 'tool', 'tools', 'mempedia', 'cli',
+      'error', 'result', 'output', 'response', 'request', 'input', 'command',
+      'action', 'function', 'method', 'status', 'code', 'message', 'data',
+      'type', 'value', 'key', 'node', 'null', 'undefined', 'true', 'false', 'none', 'ok',
+    ]);
+    if (toolAndNoiseWords.has(lower)) {
+      return true;
+    }
+    return false;
   }
 
   private isGreetingText(text: string): boolean {
