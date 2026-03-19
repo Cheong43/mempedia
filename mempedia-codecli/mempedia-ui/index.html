@@ -137,17 +137,94 @@ header{display:flex;align-items:center;height:var(--hh);padding:0 16px;backgroun
 #btn-send:hover:not(:disabled){opacity:.88}
 #btn-send:disabled{background:var(--sf2);color:var(--dim);cursor:not-allowed}
 .ihint{font-size:11px;color:var(--dim);margin-top:5px}
+
+/* ── Header tab nav ── */
+.htabs{display:flex;align-items:center;gap:2px;margin-right:8px}
+.htab{padding:5px 14px;border-radius:var(--rs);font-size:12.5px;font-weight:500;color:var(--dim);transition:background .15s,color .15s;white-space:nowrap}
+.htab:hover{background:var(--sf2);color:var(--tx)}
+.htab.active{background:var(--sf2);color:var(--tx2)}
+
+/* ── Mempedia graph view ── */
+.mg-view{display:none;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.mg-view.show{display:flex}
+
+/* Toolbar */
+.mg-toolbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--sb);border-bottom:1px solid var(--bd);flex-shrink:0;flex-wrap:wrap}
+.mg-search{flex:1;min-width:140px;max-width:280px;padding:5px 10px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);color:var(--tx2);font:inherit;font-size:12.5px;outline:none;transition:border-color .15s}
+.mg-search:focus{border-color:var(--acc)}
+.mg-search::placeholder{color:var(--dim)}
+.mg-stats{font-size:11.5px;color:var(--dim);white-space:nowrap}
+.mg-tbtn{padding:5px 12px;border-radius:var(--rs);background:var(--sf2);color:var(--tx);font-size:12px;transition:background .15s}
+.mg-tbtn:hover{background:var(--bd)}
+.mg-type-legend{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-left:auto}
+.mg-legend-dot{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim)}
+.mg-legend-color{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+
+/* Main area: canvas + detail panel */
+.mg-main{display:flex;flex:1;overflow:hidden;position:relative}
+
+/* Canvas wrap */
+.mg-canvas-wrap{flex:1;overflow:hidden;position:relative;cursor:grab;user-select:none;background:radial-gradient(ellipse at center,#0f1922 0%,var(--bg) 100%)}
+.mg-canvas-wrap.panning{cursor:grabbing}
+
+/* Transform container (pan/zoom) */
+#mg-world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+#mg-svg{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
+#mg-nodes-layer{position:absolute;top:0;left:0}
+
+/* Node cards */
+.mg-node-card{position:absolute;width:180px;transform:translate(-50%,-50%);background:var(--sf);border:2px solid var(--bd);border-radius:10px;padding:10px 11px 9px;cursor:pointer;transition:box-shadow .18s,background .15s,border-color .18s;font-size:12px}
+.mg-node-card:hover{background:var(--sf2);box-shadow:0 4px 18px #0007}
+.mg-node-card.selected{border-color:var(--acc);box-shadow:0 0 0 3px #539bf522,0 4px 22px #0009}
+.mgn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+.mgn-type{font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 6px;border-radius:3px;line-height:1.4}
+.mgn-imp{font-size:9px;color:var(--acc);letter-spacing:1px;opacity:.7}
+.mgn-title{font-size:12.5px;font-weight:600;color:var(--tx2);line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word;margin-bottom:4px}
+.mgn-preview{font-size:11px;color:var(--dim);line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word}
+
+/* Loading overlay */
+.mg-loading{position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:#0d111799;z-index:100;pointer-events:none}
+.mg-loading-spinner{width:28px;height:28px;border:3px solid var(--bd);border-top-color:var(--acc);border-radius:50%;animation:spin .75s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.mg-empty-msg{color:var(--dim);font-size:13px;text-align:center;line-height:1.7}
+
+/* Detail panel */
+.mg-detail{width:320px;flex-shrink:0;background:var(--sb);border-left:1px solid var(--bd);display:none;flex-direction:column;overflow:hidden}
+.mg-detail.show{display:flex}
+.mgd-hdr{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--bd);flex-shrink:0;gap:8px}
+.mgd-hdr-title{font-size:13px;font-weight:600;color:var(--tx2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mgd-close{font-size:16px;color:var(--dim);padding:0 4px;line-height:1;transition:color .15s}
+.mgd-close:hover{color:var(--tx2)}
+.mgd-body{flex:1;overflow-y:auto;padding:14px}
+.mgd-type-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.mgd-imp{font-size:11px;color:var(--dim)}
+.mgd-id{font-size:10.5px;font-family:"SFMono-Regular",Consolas,Menlo,monospace;color:var(--dim);margin-bottom:10px;word-break:break-all}
+.mgd-summary{font-size:13px;color:var(--tx);line-height:1.65;margin-bottom:12px;border-left:3px solid var(--acc2);padding-left:10px}
+.mgd-section-label{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);margin:10px 0 6px}
+.mgd-link-out,.mgd-link-in{font-size:12px;color:var(--tx);padding:3px 0;line-height:1.5}
+.mgd-link-out b,.mgd-link-in b{color:var(--acc)}
+.mgd-link-label{font-size:10.5px;color:var(--dim);font-style:italic;margin-left:4px}
+.mgd-body-text{font-size:12px;color:var(--tx);line-height:1.7;white-space:pre-wrap;word-break:break-word;background:var(--sf);border-radius:var(--rs);padding:10px;margin-top:4px;max-height:320px;overflow-y:auto}
+.mgd-body-text code{font-family:"SFMono-Regular",Consolas,Menlo,monospace;font-size:11px}
+
+/* Empty state */
+#mg-empty{display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:14px;pointer-events:none}
+#mg-empty.show{display:flex}
 </style>
 </head>
 <body>
 <div id="app">
   <header>
     <div class="h-logo"><span>🧠</span><span>CodeCLI</span></div>
+    <nav class="htabs">
+      <button class="htab active" id="tab-chat" onclick="showView('chat')">💬 Chat</button>
+      <button class="htab" id="tab-graph" onclick="showView('graph')">🕸 Mempedia</button>
+    </nav>
     <div class="h-title" id="h-title">Select a conversation</div>
     <div class="h-status"><div class="sdot" id="sdot"></div><span id="stxt">Ready</span></div>
   </header>
 
-  <div class="body">
+  <div class="body" id="view-chat">
     <aside class="sidebar">
       <div class="sb-hd"><span>Conversations</span><button id="btn-new">＋ New</button></div>
       <div id="tlist"></div>
@@ -167,6 +244,47 @@ header{display:flex;align-items:center;height:var(--hh);padding:0 16px;backgroun
           <button id="btn-send">Send ↑</button>
         </div>
         <div class="ihint" id="ihint">Enter 发送 · Shift+Enter 换行</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Mempedia Knowledge Graph View ── -->
+  <div class="mg-view" id="view-graph">
+    <div class="mg-toolbar">
+      <input class="mg-search" id="mg-search" type="text" placeholder="🔍 Search nodes…" oninput="filterNodes(this.value)"/>
+      <span class="mg-stats" id="mg-stats">–</span>
+      <button class="mg-tbtn" onclick="refreshGraph()">⟳ Refresh</button>
+      <button class="mg-tbtn" onclick="centerView()">⊞ Fit</button>
+      <div class="mg-type-legend" id="mg-legend"></div>
+    </div>
+    <div class="mg-main">
+      <div class="mg-canvas-wrap" id="mg-canvas-wrap">
+        <div id="mg-world">
+          <svg id="mg-svg" width="1" height="1"><defs>
+            <marker id="arr-def" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#3d4d5e"/>
+            </marker>
+            <marker id="arr-sel" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#539bf5"/>
+            </marker>
+          </defs><g id="mg-edges"></g></svg>
+          <div id="mg-nodes-layer"></div>
+        </div>
+        <div class="mg-loading" id="mg-loading">
+          <div class="mg-loading-spinner"></div>
+          <div style="font-size:12px;color:var(--dim)">Loading graph…</div>
+        </div>
+        <div id="mg-empty">
+          <div style="font-size:32px;opacity:.35">🕸</div>
+          <div class="mg-empty-msg">No mempedia nodes found.<br>Start a conversation to build your knowledge graph.</div>
+        </div>
+      </div>
+      <div class="mg-detail" id="mg-detail">
+        <div class="mgd-hdr">
+          <span class="mgd-hdr-title" id="mgd-title"></span>
+          <button class="mgd-close" onclick="closeDetail()">×</button>
+        </div>
+        <div class="mgd-body" id="mgd-body"></div>
       </div>
     </div>
   </div>
@@ -794,6 +912,457 @@ document.getElementById('inp').addEventListener('keydown', e => {
 =================================================================== */
 loadList();
 setInterval(loadList, 10000);
+
+/* ===================================================================
+   Mempedia Knowledge Graph
+=================================================================== */
+const TYPE_COLORS = {
+  concept:   '#539bf5', process:   '#46954a', reference: '#c69026',
+  decision:  '#e5534b', index:     '#9e6dff', glossary:  '#57ab5a',
+  skill:     '#f8a965', memory:    '#63b3ed',
+};
+function typeColor(t) { return TYPE_COLORS[String(t || '')] || '#636e7b'; }
+
+let graphData   = { nodes: [], edges: [] };
+let simNodes    = [];  // {id, x, y, vx, vy, pinned, card}
+let simEdges    = [];  // {si, ti, label, weight}
+let selectedIdx = -1;
+let graphLoaded = false;
+
+// Pan / zoom
+let gTx = 0, gTy = 0, gScale = 1;
+let isPanning   = false, panSX = 0, panSY = 0, panTX0 = 0, panTY0 = 0;
+let dragNodeIdx = -1, dnOX = 0, dnOY = 0;
+
+// Simulation constants
+const F_REPEL   = 20000;
+const F_LEN     = 230;
+const F_SPRING  = 0.022;
+const F_FRIC    = 0.87;
+const F_GRAV    = 0.005;
+const WORLD_CX  = 2000, WORLD_CY = 2000;
+let simRaf = null, simTicks = 0;
+
+// ── View switching ──────────────────────────────────────────────────
+let currentView = 'chat';
+function showView(v) {
+  currentView = v;
+  document.getElementById('view-chat').style.display  = v === 'chat'  ? '' : 'none';
+  const gv = document.getElementById('view-graph');
+  gv.classList.toggle('show', v === 'graph');
+  document.getElementById('tab-chat').classList.toggle('active',  v === 'chat');
+  document.getElementById('tab-graph').classList.toggle('active', v === 'graph');
+  if (v === 'graph' && !graphLoaded) loadGraph();
+}
+
+// ── Load data from API ──────────────────────────────────────────────
+async function loadGraph() {
+  document.getElementById('mg-loading').style.display = 'flex';
+  document.getElementById('mg-empty').classList.remove('show');
+  try {
+    const d = await api('GET', '/api/memory/graph');
+    if (!d.ok) { console.error('graph api error:', d.error); return; }
+    graphData = d;
+    graphLoaded = true;
+    buildLegend();
+    initSim();
+  } catch (e) { console.error('loadGraph:', e); }
+  finally { document.getElementById('mg-loading').style.display = 'none'; }
+}
+
+async function refreshGraph() {
+  graphLoaded = false;
+  if (simRaf) { cancelAnimationFrame(simRaf); simRaf = null; }
+  document.getElementById('mg-nodes-layer').innerHTML = '';
+  document.getElementById('mg-edges').innerHTML = '';
+  selectedIdx = -1;
+  document.getElementById('mg-detail').classList.remove('show');
+  simNodes = []; simEdges = [];
+  await loadGraph();
+}
+
+// ── Build type-color legend ─────────────────────────────────────────
+function buildLegend() {
+  const types = [...new Set(graphData.nodes.map(n => n.node_type || 'concept'))];
+  const el = document.getElementById('mg-legend');
+  el.innerHTML = types.map(t =>
+    `<div class="mg-legend-dot">
+      <div class="mg-legend-color" style="background:${typeColor(t)}"></div>
+      <span>${esc(t)}</span>
+    </div>`
+  ).join('');
+}
+
+// ── Initialise force simulation ──────────────────────────────────────
+function initSim() {
+  const nodes = graphData.nodes;
+  const edges = graphData.edges;
+  const nodeIdx = new Map(nodes.map((n, i) => [n.id, i]));
+
+  // Circular initial layout
+  const R = Math.min(WORLD_CX, WORLD_CY) * 0.32;
+  simNodes = nodes.map((n, i) => {
+    const a = (2 * Math.PI * i) / Math.max(1, nodes.length);
+    return {
+      id: n.id,
+      x: WORLD_CX + R * Math.cos(a) + (Math.random() - 0.5) * 60,
+      y: WORLD_CY + R * Math.sin(a) + (Math.random() - 0.5) * 60,
+      vx: 0, vy: 0, pinned: false, card: null,
+    };
+  });
+
+  simEdges = edges.map(e => ({
+    si: nodeIdx.get(e.source) ?? -1,
+    ti: nodeIdx.get(e.target) ?? -1,
+    label: e.label || '',
+    weight: e.weight || 1.0,
+  })).filter(e => e.si >= 0 && e.ti >= 0);
+
+  // Pre-settle layout before showing
+  for (let i = 0; i < 180; i++) tickSim();
+
+  buildNodeCards();
+  positionCards();
+  renderEdges();
+  updateStats();
+
+  if (!nodes.length) {
+    document.getElementById('mg-empty').classList.add('show');
+    return;
+  }
+
+  // Continue settling with animation
+  simTicks = 0;
+  if (simRaf) cancelAnimationFrame(simRaf);
+  function loop() {
+    if (simTicks < 400) {
+      tickSim(); simTicks++;
+      positionCards();
+      // Re-render edges less frequently (every 3 frames) for performance
+      if (simTicks % 3 === 0) renderEdges();
+    }
+    simRaf = requestAnimationFrame(loop);
+  }
+  simRaf = requestAnimationFrame(loop);
+
+  centerView();
+}
+
+// ── Physics tick ────────────────────────────────────────────────────
+function tickSim() {
+  const n = simNodes.length;
+  if (!n) return;
+
+  // Repulsion (O n²; acceptable for typical < 500 nodes)
+  for (let i = 0; i < n; i++) {
+    const ni = simNodes[i];
+    for (let j = i + 1; j < n; j++) {
+      const nj = simNodes[j];
+      const dx = nj.x - ni.x, dy = nj.y - ni.y;
+      const d2 = dx * dx + dy * dy + 100;
+      const d  = Math.sqrt(d2);
+      const f  = F_REPEL / d2;
+      const fx = f * dx / d, fy = f * dy / d;
+      ni.vx -= fx; ni.vy -= fy;
+      nj.vx += fx; nj.vy += fy;
+    }
+  }
+
+  // Spring (edges)
+  for (const e of simEdges) {
+    const s = simNodes[e.si], t = simNodes[e.ti];
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const d  = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    const stretch = d - F_LEN;
+    const f  = F_SPRING * stretch;
+    const nx = dx / d, ny = dy / d;
+    if (!s.pinned) { s.vx += f * nx; s.vy += f * ny; }
+    if (!t.pinned) { t.vx -= f * nx; t.vy -= f * ny; }
+  }
+
+  // Gravity + integrate
+  const maxW = WORLD_CX * 2, maxH = WORLD_CY * 2;
+  for (const ni of simNodes) {
+    if (ni.pinned) { ni.vx = 0; ni.vy = 0; continue; }
+    ni.vx += (WORLD_CX - ni.x) * F_GRAV;
+    ni.vy += (WORLD_CY - ni.y) * F_GRAV;
+    ni.vx *= F_FRIC;  ni.vy *= F_FRIC;
+    ni.x = Math.max(80, Math.min(maxW - 80, ni.x + ni.vx));
+    ni.y = Math.max(80, Math.min(maxH - 80, ni.y + ni.vy));
+  }
+}
+
+// ── Build HTML node cards ────────────────────────────────────────────
+function buildNodeCards() {
+  const layer = document.getElementById('mg-nodes-layer');
+  layer.innerHTML = '';
+  simNodes.forEach((sn, i) => {
+    const n   = graphData.nodes[i];
+    const col = typeColor(n.node_type);
+    const imp = Math.min(5, Math.round((n.importance || 0) * 5));
+    const impStr = '●'.repeat(imp) + '◦'.repeat(5 - imp);
+    const preview = (n.body_preview || n.summary || '')
+      .replace(/\n+/g, ' ').trim().slice(0, 150);
+
+    const card = document.createElement('div');
+    card.className = 'mg-node-card';
+    card.id = 'mgn-' + i;
+    card.style.borderColor = col;
+    card.innerHTML =
+      `<div class="mgn-header">` +
+        `<span class="mgn-type" style="background:${col}22;color:${col}">${esc(n.node_type || 'node')}</span>` +
+        `<span class="mgn-imp" style="color:${col}">${impStr}</span>` +
+      `</div>` +
+      `<div class="mgn-title">${esc(n.title || n.id)}</div>` +
+      (preview ? `<div class="mgn-preview">${esc(preview)}</div>` : '');
+
+    card.addEventListener('mousedown', e => { e.stopPropagation(); startNodeDrag(e, i); });
+    card.addEventListener('click',     e => { e.stopPropagation(); selectNode(i); });
+
+    sn.card = card;
+    layer.appendChild(card);
+  });
+}
+
+function positionCards() {
+  for (const sn of simNodes) {
+    if (!sn.card) continue;
+    sn.card.style.left = sn.x + 'px';
+    sn.card.style.top  = sn.y + 'px';
+  }
+}
+
+// ── Render SVG edges ─────────────────────────────────────────────────
+function renderEdges() {
+  const svgG = document.getElementById('mg-edges');
+  if (!svgG) return;
+  const selId = selectedIdx >= 0 ? (simNodes[selectedIdx]?.id || null) : null;
+
+  let html = '';
+  for (const e of simEdges) {
+    const s = simNodes[e.si], t = simNodes[e.ti];
+    if (!s || !t) continue;
+
+    // Offset target point towards edge tip (so arrowhead doesn't overlap the card's center)
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+    const ex = t.x - dx / d * 92;   // pull back 92px from center (≈ card half-width)
+    const ey = t.y - dy / d * 50;   // pull back 50px from center (≈ card half-height)
+    const mx = (s.x + ex) / 2, my = (s.y + ey) / 2;
+    const bx = mx - dy / d * 40, by = my + dx / d * 40;  // bezier control bend
+
+    const isSel = selId && (s.id === selId || t.id === selId);
+    const stroke  = isSel ? '#539bf5' : '#3a4a5c';
+    const markerRef = isSel ? '#arr-sel' : '#arr-def';
+    const sw      = isSel ? 1.8 : 1;
+    const op      = isSel ? 0.9 : 0.45;
+
+    html += `<path d="M${s.x},${s.y} Q${bx},${by} ${ex},${ey}" fill="none" ` +
+            `stroke="${stroke}" stroke-width="${sw}" opacity="${op}" ` +
+            `marker-end="url(${markerRef})"/>`;
+
+    if (e.label) {
+      const lx = bx * 0.6 + (s.x + ex) / 2 * 0.4;
+      const ly = by * 0.6 + (s.y + ey) / 2 * 0.4;
+      html += `<text x="${lx}" y="${ly}" text-anchor="middle" ` +
+              `font-size="9.5" fill="${isSel ? '#8b949e' : '#4d5a66'}" ` +
+              `font-family="-apple-system,BlinkMacSystemFont,sans-serif">${esc(e.label)}</text>`;
+    }
+  }
+  svgG.innerHTML = html;
+}
+
+// ── Select / deselect node ───────────────────────────────────────────
+function selectNode(idx) {
+  if (selectedIdx >= 0 && simNodes[selectedIdx]?.card)
+    simNodes[selectedIdx].card.classList.remove('selected');
+
+  selectedIdx = idx;
+  const sn = simNodes[idx];
+  if (sn?.card) sn.card.classList.add('selected');
+
+  renderEdges();   // highlight connected edges
+
+  const n = graphData.nodes[idx];
+  if (!n) return;
+
+  const col = typeColor(n.node_type);
+  const detail = document.getElementById('mg-detail');
+  detail.classList.add('show');
+
+  document.getElementById('mgd-title').textContent = n.title || n.id;
+  document.getElementById('mgd-title').style.color  = col;
+
+  const outLinks = simEdges.filter(e => e.si === idx);
+  const inLinks  = simEdges.filter(e => e.ti === idx);
+  const imp      = (n.importance || 0).toFixed(2);
+  const impFill  = Math.min(5, Math.round((n.importance || 0) * 5));
+
+  let bodyHtml =
+    `<div class="mgd-type-row">` +
+      `<span class="mgn-type" style="background:${col}22;color:${col}">${esc(n.node_type || 'node')}</span>` +
+      `<span class="mgd-imp">importance: ${imp}</span>` +
+      `<span style="font-size:10px;color:${col};margin-left:4px">${'●'.repeat(impFill)}${'◦'.repeat(5 - impFill)}</span>` +
+    `</div>` +
+    `<div class="mgd-id">${esc(n.id)}</div>`;
+
+  if (n.summary) {
+    bodyHtml += `<div class="mgd-summary">${esc(n.summary)}</div>`;
+  }
+
+  if (outLinks.length || inLinks.length) {
+    bodyHtml += `<div class="mgd-section-label">Links (${outLinks.length + inLinks.length})</div>`;
+    outLinks.forEach(e => {
+      const tn = graphData.nodes[e.ti];
+      bodyHtml += `<div class="mgd-link-out">→ <b onclick="selectNode(${e.ti})" style="cursor:pointer">${esc(tn?.title || tn?.id || '?')}</b>` +
+        (e.label ? `<span class="mgd-link-label">${esc(e.label)}</span>` : '') + `</div>`;
+    });
+    inLinks.forEach(e => {
+      const sno = graphData.nodes[e.si];
+      bodyHtml += `<div class="mgd-link-in">← <b onclick="selectNode(${e.si})" style="cursor:pointer">${esc(sno?.title || sno?.id || '?')}</b>` +
+        (e.label ? `<span class="mgd-link-label">${esc(e.label)}</span>` : '') + `</div>`;
+    });
+  }
+
+  if (n.body_preview) {
+    bodyHtml += `<div class="mgd-section-label">Content</div>` +
+                `<div class="mgd-body-text">${esc(n.body_preview)}</div>`;
+  }
+
+  document.getElementById('mgd-body').innerHTML = bodyHtml;
+}
+
+function closeDetail() {
+  if (selectedIdx >= 0 && simNodes[selectedIdx]?.card)
+    simNodes[selectedIdx].card.classList.remove('selected');
+  selectedIdx = -1;
+  document.getElementById('mg-detail').classList.remove('show');
+  renderEdges();
+}
+
+// ── Search filter ────────────────────────────────────────────────────
+function filterNodes(q) {
+  q = q.trim().toLowerCase();
+  simNodes.forEach((sn, i) => {
+    if (!sn.card) return;
+    const n = graphData.nodes[i];
+    const match = !q ||
+      (n.title || '').toLowerCase().includes(q) ||
+      (n.id   || '').toLowerCase().includes(q) ||
+      (n.node_type || '').toLowerCase().includes(q) ||
+      (n.summary   || '').toLowerCase().includes(q) ||
+      (n.body_preview || '').toLowerCase().includes(q);
+    sn.card.style.opacity = match ? '1' : '0.12';
+  });
+}
+
+// ── Stats ────────────────────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('mg-stats').textContent =
+    `${graphData.nodes.length} nodes · ${graphData.edges.length} edges`;
+}
+
+// ── Pan / zoom ───────────────────────────────────────────────────────
+function applyTransform() {
+  document.getElementById('mg-world').style.transform =
+    `translate(${gTx}px,${gTy}px) scale(${gScale})`;
+}
+
+function centerView() {
+  if (!simNodes.length || !document.getElementById('mg-canvas-wrap')) return;
+  const wrap = document.getElementById('mg-canvas-wrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if (W <= 0 || H <= 0) return;
+
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of simNodes) {
+    x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x);
+    y0 = Math.min(y0, n.y); y1 = Math.max(y1, n.y);
+  }
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const gw = (x1 - x0) + 300, gh = (y1 - y0) + 240;
+  gScale = Math.max(0.15, Math.min(1.5, Math.min(W / gw, H / gh) * 0.88));
+  gTx = W / 2 - cx * gScale;
+  gTy = H / 2 - cy * gScale;
+  applyTransform();
+}
+
+// ── Node drag ────────────────────────────────────────────────────────
+function startNodeDrag(e, idx) {
+  dragNodeIdx = idx;
+  simNodes[idx].pinned = true;
+  const wrap    = document.getElementById('mg-canvas-wrap');
+  const rect    = wrap.getBoundingClientRect();
+  dnOX = (e.clientX - rect.left - gTx) / gScale - simNodes[idx].x;
+  dnOY = (e.clientY - rect.top  - gTy) / gScale - simNodes[idx].y;
+}
+
+// ── Canvas event listeners (wired after DOM ready) ───────────────────
+function initCanvasEvents() {
+  const wrap = document.getElementById('mg-canvas-wrap');
+  if (!wrap) return;
+
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect  = wrap.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const prev  = gScale;
+    gScale = Math.max(0.08, Math.min(4, gScale * (e.deltaY < 0 ? 1.12 : 0.9)));
+    gTx = cx - (cx - gTx) * (gScale / prev);
+    gTy = cy - (cy - gTy) * (gScale / prev);
+    applyTransform();
+  }, { passive: false });
+
+  wrap.addEventListener('mousedown', e => {
+    if (dragNodeIdx >= 0) return;
+    isPanning = true;
+    panSX = e.clientX; panSY = e.clientY;
+    panTX0 = gTx;      panTY0 = gTy;
+    wrap.classList.add('panning');
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (dragNodeIdx >= 0) {
+      const wrap2 = document.getElementById('mg-canvas-wrap');
+      if (!wrap2) return;
+      const rect = wrap2.getBoundingClientRect();
+      const wx = (e.clientX - rect.left - gTx) / gScale - dnOX;
+      const wy = (e.clientY - rect.top  - gTy) / gScale - dnOY;
+      simNodes[dragNodeIdx].x = wx;
+      simNodes[dragNodeIdx].y = wy;
+      simNodes[dragNodeIdx].vx = 0;
+      simNodes[dragNodeIdx].vy = 0;
+      positionCards();
+      renderEdges();
+    } else if (isPanning) {
+      gTx = panTX0 + (e.clientX - panSX);
+      gTy = panTY0 + (e.clientY - panSY);
+      applyTransform();
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (dragNodeIdx >= 0) {
+      simNodes[dragNodeIdx].pinned = false;
+      dragNodeIdx  = -1;
+    }
+    isPanning = false;
+    const wrap2 = document.getElementById('mg-canvas-wrap');
+    if (wrap2) wrap2.classList.remove('panning');
+  });
+
+  // Click on empty canvas → deselect
+  wrap.addEventListener('click', e => {
+    if (e.target === wrap || e.target === document.getElementById('mg-world') ||
+        e.target === document.getElementById('mg-svg') ||
+        e.target === document.getElementById('mg-nodes-layer')) {
+      closeDetail();
+    }
+  });
+}
+
+// Wire canvas events (script runs at end of body, DOM is already ready)
+initCanvasEvents();
 </script>
 </body>
 </html>

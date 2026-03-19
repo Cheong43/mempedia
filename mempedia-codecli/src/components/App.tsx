@@ -744,6 +744,69 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
         }
         return;
       }
+      if (rawPath === '/api/memory/graph' && method === 'GET') {
+        try {
+          const memoryRoot = path.join(projectRoot, '.mempedia', 'memory');
+          const indexDir = path.join(memoryRoot, 'index');
+          const objectsDir = path.join(memoryRoot, 'objects');
+          const statePath = path.join(indexDir, 'state.json');
+          const state = readJsonOptional(statePath) || {};
+          const heads: Record<string, string> = state.heads || readJsonOptional(path.join(indexDir, 'heads.json')) || {};
+          // Build version object map from objects dir
+          const versionMap = new Map<string, any>();
+          if (fs.existsSync(objectsDir)) {
+            for (const file of listFiles(objectsDir).filter((f) => f.endsWith('.json'))) {
+              try {
+                const vid = path.basename(file, '.json');
+                versionMap.set(vid, JSON.parse(fs.readFileSync(file, 'utf-8')));
+              } catch {}
+            }
+          }
+          const nodeIdSet = new Set(Object.keys(heads));
+          const graphNodes: Array<{
+            id: string; title: string; summary: string; body_preview: string;
+            node_type: string | null; parent_node: string | null; importance: number;
+            links: Array<{ target: string; label: string | null; weight: number }>;
+          }> = [];
+          const graphEdges: Array<{ source: string; target: string; label: string | null; weight: number }> = [];
+          for (const [nodeId, versionId] of Object.entries(heads)) {
+            const ver = versionMap.get(versionId);
+            if (!ver) continue;
+            const c = ver.content || {};
+            graphNodes.push({
+              id: nodeId,
+              title: String(c.title || nodeId),
+              summary: String(c.summary || ''),
+              body_preview: String(c.body || '').slice(0, 400).trim(),
+              node_type: c.node_type ? String(c.node_type) : null,
+              parent_node: c.parent_node ? String(c.parent_node) : null,
+              importance: typeof ver.importance === 'number' ? ver.importance : 0,
+              links: Array.isArray(c.links)
+                ? c.links.map((l: any) => ({
+                    target: String(l.target || ''),
+                    label: l.label ? String(l.label) : null,
+                    weight: typeof l.weight === 'number' ? l.weight : 1.0,
+                  })).filter((l: any) => l.target)
+                : [],
+            });
+            for (const link of (Array.isArray(c.links) ? c.links : [])) {
+              const tgt = String(link.target || '');
+              if (tgt && nodeIdSet.has(tgt)) {
+                graphEdges.push({
+                  source: nodeId,
+                  target: tgt,
+                  label: link.label ? String(link.label) : null,
+                  weight: typeof link.weight === 'number' ? link.weight : 1.0,
+                });
+              }
+            }
+          }
+          writeJson(res, 200, { ok: true, nodes: graphNodes, edges: graphEdges });
+        } catch (error: any) {
+          writeJson(res, 500, { ok: false, error: error?.message || String(error) });
+        }
+        return;
+      }
       if (rawPath === '/api/memory/preferences' && method === 'GET') {
         try {
           const result = await readUserPreferencesViaCli(__dirname, projectRoot);

@@ -213,7 +213,20 @@ interface ConversationTurn {
 interface MemoryExtraction {
   user_preferences: Array<{ topic: string; preference: string; evidence: string }>;
   agent_skills: Array<{ skill_id: string; title: string; content: string; tags: string[] }>;
-  atomic_knowledge: Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>;
+  systematic_knowledge: Array<{
+    topic: string;
+    title: string;
+    summary: string;
+    description: string;
+    facts: string[];
+    data_points: string[];
+    truths: string[];
+    viewpoints: string[];
+    history: string[];
+    uncertainties: string[];
+    evidence: string[];
+    relations: string[];
+  }>;
 }
 
 interface MemorySaveJob {
@@ -224,7 +237,7 @@ interface MemorySaveJob {
   focus?: string;
   savePreferences: boolean;
   saveSkills: boolean;
-  saveAtomic: boolean;
+  saveKnowledgeNodes: boolean;
   saveEpisodic: boolean;
   branchId?: string;
 }
@@ -668,7 +681,13 @@ export class Agent {
     for (const rel of normalized) {
       let target: string | undefined;
       const directId = rel.trim();
-      const maybeIds = [directId, `kg_atomic_${this.toSlug(rel)}`];
+      const maybeIds = [
+        directId,
+        `kg_system_${this.toSlug(rel)}`,
+        `kg_doc_${this.toSlug(rel)}`,
+        `kg_code_${this.toSlug(rel)}`,
+        `kg_atomic_${this.toSlug(rel)}`,
+      ];
       for (const candidate of maybeIds) {
         if (!candidate || candidate.length < 2) {
           continue;
@@ -726,7 +745,7 @@ export class Agent {
     return trimmed.slice(0, 200);
   }
 
-  private collectAtomicCandidates(input: string, answer: string): string[] {
+  private collectKnowledgeTopics(input: string, answer: string): string[] {
     const candidates: string[] = [];
     const seen = new Set<string>();
     const push = (value: string) => {
@@ -784,7 +803,7 @@ export class Agent {
       push(trimmed.slice(0, 60));
     }
 
-    return candidates.slice(0, 8);
+    return candidates.slice(0, 4);
   }
 
   private isIgnoredWorkspacePath(relativePath: string): boolean {
@@ -981,35 +1000,56 @@ export class Agent {
     return JSON.stringify({ kind: 'error', message: 'unsupported web mode' });
   }
 
-  private fallbackExtractAtomic(input: string, answer: string): Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }> {
-    const candidates = this.collectAtomicCandidates(input, answer);
-    if (candidates.length === 0) {
-      return [];
-    }
+  private fallbackExtractSystematicKnowledge(input: string, answer: string): Array<{
+    topic: string;
+    title: string;
+    summary: string;
+    description: string;
+    facts: string[];
+    data_points: string[];
+    truths: string[];
+    viewpoints: string[];
+    history: string[];
+    uncertainties: string[];
+    evidence: string[];
+    relations: string[];
+  }> {
+    const candidates = this.collectKnowledgeTopics(input, answer);
     const answerLines = answer
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && this.isValuableKnowledgeLine(line));
     const summarySeed = this.firstSentence(answer) || this.firstSentence(input) || '';
-    const candidateSet = new Set(candidates.map((c) => c.toLowerCase()));
+    const effectiveCandidates = candidates.length > 0
+      ? candidates
+      : [summarySeed || this.firstSentence(input) || 'Systematic knowledge'];
+    const candidateSet = new Set(effectiveCandidates.map((c) => c.toLowerCase()));
 
-    return candidates.map((candidate) => {
+    return effectiveCandidates.map((candidate) => {
       const candidateLower = candidate.toLowerCase();
       const matchingLines = answerLines.filter((line) => line.toLowerCase().includes(candidateLower));
-      const detailsSource = matchingLines.slice(0, 3).join('\n') || answerLines.slice(0, 3).join('\n') || summarySeed || candidate;
+      const detailsSource = matchingLines.slice(0, 5).join('\n') || answerLines.slice(0, 6).join('\n') || summarySeed || candidate;
       const summarySource = matchingLines[0] || summarySeed || candidate;
-      const evolutionSource = detailsSource === summarySource ? '' : detailsSource;
-      const relations = candidates
+      const relations = effectiveCandidates
         .filter((other) => other.toLowerCase() !== candidateLower && candidateSet.has(other.toLowerCase()))
         .slice(0, 4);
+      const facts = matchingLines.slice(0, 6);
+      const dataPoints = facts.filter((line) => /\d/.test(line)).slice(0, 4);
       return {
-        keyword: candidate,
+        topic: candidate,
+        title: candidate,
         summary: this.normalizeSummary(summarySource, candidate),
         description: this.normalizeDetails(detailsSource, candidate),
-        evolution: this.normalizeOptional(evolutionSource),
+        facts,
+        data_points: dataPoints,
+        truths: [],
+        viewpoints: [],
+        history: detailsSource === summarySource ? [] : [detailsSource],
+        uncertainties: [],
+        evidence: [],
         relations
       };
-    }).filter((item) => item.keyword && item.summary);
+    }).filter((item) => item.topic && item.summary);
   }
 
   private clipText(value: string, maxChars: number): string {
@@ -1438,7 +1478,7 @@ export class Agent {
     return /^(hi|hello|hey|yo|sup|你好|嗨|哈喽)\b/.test(compact);
   }
 
-  private shouldAutoSaveAtomicKnowledge(input: string, traces: TraceEvent[], answer: string): boolean {
+  private shouldAutoSaveKnowledgeNodes(input: string, traces: TraceEvent[], answer: string): boolean {
     const request = this.extractOriginalUserRequest(input);
     const normalizedAnswer = answer.replace(/\s+/g, ' ').trim();
     if (normalizedAnswer.length < 140) {
@@ -1796,14 +1836,28 @@ export class Agent {
   "agent_skills": [
     { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }
   ],
-  "atomic_knowledge": [
-    { "keyword": "核心关键词", "summary": "短摘要", "description": "完整描述", "evolution": "演进信息", "relations": ["相关项"] }
+  "systematic_knowledge": [
+    {
+      "topic": "知识主题或系统名",
+      "title": "系统化知识节点标题",
+      "summary": "短摘要",
+      "description": "围绕同一主题的完整描述",
+      "facts": ["稳定事实1", "稳定事实2"],
+      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],
+      "truths": ["已验证结论或明确为真的断言"],
+      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],
+      "history": ["历史变迁、版本演进、前后变化"],
+      "uncertainties": ["尚未确认、条件性限制、已知未知"],
+      "evidence": ["README/源码/配置/回答中的证据摘要"],
+      "relations": ["相关项"]
+    }
   ]
 }
 
 规则：
-1. Layer 1 Core Knowledge：atomic_knowledge 必须是可独立复用的知识点。
-1.1 如果内容明确来自 README、源码、配置、项目目录或其他仓库文件，并且回答总结了项目架构、模块职责、存储结构、接口能力、构建方式等稳定事实，应优先提取到 atomic_knowledge。
+1. Layer 1 Core Knowledge：systematic_knowledge 必须是按主题组织、可独立复用的系统化知识节点。
+1.1 如果内容明确来自 README、源码、配置、项目目录或其他仓库文件，并且回答总结了项目架构、模块职责、存储结构、接口能力、构建方式等稳定事实，应优先提取到 systematic_knowledge。
+1.2 同一主题下的相关事实尽量合并成一个更完整的知识节点，不要拆成许多原子化碎片。
 2. Layer 3 User Preferences：仅提取稳定偏好，不要临时状态。
 3. Layer 4 Agent Skills：只提取可复用流程/策略，避免一次性日志。
 4. 不要逐字复制对话；保留抽象、可复用长期知识。
@@ -1868,10 +1922,30 @@ export class Agent {
             };
           }).filter((x: any) => x.skill_id && x.title && x.content)
         : [];
-      const atomic = Array.isArray(parsed.atomic_knowledge)
-        ? parsed.atomic_knowledge.map((item: any) => {
-            const keyword = typeof item?.keyword === 'string' ? item.keyword.replace(/\s+/g, ' ').trim() : '';
-            if (!keyword) {
+      const normalizeList = (value: unknown, limit: number): string[] => {
+        if (Array.isArray(value)) {
+          return value
+            .map((entry: any) => String(entry || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+            .slice(0, limit);
+        }
+        return [];
+      };
+      const rawKnowledge = Array.isArray(parsed.systematic_knowledge)
+        ? parsed.systematic_knowledge
+        : Array.isArray(parsed.atomic_knowledge)
+          ? parsed.atomic_knowledge
+          : [];
+      const knowledge = Array.isArray(rawKnowledge)
+        ? rawKnowledge.map((item: any) => {
+            const topic = typeof item?.topic === 'string'
+              ? item.topic.replace(/\s+/g, ' ').trim()
+              : typeof item?.title === 'string'
+                ? item.title.replace(/\s+/g, ' ').trim()
+                : typeof item?.keyword === 'string'
+                  ? item.keyword.replace(/\s+/g, ' ').trim()
+                  : '';
+            if (!topic) {
               return null;
             }
             const rawRelations = Array.isArray(item?.relations)
@@ -1881,13 +1955,20 @@ export class Agent {
                 : [];
             const relations = rawRelations
               .map((rel: any) => typeof rel === 'string' ? rel.replace(/\s+/g, ' ').trim() : '')
-              .filter((rel: string) => rel.length > 0 && rel.toLowerCase() !== keyword.toLowerCase())
+              .filter((rel: string) => rel.length > 0 && rel.toLowerCase() !== topic.toLowerCase())
               .slice(0, 8);
             return {
-              keyword,
-              summary: this.normalizeSummary(item?.summary || item?.description, keyword),
-              description: this.normalizeDetails(item?.description || item?.summary, keyword),
-              evolution: this.normalizeOptional(item?.evolution || item?.details),
+              topic,
+              title: typeof item?.title === 'string' && item.title.trim() ? item.title.trim() : topic,
+              summary: this.normalizeSummary(item?.summary || item?.description, topic),
+              description: this.normalizeDetails(item?.description || item?.summary, topic),
+              facts: normalizeList(item?.facts ?? item?.claims ?? item?.key_facts, 12),
+              data_points: normalizeList(item?.data_points ?? item?.data ?? item?.numbers, 12),
+              truths: normalizeList(item?.truths ?? item?.verified_points ?? item?.verified_facts, 10),
+              viewpoints: normalizeList(item?.viewpoints ?? item?.opinions ?? item?.perspectives, 10),
+              history: normalizeList(item?.history ?? item?.historical_changes ?? item?.timeline ?? item?.evolution, 10),
+              uncertainties: normalizeList(item?.uncertainties ?? item?.unknowns ?? item?.open_questions, 10),
+              evidence: normalizeList(item?.evidence ?? item?.sources ?? item?.source_evidence, 12),
               relations
             };
           }).filter((x: any) => Boolean(x))
@@ -1896,7 +1977,7 @@ export class Agent {
       return {
         user_preferences: preferences.slice(0, 12),
         agent_skills: skills.slice(0, 12),
-        atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>
+        systematic_knowledge: knowledge.slice(0, 12) as MemoryExtraction['systematic_knowledge']
       };
   } catch (_) {
     return this.fallbackExtractMemory(input, answer);
@@ -1934,7 +2015,7 @@ export class Agent {
     return {
       user_preferences: preferences.slice(0, 8),
       agent_skills: skills.slice(0, 8),
-      atomic_knowledge: this.fallbackExtractAtomic(input, answer)
+      systematic_knowledge: this.fallbackExtractSystematicKnowledge(input, answer)
     };
   }
 
@@ -1955,7 +2036,7 @@ export class Agent {
       branch_id: job.branchId || null,
       save_preferences: job.savePreferences,
       save_skills: job.saveSkills,
-      save_atomic: job.saveAtomic,
+      save_knowledge_nodes: job.saveKnowledgeNodes,
       save_episodic: job.saveEpisodic,
       input_chars: input.length,
       traces_count: traces.length,
@@ -2033,7 +2114,7 @@ export class Agent {
       branch_id: job.branchId || null,
       save_preferences: job.savePreferences,
       save_skills: job.saveSkills,
-      save_atomic: job.saveAtomic,
+      save_knowledge_nodes: job.saveKnowledgeNodes,
       save_episodic: job.saveEpisodic,
       queue_depth: this.saveQueue.length,
     });
@@ -2260,7 +2341,7 @@ ${soulsGuidance}
       branch: BranchState,
       reason: string,
       focus?: string,
-      flags?: { savePreferences?: boolean; saveSkills?: boolean; saveAtomic?: boolean; saveEpisodic?: boolean }
+      flags?: { savePreferences?: boolean; saveSkills?: boolean; saveKnowledgeNodes?: boolean; saveEpisodic?: boolean }
     ): MemorySaveJob => {
       const branchTraces = traceBuffer.filter((event) => {
         const eventBranchId = event.metadata?.branchId;
@@ -2275,7 +2356,7 @@ ${soulsGuidance}
         focus: focus?.trim() || branch.goal,
         savePreferences: flags?.savePreferences ?? false,
         saveSkills: flags?.saveSkills ?? false,
-        saveAtomic: flags?.saveAtomic ?? false,
+        saveKnowledgeNodes: flags?.saveKnowledgeNodes ?? false,
         saveEpisodic: flags?.saveEpisodic ?? true,
         branchId: branch.id,
       };
@@ -2501,7 +2582,7 @@ ${soulsGuidance}
         autoBranch,
         'automatic post-turn four-layer memory classification',
         this.firstSentence(finalAnswer),
-        { savePreferences: true, saveSkills: true, saveAtomic: true, saveEpisodic: true }
+        { savePreferences: true, saveSkills: true, saveKnowledgeNodes: true, saveEpisodic: true }
       );
       this.scheduleMemorySave(autoJob);
       memoryQueuedThisRun = true;
