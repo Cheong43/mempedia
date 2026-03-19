@@ -2291,13 +2291,20 @@ ${soulsGuidance}
       },
     ]);
 
-    const executeToolCall = async (branch: BranchState, toolCall: z.infer<typeof PlannerToolCallSchema>): Promise<string> => {
+    const executeToolCall = async (
+      branch: BranchState,
+      toolCall: z.infer<typeof PlannerToolCallSchema>,
+      options: { trace?: boolean } = {},
+    ): Promise<string> => {
       const args = toolCall.arguments || {};
       const fnName = toolCall.name;
-      emitBranchTrace('action', branch, `Calling ${fnName}${toolCall.goal ? ` — ${toolCall.goal}` : ''}`, {
-        toolName: fnName,
-        args,
-      });
+      const trace = options.trace !== false;
+      if (trace) {
+        emitBranchTrace('action', branch, `Calling ${fnName}${toolCall.goal ? ` — ${toolCall.goal}` : ''}`, {
+          toolName: fnName,
+          args,
+        });
+      }
 
       const toolStart = Date.now();
       let result = '';
@@ -2337,7 +2344,9 @@ ${soulsGuidance}
       if (savedNodeId && !branch.savedNodeIds.includes(savedNodeId)) {
         branch.savedNodeIds.push(savedNodeId);
       }
-      emitBranchTrace('observation', branch, clipped, { toolName: fnName });
+      if (trace) {
+        emitBranchTrace('observation', branch, clipped, { toolName: fnName });
+      }
       return clipped;
     };
 
@@ -2418,8 +2427,12 @@ ${soulsGuidance}
             ? { kind: 'branch', thought: decision.thought, branches: decision.branches || [] }
             : { kind: 'final', thought: decision.thought, content: String(decision.final_answer || ''), completionSummary: decision.completion_summary };
       },
-      executeToolCall: async ({ branch, toolCall }) => {
-        const result = await executeToolCall(branch as BranchState, toolCall as z.infer<typeof PlannerToolCallSchema>);
+      executeToolCall: async ({ branch, toolCall, deferTrace }) => {
+        const result = await executeToolCall(
+          branch as BranchState,
+          toolCall as z.infer<typeof PlannerToolCallSchema>,
+          { trace: !deferTrace },
+        );
         return {
           toolName: toolCall.name,
           result,

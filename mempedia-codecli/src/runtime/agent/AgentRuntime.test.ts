@@ -121,3 +121,91 @@ test('branches execute concurrently up to branchConcurrency', async () => {
   assert.match(answer, /B done/);
   assert.equal(maxObservedConcurrency, 2);
 });
+
+test('safe tool calls inside one branch execute concurrently and preserve observation order', async () => {
+  let maxObservedConcurrency = 0;
+  let currentConcurrency = 0;
+
+  const toolRuntime = new FakeToolRuntime(async (toolName, args) => {
+    currentConcurrency += 1;
+    maxObservedConcurrency = Math.max(maxObservedConcurrency, currentConcurrency);
+    const delay = Number(args.delayMs ?? 0);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    currentConcurrency -= 1;
+    return `${toolName}:${String(args.label ?? '')}`;
+  });
+
+  const planner = new FakePlanner(async (transcript) => {
+    const lastMessage = transcript[transcript.length - 1]?.content || '';
+    if (lastMessage.includes('TOOL OBSERVATION for read:')) {
+      const readIndex = lastMessage.indexOf('TOOL OBSERVATION for read:\n"read:first"');
+      const searchIndex = lastMessage.indexOf('TOOL OBSERVATION for search:\n"search:second"');
+      assert.ok(readIndex >= 0, 'missing read observation');
+      assert.ok(searchIndex > readIndex, 'observations should remain in planner order');
+      return {
+        kind: 'final',
+        content: 'safe parallel complete',
+      };
+    }
+
+    return {
+      kind: 'tool',
+      toolCalls: [
+        { name: 'read', arguments: { label: 'first', delayMs: 80 } },
+        { name: 'search', arguments: { label: 'second', delayMs: 20 } },
+      ],
+    };
+  });
+
+  const runtime = new AgentRuntime({
+    planner,
+    toolRuntime,
+    maxSteps: 2,
+  });
+
+  const answer = await runtime.run('run safe tools');
+  assert.equal(answer, 'safe parallel complete');
+  assert.equal(maxObservedConcurrency, 2);
+});
+
+test('unsafe tool batches stay serial within one branch', async () => {
+  let maxObservedConcurrency = 0;
+  let currentConcurrency = 0;
+
+  const toolRuntime = new FakeToolRuntime(async (_toolName, args) => {
+    currentConcurrency += 1;
+    maxObservedConcurrency = Math.max(maxObservedConcurrency, currentConcurrency);
+    const delay = Number(args.delayMs ?? 0);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    currentConcurrency -= 1;
+    return { ok: true };
+  });
+
+  const planner = new FakePlanner(async (transcript) => {
+    const lastMessage = transcript[transcript.length - 1]?.content || '';
+    if (lastMessage.includes('TOOL OBSERVATION for edit:')) {
+      return {
+        kind: 'final',
+        content: 'serial complete',
+      };
+    }
+
+    return {
+      kind: 'tool',
+      toolCalls: [
+        { name: 'read', arguments: { delayMs: 30 } },
+        { name: 'edit', arguments: { delayMs: 30 } },
+      ],
+    };
+  });
+
+  const runtime = new AgentRuntime({
+    planner,
+    toolRuntime,
+    maxSteps: 2,
+  });
+
+  const answer = await runtime.run('run mixed tools');
+  assert.equal(answer, 'serial complete');
+  assert.equal(maxObservedConcurrency, 1);
+});

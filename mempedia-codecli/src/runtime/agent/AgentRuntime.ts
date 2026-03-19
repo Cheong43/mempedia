@@ -28,6 +28,7 @@ export interface BranchPlanInput {
 export interface BranchToolExecutionInput {
   branch: AgentBranchState;
   toolCall: PlannedToolCall;
+  deferTrace?: boolean;
 }
 
 export interface BranchFinalizeInput {
@@ -87,6 +88,7 @@ export interface AgentRuntimeOptions {
  * to an `AgentRuntime` for the governed code path.
  */
 export class AgentRuntime {
+  private static readonly PARALLEL_SAFE_TOOL_NAMES = new Set(['read', 'search', 'web']);
   private readonly planner: Planner;
   private readonly toolRuntime: AgentToolRuntime;
   private readonly maxSteps: number;
@@ -179,25 +181,54 @@ export class AgentRuntime {
       success: execResult.success,
     });
 
+    const shouldRuntimeTraceTool = (deferTrace: boolean) => !this.executeToolCall || deferTrace;
+
+    const executeSingleToolCall = async (
+      branch: AgentBranchState,
+      toolCall: PlannedToolCall,
+      options: { deferTrace?: boolean } = {},
+    ): Promise<ToolObservation> => {
+      const deferTrace = options.deferTrace === true;
+      if (shouldRuntimeTraceTool(deferTrace)) {
+        emitBranchTrace(
+          'action',
+          branch,
+          `Calling ${toolCall.name}${toolCall.goal ? ` — ${toolCall.goal}` : ''}`,
+          { toolName: toolCall.name, args: toolCall.arguments },
+        );
+      }
+
+      if (this.executeToolCall) {
+        return this.executeToolCall({ branch, toolCall, deferTrace });
+      }
+
+      const execResult = await this.toolRuntime.execute(toolCall.name, toolCall.arguments);
+      return renderObservation(toolCall, execResult);
+    };
+
+    const emitObservationTrace = (branch: AgentBranchState, observation: ToolObservation) => {
+      emitBranchTrace('observation', branch, observation.result, { toolName: observation.toolName });
+    };
+
+    const canRunToolCallsConcurrently = (toolCalls: PlannedToolCall[]) =>
+      toolCalls.length > 1
+      && toolCalls.every((toolCall) => AgentRuntime.PARALLEL_SAFE_TOOL_NAMES.has(toolCall.name));
+
     const executeToolStep = async (branch: AgentBranchState, toolCalls: PlannedToolCall[]) => {
-      const observations: ToolObservation[] = [];
-      for (const toolCall of toolCalls) {
-        let observation: ToolObservation;
-        if (this.executeToolCall) {
-          observation = await this.executeToolCall({ branch, toolCall });
-        } else {
-          emitBranchTrace(
-            'action',
-            branch,
-            `Calling ${toolCall.name}${toolCall.goal ? ` — ${toolCall.goal}` : ''}`,
-            { toolName: toolCall.name, args: toolCall.arguments },
-          );
-          const execResult = await this.toolRuntime.execute(toolCall.name, toolCall.arguments);
-          observation = renderObservation(toolCall, execResult);
-        }
-        observations.push(observation);
-        if (!this.executeToolCall) {
-          emitBranchTrace('observation', branch, observation.result, { toolName: toolCall.name });
+      let observations: ToolObservation[];
+      if (canRunToolCallsConcurrently(toolCalls)) {
+        observations = await Promise.all(
+          toolCalls.map((toolCall) => executeSingleToolCall(branch, toolCall, { deferTrace: true })),
+        );
+        observations.forEach((observation) => emitObservationTrace(branch, observation));
+      } else {
+        observations = [];
+        for (const toolCall of toolCalls) {
+          const observation = await executeSingleToolCall(branch, toolCall);
+          observations.push(observation);
+          if (shouldRuntimeTraceTool(false)) {
+            emitObservationTrace(branch, observation);
+          }
         }
       }
 
