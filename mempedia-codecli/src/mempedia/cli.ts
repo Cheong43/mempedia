@@ -1,33 +1,11 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
-import { resolveMempediaBinaryPath } from '../config/projectPaths.js';
-import type { SkillRecord, SkillSearchHit, ToolAction, ToolResponse } from './types.js';
+import { resolveCodeCliRoot, resolveMempediaBinaryPath } from '../config/projectPaths.js';
+import type { ToolAction, ToolResponse } from './types.js';
 
-export interface SkillInstalledResult {
-  kind: 'skill_installed' | 'error';
-  skill_id: string;
-  path?: string;
-  message: string;
-}
-
-type SkillListResponse = { kind: 'skill_list'; skills: SkillRecord[] };
-type SkillResultsResponse = { kind: 'skill_results'; results: SkillSearchHit[] };
-type SkillResultResponse = { kind: 'skill_result'; skill_id: string; title: string; content: string; tags: string[]; updated_at: number };
-
-function yamlEscape(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-function firstSentence(text: string): string {
-  const cleaned = text.replace(/\s+/g, ' ').trim();
-  if (!cleaned) {
-    return '';
-  }
-  const match = cleaned.match(/^(.+?[.!?。！？])(?:\s|$)/);
-  return match ? match[1].trim() : cleaned.slice(0, 160).trim();
-}
+type SkillInstallResult = { kind: string; skill_id: string; path?: string; message: string };
 
 function toSlug(value: string): string {
   const normalized = value
@@ -36,6 +14,19 @@ function toSlug(value: string): string {
     .replace(/^_+|_+$/g, '')
     .slice(0, 72);
   return normalized || 'empty';
+}
+
+function yamlEscape(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const match = trimmed.match(/^(.+?[。！？!?\.]|.+$)/s);
+  return match ? match[1].trim() : trimmed;
 }
 
 function ensureSkillMarkdown(skillId: string, title: string, content: string, tags: string[] = []): string {
@@ -50,93 +41,114 @@ function ensureSkillMarkdown(skillId: string, title: string, content: string, ta
   return `---\nname: ${yamlEscape(skillId)}\ndescription: "${description}"\n${tagLine}---\n\n${trimmed}\n`;
 }
 
-export async function runMempediaCliAction(projectRoot: string, action: ToolAction, binaryPath?: string): Promise<ToolResponse> {
-  const resolvedBinaryPath = resolveMempediaBinaryPath(import.meta.dirname, binaryPath);
+export async function executeMempediaCliAction(
+  moduleDir: string,
+  projectRoot: string,
+  payload: ToolAction | Record<string, unknown>,
+): Promise<ToolResponse | Record<string, unknown>> {
+  const binaryPath = resolveMempediaBinaryPath(moduleDir);
+  const serialized = JSON.stringify(payload);
 
-  return await new Promise<ToolResponse>((resolve, reject) => {
-    const child = spawn(resolvedBinaryPath, ['--project', projectRoot, '--stdin'], {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(binaryPath, ['--project', projectRoot, '--stdin'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
     });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
     });
     child.on('error', (error) => {
       reject(error);
     });
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(stderr.trim() || stdout.trim() || `mempedia CLI exited with code ${code}`));
+        reject(new Error((stderr || stdout || `mempedia exited with code ${code}`).trim()));
         return;
       }
-      const text = stdout.trim();
-      if (!text) {
+      const trimmed = stdout.trim();
+      if (!trimmed) {
         reject(new Error('mempedia CLI returned empty stdout'));
         return;
       }
       try {
-        resolve(JSON.parse(text) as ToolResponse);
-      } catch (error) {
-        reject(new Error(`Failed to parse mempedia CLI response: ${text}`));
+        resolve(JSON.parse(trimmed) as ToolResponse | Record<string, unknown>);
+      } catch (error: any) {
+        reject(new Error(`Failed to parse mempedia CLI JSON: ${error?.message || String(error)}\n${trimmed}`));
       }
     });
 
-    child.stdin.write(JSON.stringify(action));
-    child.stdin.end();
+    child.stdin.end(serialized);
   });
 }
 
-export async function listSkillsViaCli(projectRoot: string, query?: string, limit?: number): Promise<SkillListResponse | SkillResultsResponse | { kind: 'error'; message: string }> {
-  if (query && query.trim()) {
-    return await runMempediaCliAction(projectRoot, {
-      action: 'search_skills',
-      query: query.trim(),
-      limit,
+export async function readUserPreferencesViaCli(
+  moduleDir: string,
+  projectRoot: string,
+): Promise<ToolResponse | Record<string, unknown>> {
+  return executeMempediaCliAction(moduleDir, projectRoot, { action: 'read_user_preferences' });
+}
+
+export async function updateUserPreferencesViaCli(
+  moduleDir: string,
+  projectRoot: string,
+  content: string,
+): Promise<ToolResponse | Record<string, unknown>> {
+  return executeMempediaCliAction(moduleDir, projectRoot, {
+    action: 'update_user_preferences',
+    content,
+  });
+}
+
+export async function listOrSearchEpisodicViaCli(
+  moduleDir: string,
+  projectRoot: string,
+  options: { query?: string; limit?: number; beforeTs?: number } = {},
+): Promise<ToolResponse | Record<string, unknown>> {
+  const query = options.query?.trim();
+  if (query) {
+    return executeMempediaCliAction(moduleDir, projectRoot, {
+      action: 'search_episodic',
+      query,
+      limit: options.limit,
     });
   }
-  return await runMempediaCliAction(projectRoot, { action: 'list_skills' });
-}
-
-export async function readSkillViaCli(projectRoot: string, skillId: string): Promise<SkillResultResponse | { kind: 'error'; message: string }> {
-  return await runMempediaCliAction(projectRoot, { action: 'read_skill', skill_id: skillId.trim() });
-}
-
-export async function upsertSkillViaCli(
-  projectRoot: string,
-  input: { skill_id: string; title: string; content: string; tags?: string[] }
-): Promise<SkillResultResponse | { kind: 'error'; message: string }> {
-  return await runMempediaCliAction(projectRoot, {
-    action: 'upsert_skill',
-    skill_id: input.skill_id,
-    title: input.title,
-    content: input.content,
-    tags: input.tags,
+  return executeMempediaCliAction(moduleDir, projectRoot, {
+    action: 'list_episodic',
+    limit: options.limit,
+    before_ts: options.beforeTs,
   });
 }
 
-export async function installWorkspaceSkillFromLibrary(
+export async function installWorkspaceSkillFromLibraryViaCli(
+  moduleDir: string,
   projectRoot: string,
-  codeCliRoot: string,
   skillId: string,
   overwrite = false,
-): Promise<SkillInstalledResult> {
+  codeCliRoot = resolveCodeCliRoot(moduleDir),
+): Promise<SkillInstallResult> {
   const normalizedSkillId = skillId.trim();
   if (!normalizedSkillId) {
     return { kind: 'error', skill_id: '', message: 'skill_id is required' };
   }
 
-  const res = await readSkillViaCli(projectRoot, normalizedSkillId);
-  if (res.kind !== 'skill_result') {
+  const res = await executeMempediaCliAction(moduleDir, projectRoot, {
+    action: 'read_skill',
+    skill_id: normalizedSkillId,
+  });
+  if ((res as any)?.kind !== 'skill_result') {
     return {
       kind: 'error',
       skill_id: normalizedSkillId,
-      message: res.message || 'skill not found in mempedia library',
+      message: (res as any)?.message || 'skill not found in mempedia library',
     };
   }
 
@@ -151,15 +163,14 @@ export async function installWorkspaceSkillFromLibrary(
     };
   }
 
-  await fs.promises.mkdir(skillFolder, { recursive: true });
+  fs.mkdirSync(skillFolder, { recursive: true });
   const markdown = ensureSkillMarkdown(
-    String(res.skill_id || normalizedSkillId),
-    String(res.title || normalizedSkillId),
-    String(res.content || ''),
-    Array.isArray(res.tags) ? res.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+    String((res as any).skill_id || normalizedSkillId),
+    String((res as any).title || normalizedSkillId),
+    String((res as any).content || ''),
+    Array.isArray((res as any).tags) ? (res as any).tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [],
   );
-  await fs.promises.writeFile(skillFilePath, markdown, 'utf-8');
-
+  fs.writeFileSync(skillFilePath, markdown, 'utf-8');
   return {
     kind: 'skill_installed',
     skill_id: normalizedSkillId,

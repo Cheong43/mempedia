@@ -9,8 +9,8 @@ import { z } from 'zod';
 import { resolveCodeCliRoot } from '../config/projectPaths.js';
 import { AgentRuntime, createRuntime, RuntimeHandle } from '../runtime/index.js';
 import type { AgentBranchState, BranchSynthesisInput } from '../runtime/agent/AgentRuntime.js';
-import { installWorkspaceSkillFromLibrary as installWorkspaceSkillFromLibraryViaCli } from '../mempedia/cli.js';
 import { TOOLS, TOOL_NAMES } from '../tools/definitions.js';
+import { installWorkspaceSkillFromLibraryViaCli } from '../mempedia/cli.js';
 import { MemoryClassifierAgent } from './MemoryClassifierAgent.js';
 import { fileURLToPath } from 'url';
 
@@ -467,20 +467,8 @@ export class Agent {
     return `kg_${type}_${this.toSlug(text)}`;
   }
 
-  private ensureSkillMarkdown(skillId: string, title: string, content: string, tags: string[] = []): string {
-    const trimmed = content.trim();
-    if (/^---\s*[\r\n]+[\s\S]*?[\r\n]+---\s*/.test(trimmed)) {
-      return trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`;
-    }
-    const description = this.yamlEscape(this.firstSentence(trimmed) || title || skillId);
-    const tagLine = tags.length > 0
-      ? `tags: [${tags.map((tag) => `"${this.yamlEscape(tag)}"`).join(', ')}]\n`
-      : '';
-    return `---\nname: ${this.yamlEscape(skillId)}\ndescription: "${description}"\n${tagLine}---\n\n${trimmed}\n`;
-  }
-
   async installWorkspaceSkillFromLibrary(skillId: string, overwrite = false): Promise<{ kind: string; skill_id: string; path?: string; message: string }> {
-    return await installWorkspaceSkillFromLibraryViaCli(this.projectRoot, this.codeCliRoot, skillId, overwrite);
+    return installWorkspaceSkillFromLibraryViaCli(__dirname, this.projectRoot, skillId, overwrite, this.codeCliRoot);
   }
 
   private loadSoulsMarkdown(): string {

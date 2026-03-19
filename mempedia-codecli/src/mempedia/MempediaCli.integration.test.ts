@@ -7,7 +7,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { resolveMempediaBinaryPath } from '../config/projectPaths.js';
-import { installWorkspaceSkillFromLibrary, listSkillsViaCli, readSkillViaCli, upsertSkillViaCli } from './cli.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,36 +154,4 @@ test('mempedia CLI supports Layer 4 skill operations used by skills', () => {
   const searched = runCli(projectRoot, { action: 'search_skills', query: 'regression', limit: 5 });
   assert.equal(searched.kind, 'skill_results');
   assert.ok(searched.results.some((item: any) => item.skill_id === 'cli_skill'));
-});
-
-test('skill CLI helper supports library queries and local install without sendMempediaAction', async () => {
-  const projectRoot = createTempProjectRoot('mempedia-cli-helper-');
-  const codeCliRoot = createTempProjectRoot('mempedia-cli-helper-codecli-');
-
-  const upserted = await upsertSkillViaCli(projectRoot, {
-    skill_id: 'helper_skill',
-    title: 'Helper Skill',
-    content: 'Reusable helper workflow.',
-    tags: ['helper'],
-  });
-  assert.equal(upserted.kind, 'skill_result');
-
-  const listed = await listSkillsViaCli(projectRoot);
-  assert.equal(listed.kind, 'skill_list');
-  assert.ok(listed.skills.some((item: any) => item.id === 'helper_skill'));
-
-  const searched = await listSkillsViaCli(projectRoot, 'helper', 5);
-  assert.equal(searched.kind, 'skill_results');
-  assert.ok(searched.results.some((item: any) => item.skill_id === 'helper_skill'));
-
-  const read = await readSkillViaCli(projectRoot, 'helper_skill');
-  assert.equal(read.kind, 'skill_result');
-  assert.equal(read.title, 'Helper Skill');
-
-  const installed = await installWorkspaceSkillFromLibrary(projectRoot, codeCliRoot, 'helper_skill');
-  assert.equal(installed.kind, 'skill_installed');
-  assert.ok(installed.path);
-  const markdown = fs.readFileSync(installed.path!, 'utf-8');
-  assert.match(markdown, /name: helper_skill/);
-  assert.match(markdown, /Reusable helper workflow/);
 });

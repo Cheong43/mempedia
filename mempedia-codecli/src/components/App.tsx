@@ -7,7 +7,13 @@ import * as path from 'path';
 import * as http from 'http';
 import { fileURLToPath } from 'url';
 import { resolveCodeCliRoot } from '../config/projectPaths.js';
-import { installWorkspaceSkillFromLibrary, listSkillsViaCli, readSkillViaCli, upsertSkillViaCli } from '../mempedia/cli.js';
+import {
+  executeMempediaCliAction,
+  installWorkspaceSkillFromLibraryViaCli,
+  listOrSearchEpisodicViaCli,
+  readUserPreferencesViaCli,
+  updateUserPreferencesViaCli,
+} from '../mempedia/cli.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +47,14 @@ interface LocalSkill {
   source?: 'local' | 'remote';
   location?: string;
   repository?: string;
+}
+
+interface MempediaSkillRecord {
+  id: string;
+  title: string;
+  content: string;
+  tags?: string[];
+  updated_at?: number;
 }
 
 interface GitHubCodeSearchItem {
@@ -194,6 +208,10 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     };
   }, [agent]);
 
+  const runMempediaCliAction = async (payload: Record<string, unknown>) => {
+    return executeMempediaCliAction(__dirname, projectRoot, payload);
+  };
+
   useEffect(() => {
     const loadSkills = async () => {
       try {
@@ -323,9 +341,9 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
     const accessLogs = readJsonLines(path.join(indexDir, 'access.log'), (row) => row && typeof row.node_id === 'string');
     const agentActions = readJsonLines(path.join(indexDir, 'agent_actions.log'), (row) => row && typeof row.node_id === 'string');
     const [preferencesRes, skillsRes, episodicRes] = await Promise.all([
-      agent.sendMempediaAction({ action: 'read_user_preferences' }).catch(() => ({ kind: 'user_preferences', content: '' } as any)),
-      listSkillsViaCli(projectRoot).catch(() => ({ kind: 'skill_list', skills: [] } as any)),
-      agent.sendMempediaAction({ action: 'list_episodic', limit: 50 }).catch(() => ({ kind: 'episodic_results', memories: [] } as any)),
+      readUserPreferencesViaCli(__dirname, projectRoot).catch(() => ({ kind: 'user_preferences', content: '' } as any)),
+      runMempediaCliAction({ action: 'list_skills' }).catch(() => ({ kind: 'skill_list', skills: [] } as any)),
+      listOrSearchEpisodicViaCli(__dirname, projectRoot, { limit: 50 }).catch(() => ({ kind: 'episodic_results', memories: [] } as any)),
     ]);
     const preferences = (preferencesRes as any)?.kind === 'user_preferences' ? String((preferencesRes as any).content || '') : '';
     const skills = (skillsRes as any)?.kind === 'skill_list' ? (skillsRes as any).skills || [] : [];
@@ -728,7 +746,7 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       }
       if (rawPath === '/api/memory/preferences' && method === 'GET') {
         try {
-          const result = await agent.sendMempediaAction({ action: 'read_user_preferences' });
+          const result = await readUserPreferencesViaCli(__dirname, projectRoot);
           writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -738,10 +756,7 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       if (rawPath === '/api/memory/preferences' && method === 'POST') {
         try {
           const body = await readBody(req);
-          const result = await agent.sendMempediaAction({
-            action: 'update_user_preferences',
-            content: String(body?.content || ''),
-          });
+          const result = await updateUserPreferencesViaCli(__dirname, projectRoot, String(body?.content || ''));
           writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -754,9 +769,11 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
           const limitRaw = Number(requestUrl.searchParams.get('limit') || 20);
           const beforeTsRaw = requestUrl.searchParams.get('before_ts');
           const beforeTs = beforeTsRaw ? Number(beforeTsRaw) : undefined;
-          const result = query
-            ? await agent.sendMempediaAction({ action: 'search_episodic', query, limit: Number.isFinite(limitRaw) ? limitRaw : undefined })
-            : await agent.sendMempediaAction({ action: 'list_episodic', limit: Number.isFinite(limitRaw) ? limitRaw : undefined, before_ts: Number.isFinite(beforeTs) ? beforeTs : undefined });
+          const result = await listOrSearchEpisodicViaCli(__dirname, projectRoot, {
+            query,
+            limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+            beforeTs: Number.isFinite(beforeTs) ? beforeTs : undefined,
+          });
           writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -767,7 +784,9 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
         try {
           const query = String(requestUrl.searchParams.get('query') || '').trim();
           const limitRaw = Number(requestUrl.searchParams.get('limit') || 20);
-          const result = await listSkillsViaCli(projectRoot, query || undefined, Number.isFinite(limitRaw) ? limitRaw : undefined);
+          const result = query
+            ? await runMempediaCliAction({ action: 'search_skills', query, limit: Number.isFinite(limitRaw) ? limitRaw : undefined })
+            : await runMempediaCliAction({ action: 'list_skills' });
           writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -777,7 +796,8 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       if (rawPath === '/api/memory/skills' && method === 'POST') {
         try {
           const body = await readBody(req);
-          const result = await upsertSkillViaCli(projectRoot, {
+          const result = await runMempediaCliAction({
+            action: 'upsert_skill',
             skill_id: String(body?.skill_id || ''),
             title: String(body?.title || ''),
             content: String(body?.content || ''),
@@ -792,7 +812,10 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
       const skillPathMatch = rawPath.match(/^\/api\/memory\/skills\/([^/]+)$/);
       if (skillPathMatch && method === 'GET') {
         try {
-          const result = await readSkillViaCli(projectRoot, decodeURIComponent(skillPathMatch[1]));
+          const result = await runMempediaCliAction({
+            action: 'read_skill',
+            skill_id: decodeURIComponent(skillPathMatch[1]),
+          });
           writeJson(res, 200, { ok: true, result });
         } catch (error: any) {
           writeJson(res, 500, { ok: false, error: error?.message || String(error) });
@@ -1363,7 +1386,9 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
         const libraryQuery = parts.slice(1).join(' ').trim();
         setStatus(libraryQuery ? `Searching mempedia skills library for ${libraryQuery}...` : 'Listing mempedia skills library...');
         try {
-          const res = await listSkillsViaCli(projectRoot, libraryQuery || undefined, 12);
+          const res = libraryQuery
+            ? await runMempediaCliAction({ action: 'search_skills', query: libraryQuery, limit: 12 })
+            : await runMempediaCliAction({ action: 'list_skills' });
           const lines = (res as any)?.kind === 'skill_results'
             ? (((res as any).results || []) as Array<any>).map((skill) => `- ${skill.skill_id}: score=${Number(skill.score || 0).toFixed(2)}${skill.title ? ` | ${skill.title}` : ''}`).join('\n')
             : (res as any)?.kind === 'skill_list'
@@ -1394,7 +1419,7 @@ export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, m
         }
         setStatus(`Downloading ${skillId} from mempedia skills library...`);
         try {
-          const res = await installWorkspaceSkillFromLibrary(projectRoot, codeCliRoot, skillId);
+          const res = await installWorkspaceSkillFromLibraryViaCli(__dirname, projectRoot, skillId, false, codeCliRoot);
           setSkills(loadWorkspaceSkills());
           setHistory((prev: HistoryItem[]) => [...prev, {
             type: 'info',
