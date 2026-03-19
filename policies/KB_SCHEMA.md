@@ -114,6 +114,17 @@ Format rules:
   - Stored as graph links with optional `label` and `weight`.
 - **Evidence**: bullet lines, stored as `evidence.01`, `evidence.02`, etc.
 
+### 4.2 Recommended Narrative Sections
+
+The following sections are recommended for richer human-readable knowledge capture. They are preserved in markdown even when not all of them are currently normalized into structured keys:
+
+- `Data`: concrete values such as numbers, dates, versions, limits, ports, paths, configuration values, and metrics.
+- `History`: version evolution, migrations, regressions, chronology, and before/after changes.
+- `Viewpoints`: opinions, interpretations, preferences, or stakeholder positions, ideally with attribution.
+- `Uncertainties`: unresolved questions, caveats, conditions, and explicit unknowns.
+
+These sections should never contain fabricated content; if the source does not support them, omit them.
+
 ## 5. Audit Log Schema
 
 `index/agent_actions.log` (JSONL), one object per line:

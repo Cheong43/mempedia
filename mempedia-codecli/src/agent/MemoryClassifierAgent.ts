@@ -28,10 +28,24 @@ export interface MemoryClassifierJob {
   branchId?: string;
 }
 
+interface AtomicKnowledgeItem {
+  keyword: string;
+  summary: string;
+  description: string;
+  facts: string[];
+  data_points: string[];
+  truths: string[];
+  viewpoints: string[];
+  history: string[];
+  uncertainties: string[];
+  evidence: string[];
+  relations: string[];
+}
+
 interface MemoryExtraction {
   user_preferences: Array<{ topic: string; preference: string; evidence: string }>;
   agent_skills: Array<{ skill_id: string; title: string; content: string; tags: string[] }>;
-  atomic_knowledge: Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>;
+  atomic_knowledge: AtomicKnowledgeItem[];
 }
 
 interface MemoryClassifierOptions {
@@ -172,35 +186,17 @@ export class MemoryClassifierAgent {
     const linkedNodes = new Set<string>();
 
     if (payload.atomic_knowledge.length > 0) {
-      const atomicMap = new Map<string, { keyword: string; summary: string; description: string; evolution: string; relations: string[] }>();
+      const atomicMap = new Map<string, AtomicKnowledgeItem>();
       for (const item of payload.atomic_knowledge) {
         atomicMap.set(this.stableNodeId('atomic', item.keyword), item);
       }
       for (const [nodeId, item] of atomicMap) {
         const resolvedRelations = await context.resolveRelationTargets(item.relations || []);
-        const evolutionSection = item.evolution && item.evolution.trim().length > 0
-          ? item.evolution
-          : '暂无';
-        const descriptionSection = item.description && item.description.trim().length > 0
-          ? item.description
-          : item.summary;
+        const markdown = this.renderAtomicKnowledgeMarkdown(nodeId, item, resolvedRelations, nowIso, context.conversationId, context.runId);
         await runAction('atomic_upsert', {
-          action: 'ingest',
+          action: 'agent_upsert_markdown',
           node_id: nodeId,
-          title: item.keyword,
-          text: `${descriptionSection}\n\nEvolution\n${evolutionSection}`,
-          summary: item.summary,
-          facts: {
-            type: 'atomic_knowledge',
-            updated_at: nowIso,
-          },
-          relations: resolvedRelations
-            .filter((rel) => rel.target)
-            .map((rel) => ({ target: rel.target as string, label: 'related', weight: 0.8 })),
-          evidence: [
-            `conversation:${context.conversationId}`,
-            `memory_run:${context.runId}`,
-          ],
+          markdown,
           importance: 1.9,
           agent_id: 'mempedia-memory-classifier',
           reason: 'Automatic four-layer memory classification',
@@ -316,7 +312,7 @@ export class MemoryClassifierAgent {
     const compactTraces = this.clipText(traceLines, Math.max(2000, Math.floor(this.extractionMaxChars / 2)));
     const compactAnswer = this.clipText(answer, Math.max(1000, Math.floor(this.extractionMaxChars / 3)));
     const classifierSkill = this.loadMemoryClassifierSkill();
-    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    { "keyword": "核心关键词", "summary": "短摘要", "description": "完整描述", "evolution": "演进信息", "relations": ["相关项"] }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构或已验证接口，且回答总结了项目架构、模块职责、存储结构、API 能力、构建方式等稳定事实，应优先进入 atomic_knowledge。\n6. 忽略寒暄、临时状态、报错噪音、调度包装文本，以及类似 “Original user request”“Active branch”“Branch goal” 的控制信息。\n7. 如果某一层没有内容，返回空数组。`;
+    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    {\n      "keyword": "知识主题或实体名",\n      "summary": "短摘要",\n      "description": "完整描述，保留关键细节",\n      "facts": ["稳定事实1", "稳定事实2"],\n      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],\n      "truths": ["已验证结论或明确为真的断言"],\n      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],\n      "history": ["历史变迁、版本演进、前后变化"],\n      "uncertainties": ["尚未确认、条件性限制、已知未知"],\n      "evidence": ["README/源码/配置/回答中的证据摘要"],\n      "relations": ["相关项"]\n    }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构、已验证接口或用户明确提供的数据，应优先进入 atomic_knowledge。\n6. atomic_knowledge 要优先少而精，不要拆成很多空洞节点；每个节点都应尽可能完整，保留事实、描述、历史、真值结论、观点、数据和不确定性。\n7. 观点和事实必须分开；如果某段内容是评价、偏好、判断或立场，放入 viewpoints，并保留“谁这样认为/语气来源”这类归属信息。\n8. 严禁伪造事实；没有证据就不要补写。拿不准就放入 uncertainties，或者留空数组。\n9. 忽略寒暄、临时状态、报错噪音、调度包装文本，以及类似 “Original user request”“Active branch”“Branch goal” 的控制信息。\n10. 如果某一层没有内容，返回空数组。`;
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
@@ -383,7 +379,7 @@ export class MemoryClassifierAgent {
       const atomic = Array.isArray(parsed.atomic_knowledge)
         ? parsed.atomic_knowledge.map((item: any) => {
             const keyword = typeof item?.keyword === 'string' ? item.keyword.replace(/\s+/g, ' ').trim() : '';
-            if (!keyword) {
+            if (!keyword || this.isWeakAtomicKeyword(keyword)) {
               return null;
             }
             const rawRelations = Array.isArray(item?.relations)
@@ -395,11 +391,28 @@ export class MemoryClassifierAgent {
               .map((relation: any) => typeof relation === 'string' ? relation.replace(/\s+/g, ' ').trim() : '')
               .filter((relation: string) => relation.length > 0 && relation.toLowerCase() !== keyword.toLowerCase())
               .slice(0, 8);
+            const facts = this.normalizeStringList(item?.facts ?? item?.claims ?? item?.key_facts, 12);
+            const dataPoints = this.normalizeStringList(item?.data_points ?? item?.data ?? item?.numbers, 12);
+            const truths = this.normalizeStringList(item?.truths ?? item?.verified_points ?? item?.verified_facts, 10);
+            const viewpoints = this.normalizeStringList(item?.viewpoints ?? item?.opinions ?? item?.perspectives, 10);
+            const history = this.normalizeStringList(item?.history ?? item?.historical_changes ?? item?.timeline ?? item?.evolution, 10);
+            const uncertainties = this.normalizeStringList(item?.uncertainties ?? item?.unknowns ?? item?.open_questions, 10);
+            const evidence = this.normalizeStringList(item?.evidence ?? item?.sources ?? item?.source_evidence, 12);
+            const description = this.normalizeDetails(
+              item?.description || item?.details || item?.summary || facts.slice(0, 3).join('\n'),
+              keyword
+            );
             return {
               keyword,
-              summary: this.normalizeSummary(item?.summary || item?.description, keyword),
-              description: this.normalizeDetails(item?.description || item?.summary, keyword),
-              evolution: this.normalizeOptional(item?.evolution || item?.details),
+              summary: this.normalizeSummary(item?.summary || description, keyword),
+              description,
+              facts,
+              data_points: dataPoints,
+              truths,
+              viewpoints,
+              history,
+              uncertainties,
+              evidence,
               relations,
             };
           }).filter((item: any) => Boolean(item))
@@ -408,7 +421,7 @@ export class MemoryClassifierAgent {
       return {
         user_preferences: preferences.slice(0, 12),
         agent_skills: skills.slice(0, 12),
-        atomic_knowledge: atomic.slice(0, 20) as Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }>,
+        atomic_knowledge: atomic.slice(0, 20) as AtomicKnowledgeItem[],
       };
     } catch {
       return this.fallbackExtractMemory(input, answer);
@@ -576,7 +589,7 @@ export class MemoryClassifierAgent {
     return candidates.slice(0, 8);
   }
 
-  private fallbackExtractAtomic(input: string, answer: string): Array<{ keyword: string; summary: string; description: string; evolution: string; relations: string[] }> {
+  private fallbackExtractAtomic(input: string, answer: string): AtomicKnowledgeItem[] {
     const candidates = this.collectAtomicCandidates(input, answer);
     if (candidates.length === 0) {
       return [];
@@ -593,7 +606,9 @@ export class MemoryClassifierAgent {
       const matchingLines = answerLines.filter((line) => line.toLowerCase().includes(candidateLower));
       const detailsSource = matchingLines.slice(0, 3).join('\n') || answerLines.slice(0, 3).join('\n') || summarySeed || candidate;
       const summarySource = matchingLines[0] || summarySeed || candidate;
-      const evolutionSource = detailsSource === summarySource ? '' : detailsSource;
+      const history = detailsSource === summarySource ? [] : [detailsSource];
+      const facts = matchingLines.slice(0, 4);
+      const dataPoints = facts.filter((line) => /\d/.test(line)).slice(0, 4);
       const relations = candidates
         .filter((other) => other.toLowerCase() !== candidateLower && candidateSet.has(other.toLowerCase()))
         .slice(0, 4);
@@ -601,10 +616,142 @@ export class MemoryClassifierAgent {
         keyword: candidate,
         summary: this.normalizeSummary(summarySource, candidate),
         description: this.normalizeDetails(detailsSource, candidate),
-        evolution: this.normalizeOptional(evolutionSource),
+        facts,
+        data_points: dataPoints,
+        truths: [],
+        viewpoints: [],
+        history,
+        uncertainties: [],
+        evidence: [],
         relations,
       };
     }).filter((item) => item.keyword && item.summary);
+  }
+
+  private normalizeStringList(value: unknown, limit: number): string[] {
+    if (Array.isArray(value)) {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const item of value) {
+        const cleaned = String(item || '').replace(/\s+/g, ' ').trim();
+        if (!cleaned) {
+          continue;
+        }
+        const key = cleaned.toLowerCase();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        out.push(cleaned);
+        if (out.length >= limit) {
+          break;
+        }
+      }
+      return out;
+    }
+    if (typeof value === 'string') {
+      return value
+        .split(/\r?\n|[;；]/)
+        .map((item) => item.replace(/^[-*+\d.\s]+/, '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, limit);
+    }
+    return [];
+  }
+
+  private isWeakAtomicKeyword(keyword: string): boolean {
+    const lower = keyword.trim().toLowerCase();
+    return /^(with|using|use|instead of|when|how|why|what|that|this|these|those|then|for|to|if|because)\b/.test(lower);
+  }
+
+  private renderAtomicKnowledgeMarkdown(
+    nodeId: string,
+    item: AtomicKnowledgeItem,
+    resolvedRelations: Array<{ label: string; target?: string }>,
+    updatedAt: string,
+    conversationId: string,
+    runId: string,
+  ): string {
+    const relationLines = resolvedRelations
+      .map((relation) => this.inlineValue(relation.target || relation.label))
+      .filter(Boolean)
+      .map((relation) => `- ${relation} | related | 0.8`);
+    const evidenceLines = this.normalizeStringList([
+      `conversation:${conversationId}`,
+      `memory_run:${runId}`,
+      ...item.evidence,
+    ], 16).map((entry) => `- ${this.inlineValue(entry)}`);
+    const facts = this.buildAtomicFacts(item, updatedAt);
+    const sections = [
+      this.renderBulletFactSection('Facts', facts),
+      this.renderBulletListSection('Data', item.data_points),
+      this.renderBulletListSection('History', item.history),
+      this.renderBulletListSection('Viewpoints', item.viewpoints),
+      this.renderBulletListSection('Uncertainties', item.uncertainties),
+      relationLines.length > 0 ? ['## Relations', ...relationLines].join('\n') : '',
+      evidenceLines.length > 0 ? ['## Evidence', ...evidenceLines].join('\n') : '',
+    ].filter((section) => section.length > 0);
+
+    return [
+      '---',
+      `node_id: "${this.yamlEscape(nodeId)}"`,
+      `title: "${this.yamlEscape(item.keyword)}"`,
+      `summary: "${this.yamlEscape(item.summary)}"`,
+      'source: "kg_atomic"',
+      'origin: "mempedia-memory-classifier"',
+      'node_type: "reference"',
+      '---',
+      '',
+      `# ${item.keyword}`,
+      '',
+      item.description.trim() || item.summary,
+      ...(sections.length > 0 ? ['', ...sections] : []),
+      '',
+    ].join('\n');
+  }
+
+  private buildAtomicFacts(item: AtomicKnowledgeItem, updatedAt: string): Array<{ key: string; value: string }> {
+    const facts: Array<{ key: string; value: string }> = [
+      { key: 'summary', value: item.summary },
+      { key: 'updated_at', value: updatedAt },
+    ];
+    item.facts.slice(0, 10).forEach((fact, index) => {
+      facts.push({ key: `fact_${String(index + 1).padStart(2, '0')}`, value: fact });
+    });
+    item.truths.slice(0, 10).forEach((fact, index) => {
+      facts.push({ key: `truth_${String(index + 1).padStart(2, '0')}`, value: fact });
+    });
+    item.data_points.slice(0, 10).forEach((fact, index) => {
+      facts.push({ key: `data_point_${String(index + 1).padStart(2, '0')}`, value: fact });
+    });
+    return facts;
+  }
+
+  private renderBulletFactSection(title: string, facts: Array<{ key: string; value: string }>): string {
+    const lines = facts
+      .map(({ key, value }) => {
+        const normalizedValue = this.inlineValue(value);
+        return normalizedValue ? `- ${key}: ${normalizedValue}` : '';
+      })
+      .filter(Boolean);
+    if (lines.length === 0) {
+      return '';
+    }
+    return [`## ${title}`, ...lines].join('\n');
+  }
+
+  private renderBulletListSection(title: string, items: string[]): string {
+    const lines = this.normalizeStringList(items, 12)
+      .map((value) => `- ${this.inlineValue(value)}`)
+      .filter((value) => value !== '- ');
+    if (lines.length === 0) {
+      return '';
+    }
+    return [`## ${title}`, ...lines].join('\n');
+  }
+
+  private inlineValue(value: string): string {
+    return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
   private clipText(value: string, maxChars: number): string {
@@ -639,6 +786,10 @@ export class MemoryClassifierAgent {
   private normalizeOptional(details: unknown): string {
     const raw = typeof details === 'string' ? details : '';
     return raw.trim();
+  }
+
+  private yamlEscape(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, ' ').trim();
   }
 
   private toSlug(value: string): string {

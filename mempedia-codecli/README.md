@@ -103,6 +103,9 @@ A React-based CLI agent that interacts with Mempedia for context and knowledge m
 npm start
 ```
 
+By default, CodeCLI stores runtime state under `mempedia-codecli/.mempedia`.
+Set `MEMPEDIA_PROJECT_ROOT` only if you intentionally want `.mempedia` written somewhere else.
+
 ## Claude Code Skills Compatibility
 
 - `codecli` injects `./souls.md` into every agent run as global enterprise-KB routing guidance.

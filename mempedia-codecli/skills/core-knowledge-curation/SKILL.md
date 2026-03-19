@@ -27,14 +27,28 @@ Promote verified, reusable facts into Layer 1 core knowledge.
 ## Workflow
 
 1. Distill the stable fact into clear title, summary, and body.
-2. Separate evidence from narrative.
-3. Preserve relations to other known nodes when they are explicit.
-4. Save asynchronously whenever possible.
+2. Preserve detail density: keep concrete facts, numbers, version names, dates, thresholds, and other specifics when the source provides them.
+3. Separate verified facts from viewpoints, caveats, and uncertainty.
+4. Preserve relations to other known nodes when they are explicit.
+5. Save asynchronously whenever possible.
+
+## Preferred Markdown Shape
+
+- Prefer one dense markdown node over several thin summaries when the knowledge concerns the same topic.
+- Use a descriptive body plus structured sections when applicable:
+	`Facts`, `Data`, `History`, `Viewpoints`, `Uncertainties`, `Relations`, `Evidence`.
+- Put verified, stable statements into `Facts`.
+- Put numbers, metrics, versions, dates, ports, limits, and similar values into `Data`.
+- Put changes over time, migrations, regressions, and version deltas into `History`.
+- Put opinions, interpretations, or stakeholder positions into `Viewpoints`, with attribution when known.
+- Put unresolved gaps or conditional statements into `Uncertainties`.
+- Never invent missing details just to fill a section.
 
 ## Tool Guidance
 
 - Use `read` and `search` against workspace files first.
 - Use `bash` plus the `mempedia` CLI for Layer 1 inspection and updates.
+- Prefer markdown-first writes that preserve source detail; avoid collapsing rich evidence into a one-line summary.
 - Prefer these actions:
 	`search_nodes` to find existing knowledge,
 	`open_node` to inspect a node,

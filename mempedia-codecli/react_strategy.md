@@ -72,3 +72,6 @@ Do **not** save every branch by default.
 - Save only reusable, atomic knowledge.
 - Avoid storing transient or conversational noise.
 - Always include a clean title and concise summary in the markdown.
+- Do not stop at a terse summary when richer evidence exists. Preserve facts, numbers, version details, timeline changes, viewpoints, caveats, and evidence in structured markdown sections.
+- Prefer explicit sections such as `Facts`, `Data`, `History`, `Viewpoints`, `Uncertainties`, `Relations`, and `Evidence` when they help future retrieval.
+- Never invent missing facts.

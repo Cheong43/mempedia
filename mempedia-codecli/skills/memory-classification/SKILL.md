@@ -22,6 +22,9 @@ Classify every completed turn against the four-layer Mempedia model and only per
 ## Extraction Standard
 
 - Prefer grounded project facts from README, source, configuration, schema, and verified outputs.
+- For Layer 1, prefer fewer but denser knowledge items. Each item should preserve the available facts, descriptions, data points, history, viewpoints, and uncertainty markers instead of reducing everything to one sentence.
+- Separate truth claims from opinions. If the source expresses a viewpoint, preserve it as a viewpoint with attribution when possible.
+- Preserve concrete values such as numbers, version identifiers, paths, limits, dates, and field names.
 - Ignore scheduler wrappers, branch-control metadata, raw stack traces, and temporary execution noise.
 - If a layer has no real payload, leave it empty.
 
@@ -30,3 +33,4 @@ Classify every completed turn against the four-layer Mempedia model and only per
 - Do not over-promote chit-chat into Layer 1.
 - Do not bury stable user policies inside episodic memory.
 - Do not create a Layer 4 skill from a one-off sequence unless it is clearly reusable.
+- Never fabricate facts. If evidence is incomplete, preserve the gap explicitly rather than guessing.

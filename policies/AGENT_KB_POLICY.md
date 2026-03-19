@@ -60,8 +60,11 @@ To add a new knowledge domain:
 
 - **Factual accuracy**: Do not invent or hallucinate facts. If uncertain, record the uncertainty in the `evidence` or `body` fields.
 - **Detail preservation**: When writing from a source document, preserve key details, numbers, and specifics. Summary pruning is not permitted.
+- **Perspective separation**: Keep verified facts separate from opinions, interpretations, and stakeholder viewpoints. Preserve attribution when it is known.
+- **Historical fidelity**: When the source describes change over time, preserve the timeline or before/after state instead of flattening it into a timeless summary.
 - **Source attribution**: Always include `source` (file path, URL, conversation ID, or human-supplied reference).
 - **Structured enrichment**: Extract facts into the `Facts` section and evidence into `Evidence` to make knowledge machine-queryable.
+- **Rich markdown bodies**: When material exists, also preserve `Data`, `History`, `Viewpoints`, and `Uncertainties` as markdown sections even if they are not all machine-indexed today.
 
 ## 6. Prohibited Actions
 

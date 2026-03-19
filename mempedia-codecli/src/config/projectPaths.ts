@@ -20,12 +20,6 @@ function isCodeCliRepoRoot(dir: string): boolean {
     && fs.existsSync(path.join(dir, 'src'));
 }
 
-function looksLikeWorkspaceRoot(dir: string): boolean {
-  return fs.existsSync(path.join(dir, 'mempedia-ui'))
-    || fs.existsSync(path.join(dir, 'skills'))
-    || fs.existsSync(path.join(dir, 'policies'));
-}
-
 export function resolveCodeCliRoot(moduleDir: string): string {
   const searchStarts = [process.cwd(), moduleDir, path.resolve(moduleDir, '..')];
   for (const start of searchStarts) {
@@ -43,13 +37,7 @@ export function resolveProjectRoot(moduleDir: string, envProjectRoot = process.e
     return path.resolve(envProjectRoot);
   }
 
-  const codeCliRoot = resolveCodeCliRoot(moduleDir);
-  const workspaceRoot = path.dirname(codeCliRoot);
-  if (workspaceRoot !== codeCliRoot && looksLikeWorkspaceRoot(workspaceRoot)) {
-    return workspaceRoot;
-  }
-
-  return codeCliRoot;
+  return resolveCodeCliRoot(moduleDir);
 }
 
 export function resolveMempediaBinaryPath(moduleDir: string, explicitBinaryPath?: string): string {
