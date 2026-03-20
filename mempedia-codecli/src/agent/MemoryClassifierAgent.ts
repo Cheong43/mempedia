@@ -125,29 +125,11 @@ export class MemoryClassifierAgent {
       if (!job.saveAtomic) {
         payload.atomic_knowledge = [];
       }
-      if (
-        payload.user_preferences.length === 0
-        && payload.agent_skills.length === 0
-        && payload.atomic_knowledge.length === 0
-      ) {
-        const fallbackPayload = this.fallbackExtractMemory(extractionInput, job.answer);
-        if (!job.savePreferences) {
-          fallbackPayload.user_preferences = [];
-        }
-        if (!job.saveSkills) {
-          fallbackPayload.agent_skills = [];
-        }
-        if (!job.saveAtomic) {
-          fallbackPayload.atomic_knowledge = [];
-        }
-        if (
-          fallbackPayload.user_preferences.length > 0
-          || fallbackPayload.agent_skills.length > 0
-          || fallbackPayload.atomic_knowledge.length > 0
-        ) {
-          payload = fallbackPayload;
-        }
-      }
+      // When the LLM returns an empty payload, trust that judgment rather than
+      // running heuristic fallback extraction. The LLM classifier saw the same
+      // content and decided nothing was worth saving — that's the right call for
+      // noise/error/no-result answers. Fallback only runs when the LLM itself threw
+      // an exception (handled in the catch block further down).
     }
 
     context.appendMemoryLog('memory_extract_done', {
@@ -336,7 +318,7 @@ export class MemoryClassifierAgent {
     const compactTraces = this.clipText(traceLines, Math.max(2000, Math.floor(this.extractionMaxChars / 2)));
     const compactAnswer = this.clipText(answer, Math.max(1000, Math.floor(this.extractionMaxChars / 3)));
     const classifierSkill = this.loadMemoryClassifierSkill();
-    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    {\n      "keyword": "知识主题或实体名",\n      "summary": "短摘要",\n      "description": "完整描述，保留关键细节",\n      "facts": ["稳定事实1", "稳定事实2"],\n      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],\n      "truths": ["已验证结论或明确为真的断言"],\n      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],\n      "history": ["历史变迁、版本演进、前后变化"],\n      "uncertainties": ["尚未确认、条件性限制、已知未知"],\n      "evidence": ["README/源码/配置/回答中的证据摘要"],\n      "relations": ["相关项"]\n    }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构、已验证接口或用户明确提供的数据，应优先进入 atomic_knowledge。\n6. atomic_knowledge 要优先少而精，不要拆成很多空洞节点；每个节点都应尽可能完整，保留事实、描述、历史、真值结论、观点、数据和不确定性。\n7. 观点和事实必须分开；如果某段内容是评价、偏好、判断或立场，放入 viewpoints，并保留“谁这样认为/语气来源”这类归属信息。\n8. 严禁伪造事实；没有证据就不要补写。拿不准就放入 uncertainties，或者留空数组。\n9. 忽略寒暄、临时状态、报错噪音、调度包装文本。忽略所有框架控制文本（“Original user request”“Active branch”“Branch goal”“Internal skill guidance”“Actual User Request”）。工具名称 read、search、edit、bash、web 是框架内部工具，绝对不能成为 atomic_knowledge 的 keyword。\n10. 如果「最终回答」主要是报错、失败通知、无法完成说明，则 atomic_knowledge 必须返回空数组。\n11. 如果某一层没有内容，返回空数组。`;
+    const extractionPrompt = `你是一个独立的 MemoryClassifierAgent，运行在企业型知识库 Mempedia 中。你的任务是在每轮对话结束后，对对话进行四层分类，并只输出 JSON（不要 markdown）。\n\n${classifierSkill ? `Memory classification skill guidance:\n${classifierSkill}\n\n` : ''}输出格式：\n{\n  "user_preferences": [\n    { "topic": "偏好主题", "preference": "稳定偏好结论", "evidence": "证据摘要" }\n  ],\n  "agent_skills": [\n    { "skill_id": "稳定技能ID", "title": "技能标题", "content": "可复用步骤", "tags": ["tag1", "tag2"] }\n  ],\n  "atomic_knowledge": [\n    {\n      "keyword": "知识主题或实体名",\n      "summary": "短摘要",\n      "description": "完整描述，保留关键细节",\n      "facts": ["稳定事实1", "稳定事实2"],\n      "data_points": ["数字、版本、日期、阈值、配置值等数据点"],\n      "truths": ["已验证结论或明确为真的断言"],\n      "viewpoints": ["观点、立场、评价，必须保留归属或语气"],\n      "history": ["历史变迁、版本演进、前后变化"],\n      "uncertainties": ["尚未确认、条件性限制、已知未知"],\n      "evidence": ["README/源码/配置/回答中的证据摘要"],\n      "relations": ["相关项"]\n    }\n  ]\n}\n\n规则：\n1. Layer 1 Core Knowledge：只提取稳定、可复用、对后续推理有价值的知识点。\n2. Layer 2 Episodic Memory：由宿主流程单独记录，你不需要输出 episodic 字段，但你的分类必须避免把短暂事件误提取到 Layer 1/3/4。\n3. Layer 3 User Preferences：仅提取稳定偏好，不要记录当前轮一次性要求。\n4. Layer 4 Skills：仅提取可复用工作流、策略、步骤，不要提取一次性执行日志。\n5. 如果内容明确来自 README、源码、配置、schema、项目结构、已验证接口或用户明确提供的数据，应优先进入 atomic_knowledge。\n6. atomic_knowledge 要优先少而精，不要拆成很多空洞节点；每个节点都应尽可能完整，保留事实、描述、历史、真值结论、观点、数据和不确定性。\n7. 观点和事实必须分开；如果某段内容是评价、偏好、判断或立场，放入 viewpoints，并保留“谁这样认为/语气来源”这类归属信息。\n8. 严禁伪造事实；没有证据就不要补写。拿不准就放入 uncertainties，或者留空数组。\n9. 忽略寒暄、临时状态、报错噪音、调度包装文本。忽略所有框架控制文本（“Original user request”“Active branch”“Branch goal”“Internal skill guidance”“Actual User Request”）。工具名称 read、search、edit、bash、web 是框架内部工具，绝对不能成为 atomic_knowledge 的 keyword。\n10. 如果「最终回答」主要是报错、失败通知、无法完成说明、"找不到相关信息"、"知识库中没有该内容"、"网络请求失败"等否定结果，则 atomic_knowledge 必须返回空数组。\n11. 如果某一层没有内容，返回空数组。`;
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
@@ -453,6 +435,11 @@ export class MemoryClassifierAgent {
         atomic_knowledge: atomic.slice(0, 20) as AtomicKnowledgeItem[],
       };
     } catch {
+      // LLM threw an exception — run heuristic fallback, but skip it for
+      // error/failure/no-result answers since there's nothing useful to extract.
+      if (this.isErrorOrFailureAnswer(answer)) {
+        return { user_preferences: [], agent_skills: [], atomic_knowledge: [] };
+      }
       return this.fallbackExtractMemory(input, answer);
     }
   }
@@ -629,10 +616,15 @@ export class MemoryClassifierAgent {
     if (compact.length < 20) {
       return false;
     }
+    // Hard infrastructure errors
     if (/\b(no such file or directory|binary not found|command not found|cannot connect|connection refused|inaccessible or invalid|failed to fetch|unable to access|permission denied|404 not found|403 forbidden|requested wikipedia url)\b/i.test(compact)) {
       return true;
     }
-    if (compact.length < 300 && /^(error|an error|the system encountered an error|failed to|could not|unable to|sorry|unfortunately)\b/i.test(compact)) {
+    // Negative-result / "no info found" responses — these carry no reusable knowledge
+    if (/\b(no information about|contain no information|no results? (?:found|about|for)|nothing (?:found|about|related)|no relevant information|not found in (?:the|this)|does not contain|doesn['’]t contain|had no results?|returned no results?|failed due to connectivity|web search (?:attempt )?failed)\b/i.test(compact)) {
+      return true;
+    }
+    if (compact.length < 400 && /^(error|an error|the system encountered an error|failed to|could not|unable to|sorry|unfortunately)\b/i.test(compact)) {
       return true;
     }
     return false;
@@ -656,6 +648,11 @@ export class MemoryClassifierAgent {
     const candidateSet = new Set(candidates.map((candidate) => candidate.toLowerCase()));
 
     return candidates.map((candidate) => {
+      // Re-apply weak keyword filter on candidates from the fallback extractor
+      // (collectAtomicCandidates doesn't call this check).
+      if (this.isWeakAtomicKeyword(candidate)) {
+        return null;
+      }
       const candidateLower = candidate.toLowerCase();
       const matchingLines = answerLines.filter((line) => line.toLowerCase().includes(candidateLower));
       const detailsSource = matchingLines.slice(0, 3).join('\n') || answerLines.slice(0, 3).join('\n') || summarySeed || candidate;

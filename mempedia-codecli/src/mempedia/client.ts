@@ -41,10 +41,22 @@ export class MempediaClient {
       }
     });
 
+    // When the mempedia process exits, reject all pending requests so callers
+    // don't wait indefinitely (withTimeout will also catch them, but this is faster).
+    this.rl.on('close', () => {
+      const pending = this.requestQueue.splice(0);
+      for (const p of pending) {
+        p.reject(new Error('Mempedia process exited unexpectedly'));
+      }
+    });
+
     this.process.on('error', (err: Error) => {
       console.error('Mempedia process error:', err);
     });
-    
+
+    // Suppress EPIPE errors when writing to a process that has already exited.
+    this.process.stdin?.on('error', () => {});
+
     this.process.on('exit', (code: number | null) => {
        if (code !== 0 && code !== null) {
            console.error(`Mempedia process exited with code ${code}`);

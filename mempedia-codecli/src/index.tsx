@@ -17,6 +17,14 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 const projectRoot = resolveProjectRoot(__dirname);
 console.log(`[CodeCLI] Using projectRoot: ${projectRoot}`);
 
+// Prevent unhandled promise rejections from silently killing the process.
+process.on('unhandledRejection', (reason) => {
+  console.error('[CodeCLI] Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[CodeCLI] Uncaught exception:', err);
+});
+
 // ── import-doc sub-command ────────────────────────────────────────────────────
 // Usage:
 //   node src/index.tsx import-doc --file <path> [--node-id <id>] [--title <t>]

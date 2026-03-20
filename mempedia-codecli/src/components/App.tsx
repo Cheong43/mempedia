@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useApp } from 'ink';
+import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { Agent, TraceEvent } from '../agent/index.js';
 import * as fs from 'fs';
@@ -136,6 +136,10 @@ interface ConversationThread {
 
 export const App: React.FC<AppProps> = ({ apiKey, projectRoot, baseURL, model, memoryApiKey, memoryBaseURL, memoryModel }) => {
   const { exit } = useApp();
+  // Keep stdin ref'd (raw mode enabled) at all times while the app is mounted.
+  // Without this, when TextInput's focus=false during processing, the only
+  // setRawMode(true) consumer is removed, causing stdin.unref() and process exit.
+  useInput(() => {});
   const hmacAccessKey = process.env.HMAC_ACCESS_KEY?.trim();
   const hmacSecretKey = process.env.HMAC_SECRET_KEY?.trim();
   const memoryHmacAccessKey = process.env.MEMORY_HMAC_ACCESS_KEY?.trim();

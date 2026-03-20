@@ -31,13 +31,72 @@ BIN="${MEMPEDIA_BINARY_PATH:-./target/debug/mempedia}"
 [[ -x "$BIN" ]] || BIN=./target/release/mempedia
 ```
 
-- For non-trivial JSON, prefer `--stdin` with a heredoc instead of shell-escaping long payloads:
+- For simple actions with no text content (search, list, read), use a single-line heredoc:
 
 ```bash
 cat <<'JSON' | "$BIN" --project "$PWD" --stdin
 {"action":"list_skills"}
 JSON
 ```
+
+- **CRITICAL — Writing rich content (Chinese, quotes, newlines, web-sourced text):**
+  Heredoc JSON is INVALID when a string value contains literal newlines or unescaped double-quotes.
+  Any content that includes multi-line markdown, non-ASCII text, or external webpage content **MUST use the two-step pattern** below.
+
+  **Step 1**: write the markdown to a temp file via a shell heredoc (no Python triple-quotes = no risk of `"""` in content breaking the script).
+  **Step 2**: Python reads the temp file and sends it through `json.dumps()` so all escaping is handled automatically.
+
+  Use the unique delimiters `____MEMPEDIA_MD____` and `____MEMPEDIA_PY____` — content will almost never contain these exact strings.
+
+```bash
+BIN="${MEMPEDIA_BINARY_PATH:-./target/debug/mempedia}"
+[[ -x "$BIN" ]] || BIN=./target/release/mempedia
+
+# Step 1: write markdown to a temp file
+MDTMP=$(mktemp)
+cat > "$MDTMP" <<'____MEMPEDIA_MD____'
+---
+node_id: "example_node"
+title: "Example Title"
+---
+
+# Example Title
+
+Full markdown body here — can contain Chinese, quotes, newlines, code blocks, anything.
+____MEMPEDIA_MD____
+
+# Step 2: Python reads the file and sends via CLI with proper JSON escaping
+MDTMP="$MDTMP" python3 - <<'____MEMPEDIA_PY____'
+import json, subprocess, os
+
+BIN = os.environ.get('MEMPEDIA_BINARY_PATH', './target/debug/mempedia')
+if not os.path.isfile(BIN):
+    BIN = './target/release/mempedia'
+
+with open(os.environ['MDTMP']) as f:
+    markdown = f.read()
+
+payload = json.dumps({
+    "action": "agent_upsert_markdown",
+    "node_id": "example_node",
+    "markdown": markdown,
+    "importance": 1.9,
+    "agent_id": "agent-main",
+    "reason": "User-requested knowledge ingestion",
+    "source": "web",
+})
+result = subprocess.run(
+    [BIN, '--project', os.getcwd(), '--stdin'],
+    input=payload, capture_output=True, text=True
+)
+print(result.stdout or result.stderr)
+____MEMPEDIA_PY____
+rm -f "$MDTMP"
+```
+
+  - **NEVER** use Python triple-quoted strings (`"""`) for markdown content — web-sourced content or Chinese text may contain `"""` which terminates the string prematurely.
+  - **NEVER** embed a multi-line string value inside `<<'JSON'...JSON` — JSON does not allow literal newlines in string values.
+  - The `agent_upsert_markdown` action accepts a full markdown string (YAML frontmatter + body) and correctly derives `summary`, `title`, and structured fields from it.
 
 ## When To Escalate To Memory
 

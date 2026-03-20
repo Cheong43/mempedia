@@ -291,6 +291,7 @@ export class Agent {
   private readonly branchMaxSteps: number;
   private readonly branchMaxCompleted: number;
   private readonly branchConcurrency: number;
+  private readonly agentLlmTimeoutMs: number;
   /** Governed runtime handle — routes mempedia actions through policy + guards. */
   private readonly runtimeHandle: RuntimeHandle;
   private readonly memoryClassifier: MemoryClassifierAgent;
@@ -354,6 +355,8 @@ export class Agent {
     this.branchMaxCompleted = Number.isFinite(rawBranchMaxCompleted) ? Math.max(1, Math.min(8, Math.floor(rawBranchMaxCompleted))) : 4;
     const rawBranchConcurrency = Number(process.env.REACT_BRANCH_CONCURRENCY ?? 3);
     this.branchConcurrency = Number.isFinite(rawBranchConcurrency) ? Math.max(1, Math.min(8, Math.floor(rawBranchConcurrency))) : 3;
+    const rawAgentLlmTimeoutMs = Number(process.env.AGENT_LLM_TIMEOUT_MS ?? 120000);
+    this.agentLlmTimeoutMs = Number.isFinite(rawAgentLlmTimeoutMs) ? Math.max(5000, Math.floor(rawAgentLlmTimeoutMs)) : 120000;
     this.memoryLogPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'codecli_memory_save.log');
     this.conversationLogDir = path.join(projectRoot, '.mempedia', 'memory', 'index', 'conversations');
     this.nodeConversationMapPath = path.join(projectRoot, '.mempedia', 'memory', 'index', 'node_conversations.jsonl');
@@ -487,6 +490,53 @@ export class Agent {
       } catch {}
     }
     return '';
+  }
+
+  /**
+   * Scan mempedia-codecli/skills/* /SKILL.md and return a compact index string
+   * listing each skill's name and its description (from YAML frontmatter or first heading).
+   * Used to keep the system prompt informed of all available skills on every turn.
+   */
+  private loadLocalSkillsIndex(): string {
+    const skillsDir = path.join(this.codeCliRoot, 'skills');
+    try {
+      if (!fs.existsSync(skillsDir)) {
+        return '';
+      }
+      const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+      const lines: string[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const skillFile = path.join(skillsDir, entry.name, 'SKILL.md');
+        if (!fs.existsSync(skillFile)) {
+          continue;
+        }
+        let description = '';
+        try {
+          const raw = fs.readFileSync(skillFile, 'utf-8');
+          // Extract description from YAML frontmatter
+          const fmMatch = raw.match(/^---\n[\s\S]*?^description:\s*(.+)$/m);
+          if (fmMatch) {
+            description = fmMatch[1].replace(/^["']|["']$/g, '').trim();
+          } else {
+            // Fall back to first non-empty heading or paragraph line
+            const headingMatch = raw.replace(/^---[\s\S]*?---\n/m, '').match(/^#+ (.+)$/m);
+            if (headingMatch) {
+              description = headingMatch[1].trim();
+            }
+          }
+        } catch {}
+        lines.push(`  - ${entry.name}${description ? `: ${description}` : ''}`);
+      }
+      if (lines.length === 0) {
+        return '';
+      }
+      return `Available local skills (read mempedia-codecli/skills/<name>/SKILL.md for full guidance before using):\n${lines.join('\n')}`;
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -934,24 +984,35 @@ export class Agent {
   }
 
   private async executeWebTool(args: Record<string, unknown>): Promise<string> {
+    const webTimeoutMs = Number(process.env.MEMPEDIA_WEB_TIMEOUT_MS ?? 15000);
+    const safeWebTimeout = Number.isFinite(webTimeoutMs) && webTimeoutMs > 0 ? webTimeoutMs : 15000;
     const mode = String(args.mode || '').trim();
     if (mode === 'fetch') {
       const url = String(args.url || '').trim();
       if (!url) {
         return JSON.stringify({ kind: 'error', message: 'web fetch requires url' });
       }
-      const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' } });
-      const html = await response.text();
-      if (!response.ok) {
-        return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), safeWebTimeout);
+      try {
+        const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' }, signal: ac.signal });
+        const html = await response.text();
+        if (!response.ok) {
+          return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+        }
+        const title = html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim() || url;
+        return JSON.stringify({
+          kind: 'web_fetch',
+          url,
+          title,
+          content: this.stripHtml(html).slice(0, 3000),
+        });
+      } catch (err: any) {
+        const isAbort = err?.name === 'AbortError';
+        return JSON.stringify({ kind: 'error', message: isAbort ? `web fetch timed out after ${safeWebTimeout}ms` : String(err?.message || err) });
+      } finally {
+        clearTimeout(timer);
       }
-      const title = html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim() || url;
-      return JSON.stringify({
-        kind: 'web_fetch',
-        url,
-        title,
-        content: this.stripHtml(html).slice(0, 8000),
-      });
     }
 
     if (mode === 'search') {
@@ -961,21 +1022,30 @@ export class Agent {
       }
       const limit = Math.max(1, Math.min(10, Number.isFinite(Number(args.limit)) ? Math.floor(Number(args.limit)) : 5));
       const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-      const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' } });
-      const html = await response.text();
-      if (!response.ok) {
-        return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), safeWebTimeout);
+      try {
+        const response = await fetch(url, { headers: { 'User-Agent': 'mempedia-codecli' }, signal: ac.signal });
+        const html = await response.text();
+        if (!response.ok) {
+          return JSON.stringify({ kind: 'error', message: `HTTP ${response.status} ${response.statusText}` });
+        }
+        const results: Array<{ title: string; url: string }> = [];
+        const linkRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match: RegExpExecArray | null = null;
+        while ((match = linkRegex.exec(html)) && results.length < limit) {
+          results.push({
+            url: match[1],
+            title: this.stripHtml(match[2]),
+          });
+        }
+        return JSON.stringify({ kind: 'web_search', query, results });
+      } catch (err: any) {
+        const isAbort = err?.name === 'AbortError';
+        return JSON.stringify({ kind: 'error', message: isAbort ? `web search timed out after ${safeWebTimeout}ms` : String(err?.message || err) });
+      } finally {
+        clearTimeout(timer);
       }
-      const results: Array<{ title: string; url: string }> = [];
-      const linkRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-      let match: RegExpExecArray | null = null;
-      while ((match = linkRegex.exec(html)) && results.length < limit) {
-        results.push({
-          url: match[1],
-          title: this.stripHtml(match[2]),
-        });
-      }
-      return JSON.stringify({ kind: 'web_search', query, results });
     }
 
     return JSON.stringify({ kind: 'error', message: 'unsupported web mode' });
@@ -1455,6 +1525,10 @@ export class Agent {
     if (/\b(no such file or directory|binary not found|inaccessible or invalid|failed to fetch|connection refused|permission denied|requested wikipedia url)\b/i.test(normalizedAnswer)) {
       return false;
     }
+    // Don't save when the answer is a negative-result / "no info found" response.
+    if (/\b(no information about|contain no information|no results? (?:found|about|for)|nothing (?:found|about|related)|not found in (?:the|this)|does not contain|had no results?|web search (?:attempt )?failed)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
     if (normalizedAnswer.length < 300 && /^(error|an error|the system encountered|failed to|could not|unable to|sorry,|unfortunately)\b/i.test(normalizedAnswer)) {
       return false;
     }
@@ -1468,7 +1542,8 @@ export class Agent {
         if (target === 'memory' || target === 'project' || target === 'preferences' || target === 'skill') {
           return true;
         }
-        return /readme|package\.json|cargo\.toml|tsconfig\.json|requirements\.txt|src\/|docs?\/|policies\/|mempedia-codecli\/|mempedia-ui\//.test(filePath);
+        // Any non-empty local file path (not a URL) counts as workspace-grounded.
+        return filePath.length > 0 && !filePath.startsWith('http');
       }
       if (toolName === 'search') {
         const args = trace.metadata?.args as Record<string, unknown> | undefined;
@@ -1502,7 +1577,11 @@ export class Agent {
     if (/\b(no such file or directory|binary not found|inaccessible or invalid|failed to fetch|connection refused|permission denied|requested wikipedia url)\b/i.test(normalizedAnswer)) {
       return false;
     }
-    if (normalizedAnswer.length < 300 && /^(error|an error|the system encountered|failed to|could not|unable to|sorry,|unfortunately)\b/i.test(normalizedAnswer)) {
+    // Don't record episodic entries for negative-result responses.
+    if (/\b(no information about|contain no information|no results? (?:found|about|for)|nothing (?:found|about|related)|not found in (?:the|this)|does not contain|had no results?|web search (?:attempt )?failed)\b/i.test(normalizedAnswer)) {
+      return false;
+    }
+    if (normalizedAnswer.length < 400 && /^(error|an error|the system encountered|failed to|could not|unable to|sorry,|unfortunately)\b/i.test(normalizedAnswer)) {
       return false;
     }
     return true;
@@ -1612,7 +1691,8 @@ export class Agent {
 
     try {
       const completion = await this.measure(perfEntries, 'context_selection', async () =>
-        this.openai.chat.completions.create({
+        this.withTimeout(
+          this.openai.chat.completions.create({
           model: this.model,
           messages: [
             {
@@ -1624,7 +1704,10 @@ export class Agent {
               content: `Current user request:\n${input}\n\nSelected recent conversation turns:\n${recentTurnsText}\n\nRecalled context candidates:\n${candidateList}`,
             },
           ] as any,
-        })
+        }),
+          this.agentLlmTimeoutMs,
+          'context_selection llm'
+        )
       );
       const raw = String(completion.choices[0]?.message?.content || '').trim();
       const jsonText = raw.startsWith('{') ? raw : raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
@@ -2012,14 +2095,14 @@ export class Agent {
       this.appendMemoryLog(runId, 'memory_save_done', {
         elapsed_ms: Date.now() - startedAt
       });
-      this.notifyBackgroundTask('Memory saved', 'completed');
+      this.notifyBackgroundTask('Saving memory...', 'completed');
     } catch (e: any) {
       this.appendMemoryLog(runId, 'memory_save_failed', {
         elapsed_ms: Date.now() - startedAt,
         error: String(e?.message || e || 'unknown error')
       });
       console.error('Background memory save failed:', e);
-      this.notifyBackgroundTask('Memory save failed', 'completed');
+      this.notifyBackgroundTask('Saving memory...', 'completed');
     }
   }
 
@@ -2050,6 +2133,23 @@ export class Agent {
           this.drainSaveQueue();
         }
       });
+  }
+
+  /**
+   * Returns true if the agent explicitly called the mempedia CLI during the turn
+   * to write any memory layer (atomic knowledge, episodic, preferences, skills).
+   * When this is the case, the automatic post-turn async memory job should be
+   * skipped to avoid double-writing the same turn.
+   */
+  private hadExplicitMemoryWrite(traces: TraceEvent[]): boolean {
+    const writeActionPattern = /"action"\s*:\s*"(agent_upsert_markdown|upsert_skill|update_user_preferences|record_episodic|write_node|save_node)"/;
+    return traces.some((trace) => {
+      if (trace.metadata?.toolName !== 'bash') {
+        return false;
+      }
+      const command = String((trace.metadata?.args as Record<string, unknown>)?.command || '');
+      return writeActionPattern.test(command);
+    });
   }
 
   private scheduleMemorySave(job: MemorySaveJob) {
@@ -2098,6 +2198,7 @@ export class Agent {
     let recalledNodeIds: string[] = [];
     let selectedNodeIds: string[] = [];
     const soulsGuidance = this.loadSoulsMarkdown();
+    const localSkillsIndex = this.loadLocalSkillsIndex();
     const rawAutoQueueMemorySave = String(process.env.AUTO_QUEUE_MEMORY_SAVE ?? '1').toLowerCase();
     const autoQueueMemorySave = rawAutoQueueMemorySave !== '0' && rawAutoQueueMemorySave !== 'false' && rawAutoQueueMemorySave !== 'off';
     let memoryQueuedThisRun = false;
@@ -2146,7 +2247,7 @@ You only use five top-level tools:
 Important: do not use built-in codecli routing for Mempedia operations. If you need to read, search, or update Mempedia memory, preferences, skills, or projects, use bash to call the mempedia CLI, following the active SKILL.md guidance.
 
 Local codecli skills come from workspace SKILL.md files under mempedia-codecli/skills/*/SKILL.md and are available by default.
-Mempedia Layer 4 is the project skill library. It is part of the enterprise KB, but not every library skill is auto-installed locally.
+${localSkillsIndex ? `${localSkillsIndex}\n` : ''}Mempedia Layer 4 is the project skill library. It is part of the enterprise KB, but not every library skill is auto-installed locally.
 Skills are guidance documents, not tool names. Never emit skill names such as project-discovery in tool_calls.name.
 If skill guidance has been injected for the turn, treat it as internal policy only. Do not inspect the skills directory, verify skill files, or summarize skill text back to the user unless the user explicitly asked about skills.
 An independent post-turn MemoryClassifierAgent handles automatic four-layer memory classification and persistence after the answer is complete.
@@ -2311,15 +2412,34 @@ ${soulsGuidance}
       };
     };
 
-    const buildMessages = (branch: BranchState) => ([
-      { role: 'system', content: systemPrompt },
-      ...recentConversationMessages,
-      ...branch.transcript,
-      {
-        role: 'user',
-        content: `Current branch state:\n- branch_id: ${branch.id}\n- parent_branch_id: ${branch.parentId || 'none'}\n- depth: ${branch.depth}/${this.branchMaxDepth}\n- label: ${branch.label}\n- goal: ${branch.goal}\n- step_budget: ${branch.steps}/${this.branchMaxSteps}\n\nReturn exactly one JSON object. If branching is still useful, only emit materially distinct branches.`,
-      },
-    ]);
+    const transcriptBudgetChars = 12000;
+    const buildMessages = (branch: BranchState) => {
+      let transcriptMessages = branch.transcript;
+      const totalLen = branch.transcript.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
+      if (totalLen > transcriptBudgetChars) {
+        // Always keep the first message (user request), then fill from the end to stay within budget
+        const first = branch.transcript.slice(0, 1);
+        const rest = branch.transcript.slice(1);
+        const firstLen = typeof first[0]?.content === 'string' ? first[0].content.length : JSON.stringify(first[0]?.content ?? '').length;
+        let budget = transcriptBudgetChars - firstLen;
+        const kept: typeof branch.transcript = [];
+        for (let i = rest.length - 1; i >= 0 && budget > 0; i--) {
+          const len = typeof rest[i].content === 'string' ? rest[i].content.length : JSON.stringify(rest[i].content).length;
+          budget -= len;
+          if (budget >= 0) kept.unshift(rest[i]);
+        }
+        transcriptMessages = [...first, ...kept];
+      }
+      return [
+        { role: 'system', content: systemPrompt },
+        ...recentConversationMessages,
+        ...transcriptMessages,
+        {
+          role: 'user',
+          content: `Current branch state:\n- branch_id: ${branch.id}\n- parent_branch_id: ${branch.parentId || 'none'}\n- depth: ${branch.depth}/${this.branchMaxDepth}\n- label: ${branch.label}\n- goal: ${branch.goal}\n- step_budget: ${branch.steps}/${this.branchMaxSteps}\n\nReturn exactly one JSON object. If branching is still useful, only emit materially distinct branches.`,
+        },
+      ];
+    };
 
     const executeToolCall = async (branch: BranchState, toolCall: z.infer<typeof PlannerToolCallSchema>): Promise<string> => {
       const args = toolCall.arguments || {};
@@ -2360,7 +2480,7 @@ ${soulsGuidance}
         perfEntries.push({ label: `tool_${branch.id}_${fnName}`, ms: Date.now() - toolStart });
       }
 
-      const clipped = this.clipText(String(result), 7000);
+      const clipped = this.clipText(String(result), fnName === 'web' ? 3000 : 7000);
       const savedNodeId = fnName === 'edit' && String(args.target || '') === 'memory'
         ? this.extractSavedNodeId(clipped)
         : null;
@@ -2374,15 +2494,19 @@ ${soulsGuidance}
     const finalizeFromBranch = async (branch: BranchState, reason: string): Promise<string> => {
       emitBranchTrace('thought', branch, `Forcing finalization for ${branch.id}: ${reason}`);
       const completion = await this.measure(perfEntries, `finalize_${branch.id}`, async () =>
-        this.openai.chat.completions.create({
-          model: this.model,
-          messages: [
-            { role: 'system', content: `${systemPrompt}\nYou must now finish. Do not branch. Do not call tools. Return plain text only.` },
-            ...recentConversationMessages,
-            ...branch.transcript,
-            { role: 'user', content: `Finalize branch ${branch.id}. User request:\n${input}\n\nReason: ${reason}` },
-          ] as any,
-        })
+        this.withTimeout(
+          this.openai.chat.completions.create({
+            model: this.model,
+            messages: [
+              { role: 'system', content: `${systemPrompt}\nYou must now finish. Do not branch. Do not call tools. Return plain text only.` },
+              ...recentConversationMessages,
+              ...branch.transcript,
+              { role: 'user', content: `Finalize branch ${branch.id}. User request:\n${input}\n\nReason: ${reason}` },
+            ] as any,
+          }),
+          this.agentLlmTimeoutMs,
+          `finalize_${branch.id} llm`
+        )
       );
       return extractText(completion.choices[0]?.message?.content).trim();
     };
@@ -2404,19 +2528,23 @@ ${soulsGuidance}
         .join('\n\n---\n\n');
 
       const completion = await this.measure(perfEntries, 'branch_synthesis', async () =>
-        this.openai.chat.completions.create({
-          model: this.model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are the synthesis stage for a branching ReAct agent. Merge completed branches into the best possible final answer. Prefer correctness and directness. Mention uncertainty only when branches genuinely disagree. If you mention saved node ids, use only ids explicitly listed in saved_nodes. Do not invent node ids.',
-            },
-            {
-              role: 'user',
-              content: `User request:\n${input}\n\nShared context:\n${this.clipText(context || '(no shared context)', 4000)}\n\nCompleted branches:\n${branchSummary}`,
-            },
-          ] as any,
-        })
+        this.withTimeout(
+          this.openai.chat.completions.create({
+            model: this.model,
+            messages: [
+              {
+                role: 'system',
+                content: `You are the synthesis stage for a branching ReAct agent. Merge completed branches into the best possible final answer. Prefer correctness and directness. Mention uncertainty only when branches genuinely disagree. If you mention saved node ids, use only ids explicitly listed in saved_nodes. Do not invent node ids.${soulsGuidance ? `\n\n${soulsGuidance}` : ''}`,
+              },
+              {
+                role: 'user',
+                content: `User request:\n${input}\n\nShared context:\n${this.clipText(context || '(no shared context)', 4000)}\n\nCompleted branches:\n${branchSummary}`,
+              },
+            ] as any,
+          }),
+          this.agentLlmTimeoutMs,
+          'branch_synthesis llm'
+        )
       );
 
       return extractText(completion.choices[0]?.message?.content).trim();
@@ -2435,10 +2563,14 @@ ${soulsGuidance}
       branchConcurrency: this.branchConcurrency,
       planBranch: async ({ branch }) => {
         const completion = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps + 1}`, async () =>
-          this.openai.chat.completions.create({
-            model: this.model,
-            messages: buildMessages(branch as BranchState) as any,
-          })
+          this.withTimeout(
+            this.openai.chat.completions.create({
+              model: this.model,
+              messages: buildMessages(branch as BranchState) as any,
+            }),
+            this.agentLlmTimeoutMs,
+            `planBranch_${branch.id} llm`
+          )
         );
         const raw = extractText(completion.choices[0]?.message?.content);
         const decision = parseDecision(raw);
@@ -2486,6 +2618,9 @@ ${soulsGuidance}
       }
     });
     const finalAnswer = await runtime.run(`Original user request:\n${input}\n\nStart with the root loop. Branch only when multiple distinct approaches are worth exploring.`);
+    if (this.hadExplicitMemoryWrite(traceBuffer)) {
+      memoryQueuedThisRun = true;
+    }
     if (autoQueueMemorySave && !memoryQueuedThisRun) {
       const bestBranch = completedBranchesForRun[0];
       const autoBranch = bestBranch
