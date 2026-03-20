@@ -1,5 +1,5 @@
-import OpenAI from 'openai';
-import crypto from 'crypto';
+import { generateText, type LanguageModelV1 } from 'ai';
+import { buildLanguageModel } from './llm.js';
 import { MempediaClient } from '../mempedia/client.js';
 import { ToolAction } from '../mempedia/types.js';
 import * as fs from 'fs';
@@ -85,86 +85,6 @@ interface BranchState {
   finalAnswer?: string;
 }
 
-function createHmacClient(baseURL: string | undefined, accessKey: string, secretKey: string): ChatClient {
-  if (!baseURL) {
-    throw new Error('HMAC baseURL is required');
-  }
-  const base = baseURL.endsWith('/') ? baseURL : `${baseURL}/`;
-  return {
-    chat: {
-      completions: {
-        create: async (args: any) => {
-          const url = new URL('chat/completions', base);
-          const bodyJson = JSON.stringify(args ?? {});
-          const digestHash = crypto.createHash('sha256').update(bodyJson).digest('base64');
-          const digest = `SHA-256=${digestHash}`;
-          const date = new Date().toUTCString();
-          const requestPath = `${url.pathname}${url.search || ''}`;
-          const requestLine = `POST ${requestPath} HTTP/1.1`;
-          const host = url.host;
-          const signingData = `Digest: ${digest}\nX-Date: ${date}\nhost: ${host}\n${requestLine}`;
-          const signature = crypto
-            .createHmac('sha256', secretKey)
-            .update(signingData)
-            .digest('base64');
-          const authorization = `hmac username="${accessKey}", algorithm="hmac-sha256", headers="Digest X-Date host request-line", signature="${signature}"`;
-
-          const res = await fetch(url.toString(), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Date': date,
-              Digest: digest,
-              Authorization: authorization
-            },
-            body: bodyJson
-          });
-          const text = await res.text();
-          if (!res.ok) {
-            const error = new Error(`HMAC request failed: ${res.status} ${res.statusText} ${text}`);
-            (error as any).status = res.status;
-            throw error;
-          }
-          return JSON.parse(text);
-        }
-      }
-    }
-  };
-}
-
-function createGatewayClient(baseURL: string | undefined, gatewayApiKey: string): ChatClient {
-  if (!baseURL) {
-    throw new Error('Gateway baseURL is required');
-  }
-  const base = baseURL.endsWith('/') ? baseURL : `${baseURL}/`;
-  return {
-    chat: {
-      completions: {
-        create: async (args: any) => {
-          const url = new URL('chat/completions', base);
-          const bodyJson = JSON.stringify(args ?? {});
-          const res = await fetch(url.toString(), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-gatewat-apikey': `Bearer ${gatewayApiKey}`,
-              'x-gateway-apikey': `Bearer ${gatewayApiKey}`
-            },
-            body: bodyJson
-          });
-          const text = await res.text();
-          if (!res.ok) {
-            const error = new Error(`Gateway request failed: ${res.status} ${res.statusText} ${text}`);
-            (error as any).status = res.status;
-            throw error;
-          }
-          return JSON.parse(text);
-        }
-      }
-    }
-  };
-}
-
 export interface TraceEvent {
   type: 'thought' | 'action' | 'observation' | 'error';
   content: string;
@@ -247,21 +167,13 @@ interface StructuredSavePayload {
   comparableText: string;
 }
 
-type ChatClient = {
-  chat: {
-    completions: {
-      create: (args: any) => Promise<any>;
-    };
-  };
-};
-
 type MempediaActionSender = (action: ToolAction) => Promise<any>;
 
 export class Agent {
   private readonly projectRoot: string;
   private readonly codeCliRoot: string;
-  private openai: ChatClient;
-  private memoryOpenai: ChatClient;
+  private openai: LanguageModelV1;
+  private memoryOpenai: LanguageModelV1;
   private mempedia: MempediaClient;
   private model: string;
   private memoryModel: string;
@@ -299,28 +211,28 @@ export class Agent {
   constructor(config: AgentConfig, projectRoot: string, binaryPath?: string) {
     this.projectRoot = projectRoot;
     this.codeCliRoot = resolveCodeCliRoot(__dirname);
-    this.openai = config.hmacAccessKey && config.hmacSecretKey
-      ? createHmacClient(config.baseURL, config.hmacAccessKey, config.hmacSecretKey)
-      : config.gatewayApiKey
-        ? createGatewayClient(config.baseURL, config.gatewayApiKey)
-        : new OpenAI({
-            apiKey: config.apiKey,
-            baseURL: config.baseURL
-          });
+    this.model = config.model || 'gpt-4o';
+    this.memoryModel = config.memoryModel || this.model;
+    this.openai = buildLanguageModel({
+      model: this.model,
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      hmacAccessKey: config.hmacAccessKey,
+      hmacSecretKey: config.hmacSecretKey,
+      gatewayApiKey: config.gatewayApiKey,
+    });
     const memoryBaseURL = config.memoryBaseURL || config.baseURL;
     const memoryAccessKey = config.memoryHmacAccessKey || config.hmacAccessKey;
     const memorySecretKey = config.memoryHmacSecretKey || config.hmacSecretKey;
     const memoryGatewayKey = config.memoryGatewayApiKey || config.gatewayApiKey;
-    this.memoryOpenai = memoryAccessKey && memorySecretKey
-      ? createHmacClient(memoryBaseURL, memoryAccessKey, memorySecretKey)
-      : memoryGatewayKey
-        ? createGatewayClient(memoryBaseURL, memoryGatewayKey)
-        : new OpenAI({
-            apiKey: config.memoryApiKey || config.apiKey,
-            baseURL: memoryBaseURL
-          });
-    this.model = config.model || 'gpt-4o';
-    this.memoryModel = config.memoryModel || this.model;
+    this.memoryOpenai = buildLanguageModel({
+      model: this.memoryModel,
+      apiKey: config.memoryApiKey || config.apiKey,
+      baseURL: memoryBaseURL,
+      hmacAccessKey: memoryAccessKey,
+      hmacSecretKey: memorySecretKey,
+      gatewayApiKey: memoryGatewayKey,
+    });
     this.mempedia = new MempediaClient(projectRoot, binaryPath);
     this.interactionCounter = 0;
     this.maxConversationTurns = 5;
@@ -366,7 +278,6 @@ export class Agent {
     this.runtimeHandle = createRuntime({ projectRoot, agentId: 'agent-main' }, this.mempedia);
     this.memoryClassifier = new MemoryClassifierAgent({
       chatClient: this.memoryOpenai,
-      model: this.memoryModel,
       codeCliRoot: this.codeCliRoot,
       extractionMaxChars: this.extractionMaxChars,
       memoryExtractTimeoutMs: this.memoryExtractTimeoutMs,
@@ -1690,26 +1601,26 @@ export class Agent {
       : '(none)';
 
     try {
-      const completion = await this.measure(perfEntries, 'context_selection', async () =>
+      const { text: _contextRaw } = await this.measure(perfEntries, 'context_selection', async () =>
         this.withTimeout(
-          this.openai.chat.completions.create({
-          model: this.model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a context selector. First assume all recalled context may be noisy. Then choose only the context candidates that are directly relevant to the current user request. Return JSON only: {"relevant_node_ids":[...],"rationale":"..."}. Select at most 3 node ids.',
-            },
-            {
-              role: 'user',
-              content: `Current user request:\n${input}\n\nSelected recent conversation turns:\n${recentTurnsText}\n\nRecalled context candidates:\n${candidateList}`,
-            },
-          ] as any,
-        }),
+          generateText({
+            model: this.openai,
+            messages: [
+              {
+                role: 'system',
+                content: 'You are a context selector. First assume all recalled context may be noisy. Then choose only the context candidates that are directly relevant to the current user request. Return JSON only: {"relevant_node_ids":[...],"rationale":"..."}. Select at most 3 node ids.',
+              },
+              {
+                role: 'user',
+                content: `Current user request:\n${input}\n\nSelected recent conversation turns:\n${recentTurnsText}\n\nRecalled context candidates:\n${candidateList}`,
+              },
+            ],
+          }),
           this.agentLlmTimeoutMs,
           'context_selection llm'
         )
       );
-      const raw = String(completion.choices[0]?.message?.content || '').trim();
+      const raw = _contextRaw.trim();
       const jsonText = raw.startsWith('{') ? raw : raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
       const parsed = ContextSelectionSchema.parse(JSON.parse(jsonText));
       const allowed = new Set(parsed.relevant_node_ids);
@@ -1925,15 +1836,15 @@ export class Agent {
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
-      const extraction = await this.memoryOpenai.chat.completions.create({
-        model: this.memoryModel,
+      const { text: _extractionText } = await generateText({
+        model: this.memoryOpenai,
         messages: [
           { role: 'system', content: extractionPrompt },
-          { role: 'user', content: userPayload }
+          { role: 'user', content: userPayload },
         ],
-        response_format: { type: "json_object" }
+        providerOptions: { openai: { responseFormat: { type: 'json_object' } } },
       });
-      const content = extraction.choices[0]?.message?.content || '{}';
+      const content = _extractionText || '{}';
       const parsed = JSON.parse(content);
       const preferences = Array.isArray(parsed.user_preferences)
         ? parsed.user_preferences.map((item: any) => {
@@ -2493,22 +2404,22 @@ ${soulsGuidance}
 
     const finalizeFromBranch = async (branch: BranchState, reason: string): Promise<string> => {
       emitBranchTrace('thought', branch, `Forcing finalization for ${branch.id}: ${reason}`);
-      const completion = await this.measure(perfEntries, `finalize_${branch.id}`, async () =>
+      const { text: _finalizeText } = await this.measure(perfEntries, `finalize_${branch.id}`, async () =>
         this.withTimeout(
-          this.openai.chat.completions.create({
-            model: this.model,
-            messages: [
+          generateText({
+            model: this.openai,
+            messages: ([
               { role: 'system', content: `${systemPrompt}\nYou must now finish. Do not branch. Do not call tools. Return plain text only.` },
               ...recentConversationMessages,
               ...branch.transcript,
               { role: 'user', content: `Finalize branch ${branch.id}. User request:\n${input}\n\nReason: ${reason}` },
-            ] as any,
+            ] as any),
           }),
           this.agentLlmTimeoutMs,
           `finalize_${branch.id} llm`
         )
       );
-      return extractText(completion.choices[0]?.message?.content).trim();
+      return extractText(_finalizeText).trim();
     };
 
     const synthesizeCompletedBranches = async (branches: BranchState[]): Promise<string> => {
@@ -2527,10 +2438,10 @@ ${soulsGuidance}
         ].join('\n'))
         .join('\n\n---\n\n');
 
-      const completion = await this.measure(perfEntries, 'branch_synthesis', async () =>
+      const { text: _synthesisText } = await this.measure(perfEntries, 'branch_synthesis', async () =>
         this.withTimeout(
-          this.openai.chat.completions.create({
-            model: this.model,
+          generateText({
+            model: this.openai,
             messages: [
               {
                 role: 'system',
@@ -2540,14 +2451,14 @@ ${soulsGuidance}
                 role: 'user',
                 content: `User request:\n${input}\n\nShared context:\n${this.clipText(context || '(no shared context)', 4000)}\n\nCompleted branches:\n${branchSummary}`,
               },
-            ] as any,
+            ],
           }),
           this.agentLlmTimeoutMs,
           'branch_synthesis llm'
         )
       );
 
-      return extractText(completion.choices[0]?.message?.content).trim();
+      return extractText(_synthesisText).trim();
     };
     let completedBranchesForRun: Array<BranchSynthesisInput['branches'][number]> = [];
     const runtime = new AgentRuntime({
@@ -2562,17 +2473,17 @@ ${soulsGuidance}
       maxCompletedBranches: this.branchMaxCompleted,
       branchConcurrency: this.branchConcurrency,
       planBranch: async ({ branch }) => {
-        const completion = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps + 1}`, async () =>
+        const { text: _planText } = await this.measure(perfEntries, `llm_${branch.id}_step_${branch.steps + 1}`, async () =>
           this.withTimeout(
-            this.openai.chat.completions.create({
-              model: this.model,
-              messages: buildMessages(branch as BranchState) as any,
+            generateText({
+              model: this.openai,
+              messages: (buildMessages(branch as BranchState) as any),
             }),
             this.agentLlmTimeoutMs,
             `planBranch_${branch.id} llm`
           )
         );
-        const raw = extractText(completion.choices[0]?.message?.content);
+        const raw = extractText(_planText);
         const decision = parseDecision(raw);
         return decision.kind === 'tool'
           ? { kind: 'tool', thought: decision.thought, toolCalls: decision.tool_calls || [] }

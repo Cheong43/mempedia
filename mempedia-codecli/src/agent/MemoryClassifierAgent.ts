@@ -1,14 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { generateText } from 'ai';
+import type { LanguageModelV1 } from './llm.js';
 import { ToolAction } from '../mempedia/types.js';
-
-type ChatClient = {
-  chat: {
-    completions: {
-      create: (args: any) => Promise<any>;
-    };
-  };
-};
 
 export interface MemoryClassifierTraceEvent {
   type: 'thought' | 'action' | 'observation' | 'error';
@@ -49,8 +43,7 @@ interface MemoryExtraction {
 }
 
 interface MemoryClassifierOptions {
-  chatClient: ChatClient;
-  model: string;
+  chatClient: LanguageModelV1;
   codeCliRoot: string;
   extractionMaxChars: number;
   memoryExtractTimeoutMs: number;
@@ -75,8 +68,7 @@ export interface MemoryClassifierContext {
 }
 
 export class MemoryClassifierAgent {
-  private readonly chatClient: ChatClient;
-  private readonly model: string;
+  private readonly chatClient: LanguageModelV1;
   private readonly codeCliRoot: string;
   private readonly extractionMaxChars: number;
   private readonly memoryExtractTimeoutMs: number;
@@ -87,7 +79,6 @@ export class MemoryClassifierAgent {
 
   constructor(options: MemoryClassifierOptions) {
     this.chatClient = options.chatClient;
-    this.model = options.model;
     this.codeCliRoot = options.codeCliRoot;
     this.extractionMaxChars = options.extractionMaxChars;
     this.memoryExtractTimeoutMs = options.memoryExtractTimeoutMs;
@@ -322,19 +313,19 @@ export class MemoryClassifierAgent {
 
     const userPayload = `用户输入:\n${compactInput}\n\n执行轨迹:\n${compactTraces}\n\n最终回答:\n${compactAnswer}`;
     try {
-      const extraction = await this.withTimeout(
-        this.chatClient.chat.completions.create({
-          model: this.model,
+      const { text: _extractionText } = await this.withTimeout(
+        generateText({
+          model: this.chatClient,
           messages: [
             { role: 'system', content: extractionPrompt },
             { role: 'user', content: userPayload },
           ],
-          response_format: { type: 'json_object' },
+          providerOptions: { openai: { responseFormat: { type: 'json_object' } } },
         }),
         this.memoryExtractTimeoutMs,
         'memory extraction llm'
       );
-      const content = extraction.choices[0]?.message?.content || '{}';
+      const content = _extractionText || '{}';
       const parsed = JSON.parse(content);
       const preferences = Array.isArray(parsed.user_preferences)
         ? parsed.user_preferences.map((item: any) => {

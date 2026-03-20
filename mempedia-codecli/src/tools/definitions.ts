@@ -1,6 +1,14 @@
-import { ChatCompletionTool } from 'openai/resources/chat/completions';
+/** Minimal shape matching the OpenAI function-calling tool format. */
+interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
 
-export const TOOLS: ChatCompletionTool[] = [
+export const TOOLS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
