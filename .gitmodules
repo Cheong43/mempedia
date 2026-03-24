@@ -1,0 +1,3 @@
+[submodule "mitosis-cli"]
+	path = mitosis-cli
+	url = git@github.com:Cheong43/mitosis-cli.git
