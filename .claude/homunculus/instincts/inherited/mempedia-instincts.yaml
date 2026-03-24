@@ -1,0 +1,347 @@
+# Instincts generated from https://github.com/Cheong43/mempedia
+# Generated: 2026-03-17T15:35:02.948Z
+# Version: 2.0
+
+---
+id: mempedia-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Commit Length
+
+## Action
+
+Write moderate-length commit messages (~50 characters)
+
+## Evidence
+
+- Average commit message length: 62 chars
+- Based on 32 commits
+
+---
+id: mempedia-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: mempedia-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: mempedia-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: mempedia-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: api, core, decay, graph, markdown
+
+---
+id: mempedia-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: mempedia-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: mempedia-workflow-database-migration
+trigger: "when modifying the database schema or adding tables"
+confidence: 0.8
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Database Migration
+
+## Action
+
+Follow the database-migration workflow:
+1. Create migration file
+2. Update schema definitions
+3. Generate/update types
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~6x per month
+- Files: **/types.ts
+
+---
+id: mempedia-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~16x per month
+- Files: mempedia-codecli/node_modules/@cspotcode/source-map-support/*, mempedia-codecli/node_modules/@jridgewell/sourcemap-codec/src/*, mempedia-codecli/node_modules/@types/node-fetch/*
+
+---
+id: mempedia-workflow-refactoring
+trigger: "when refactoring code"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Refactoring
+
+## Action
+
+Follow the refactoring workflow:
+1. Ensure tests pass before refactor
+2. Refactor code structure
+3. Verify tests still pass
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~8x per month
+- Files: src/**/*
+
+---
+id: mempedia-workflow-add-or-update-knowledge-graph-node-types
+trigger: "when doing add or update knowledge graph node types"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Add Or Update Knowledge Graph Node Types
+
+## Action
+
+Follow the add-or-update-knowledge-graph-node-types workflow:
+1. Update Rust structs in src/core/mod.rs and related modules (e.g., NodeContent, NodePatch).
+2. Update storage logic in src/storage/mod.rs and/or src/merge/mod.rs.
+3. Update API layer in src/api/mod.rs.
+4. Update TypeScript types in mempedia-codecli/src/mempedia/types.ts.
+5. Update tool definitions in mempedia-codecli/src/tools/definitions.ts.
+6. Update markdown frontmatter logic in src/markdown/mod.rs.
+7. Update documentation (KB_SCHEMA.md, AGENT_KB_POLICY.md, readme.md).
+8. Add or update tests (if present).
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/core/mod.rs, src/storage/mod.rs, src/merge/mod.rs
+
+---
+id: mempedia-workflow-refactor-or-consolidate-api-tool-actions
+trigger: "when doing refactor or consolidate api tool actions"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Refactor Or Consolidate Api Tool Actions
+
+## Action
+
+Follow the refactor-or-consolidate-api-tool-actions workflow:
+1. Update API logic in src/api/mod.rs.
+2. Update agent or tool configuration files (skills/*/SKILL.md, skills/*/agents/*.yaml).
+3. Update documentation (readme.md, SKILL.md).
+4. Update .gitignore if new files/directories are introduced.
+5. Update TypeScript types or tool definitions if needed.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/api/mod.rs, skills/*/SKILL.md, skills/*/agents/*.yaml
+
+---
+id: mempedia-workflow-multi-layer-architecture-upgrade
+trigger: "when doing multi layer architecture upgrade"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Multi Layer Architecture Upgrade
+
+## Action
+
+Follow the multi-layer-architecture-upgrade workflow:
+1. Update or add Rust modules for new layers (src/core/mod.rs, src/storage/mod.rs, src/api/mod.rs, src/versioning/mod.rs).
+2. Update or add TypeScript types and tool definitions (mempedia-codecli/src/mempedia/types.ts, mempedia-codecli/src/tools/definitions.ts).
+3. Update UI or agent logic (mempedia-codecli/src/agent/index.ts, mempedia-codecli/src/components/App.tsx).
+4. Update documentation (readme.md, KB_SCHEMA.md, AGENT_KB_POLICY.md).
+5. Add or update tests for new architecture.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/core/mod.rs, src/storage/mod.rs, src/api/mod.rs
+
+---
+id: mempedia-workflow-add-or-enhance-memory-state-and-index
+trigger: "when doing add or enhance memory state and index"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Add Or Enhance Memory State And Index
+
+## Action
+
+Follow the add-or-enhance-memory-state-and-index workflow:
+1. Create or update .mempedia/memory/index/*.json and .mempedia/memory/state.json.
+2. Update Rust storage or memory management logic (src/storage/mod.rs, src/core/mod.rs).
+3. Update or initialize TypeScript/JS client logic if needed.
+4. Update documentation if memory model changes.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: .mempedia/memory/index/heads.json, .mempedia/memory/index/nodes.json, .mempedia/memory/index/state.json
+
+---
+id: mempedia-workflow-ui-and-client-refactor-or-enhancement
+trigger: "when doing ui and client refactor or enhancement"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Cheong43/mempedia
+---
+
+# Mempedia Workflow Ui And Client Refactor Or Enhancement
+
+## Action
+
+Follow the ui-and-client-refactor-or-enhancement workflow:
+1. Update or refactor UI files (mempedia-ui/index.html, script.js, styles.css, mempedia-codecli/src/components/App.tsx).
+2. Update or refactor agent/client logic (mempedia-codecli/src/agent/index.ts, mempedia-codecli/src/mempedia/client.ts).
+3. Optionally update memory extraction or visualization logic.
+4. Update documentation if user experience changes.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: mempedia-ui/index.html, mempedia-ui/script.js, mempedia-ui/styles.css
+
