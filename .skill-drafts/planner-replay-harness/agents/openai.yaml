@@ -1,0 +1,4 @@
+interface:
+  display_name: "Planner Replay Harness"
+  short_description: "Run planner live replay tests and diagnose failures"
+  default_prompt: "Use $planner-replay-harness to run the live replay harness, compare failure modes, and explain whether issues come from planner fallback, networking, or memory persistence."
