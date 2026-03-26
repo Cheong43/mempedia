@@ -2190,8 +2190,8 @@ impl MemoryEngine {
                     let ts = now_ts();
                     // Include summary content (not just its length) to reduce collision risk
                     // when multiple episodes are recorded at the same millisecond.
-                    let hash_input =
-                        format!("{ts}:{scene_type}:{}", &summary[..summary.len().min(64)]);
+                    let summary_prefix: String = summary.chars().take(64).collect();
+                    let hash_input = format!("{ts}:{scene_type}:{summary_prefix}");
                     let h = blake3::hash(hash_input.as_bytes()).to_hex();
                     format!("ep_{ts}_{}", &h[..8])
                 };
@@ -5309,6 +5309,35 @@ https://example.com/rust_memory_engine
 
         assert!(md.contains("parent_node: \"root_node\""));
         assert!(md.contains("node_type: \"concept\""));
+    }
+
+    #[test]
+    fn record_episodic_handles_unicode_summary_without_panicking() {
+        let dir = temp_data_dir("episodic-unicode-summary");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        let response = engine
+            .execute_action(ToolAction::RecordEpisodic {
+                scene_type: "conversation".to_string(),
+                summary: "## 美光科技（Micron）FY2026 Q2 财报 — 双渠道综合摘要，包含中文字符边界测试。".to_string(),
+                raw_conversation_id: Some("conv_unicode_summary".to_string()),
+                importance: Some(0.8),
+                core_knowledge_nodes: Some(vec![]),
+                tags: Some(vec!["unicode".to_string(), "episodic".to_string()]),
+                agent_id: Some("test-agent".to_string()),
+            });
+
+        match response {
+            ToolResponse::EpisodicResults { memories } => {
+                assert_eq!(memories.len(), 1);
+                assert_eq!(
+                    memories[0].raw_conversation_id,
+                    Some("conv_unicode_summary".to_string())
+                );
+                assert!(memories[0].summary.contains("美光科技"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 
     #[test]
