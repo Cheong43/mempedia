@@ -4,7 +4,7 @@ A lightweight long-term memory engine for AI agents with a 4-layer knowledge arc
 
 1. **Core Knowledge** – hierarchical, graph-indexed nodes (Wikipedia-style); human-readable markdown projections; supports document import via `import-doc` CLI command
 2. **Episodic Memory** – time-ordered scene records with BM25 keyword retrieval; importance decays over time; links back to core-knowledge nodes updated during the episode
-3. **User Preferences** – single per-project markdown config file capturing habits, preferences, and personal info
+3. **User Preferences** – single markdown config file per workspace memory root
 4. **Agent Skills** – individual markdown skill files with BM25 fast retrieval; no graph indexing needed
 
 Use cases: projects that need traceable, forkable, mergeable, and explainable structured memory, rather than plain-text RAG retrieval.
@@ -12,12 +12,31 @@ Use cases: projects that need traceable, forkable, mergeable, and explainable st
 Naming:
 - `Mempedia` = memory knowledge graph encyclopedia for agents
 
-Default storage location (project-scoped):
+Default storage location (workspace-scoped):
 - `<project>/.mempedia/memory`
 
 ---
 
 ## English
+
+### 0. Current Status
+
+Implemented now:
+- append-only node/version storage
+- markdown projection under `knowledge/nodes/`
+- hierarchy via `parent_node`
+- semantic typing via `node_type`
+- Layer 2 episodic memory, Layer 3 preferences, Layer 4 skills
+- governed writes through `agent_upsert_markdown`, `ingest`, and `sync_markdown`
+
+Planned, not yet stable:
+- project registry and project metadata
+- project-scoped storage such as `knowledge/projects/<project_id>/...`
+- project actions such as `create_project`, `list_projects`, `get_project`, `list_project_nodes`
+- treating `project` as a guaranteed persisted node field
+
+If you are building against the current code, treat `parent_node` and `node_type`
+as the stable hierarchy features.
 
 ### 1. Quick Start
 
@@ -140,7 +159,7 @@ Notes:
 - Episodic memories are stored chronologically in JSONL; importance decays over time
 - User habits and behavior patterns are stored as Layer 2 episodic records (`scene_type = user_habit | behavior_pattern`) instead of separate files
 - Access statistics are embedded in `index/state.json`; no extra runtime state files are written outside the documented layout
-- Project node directories are created on first write
+- Project-scoped node directories are not a stable implemented feature today
 
 ### 4. Rust API
 
@@ -181,9 +200,9 @@ For agent-side direct calls:
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
-- `agent_upsert_markdown` *(supports `project`, `parent_node`, `node_type`)*
-- `ingest` *(supports `project`, `parent_node`, `node_type`)*
-- `sync_markdown` *(supports `project`, `parent_node`, `node_type`)*
+- `agent_upsert_markdown` *(stable fields: `parent_node`, `node_type`)*
+- `ingest` *(stable fields: `parent_node`, `node_type`)*
+- `sync_markdown` *(stable fields: `parent_node`, `node_type`)*
 - `rollback_node`
 - `node_history`
 - `record_episodic`
@@ -195,6 +214,12 @@ For agent-side direct calls:
 - `list_skills`
 - `search_skills`
 - `read_skill`
+
+Not implemented as stable public actions:
+- `create_project`
+- `list_projects`
+- `get_project`
+- `list_project_nodes`
 
 Request examples:
 
@@ -248,6 +273,24 @@ cargo run -- --project /path/to/project --serve
 ---
 
 ## 中文
+
+### 0. 当前状态
+
+已实现：
+- append-only 的节点 / 版本存储
+- `knowledge/nodes/` 下的 markdown 投影
+- 通过 `parent_node` 建立层级
+- 通过 `node_type` 标注语义类型
+- Layer 2 episodic、Layer 3 preferences、Layer 4 skills
+- 通过 `agent_upsert_markdown`、`ingest`、`sync_markdown` 进行受治理写入
+
+计划中，但目前还不是稳定能力：
+- project 注册表与 project 元数据
+- `knowledge/projects/<project_id>/...` 这类 project 目录
+- `create_project`、`list_projects`、`get_project`、`list_project_nodes` 等 project action
+- 把 `project` 当成稳定持久化字段
+
+如果你是按当前代码开发，请把 `parent_node` 和 `node_type` 视为稳定层级语义。
 
 ### 1. 快速开始
 
@@ -315,11 +358,17 @@ data/
   knowledge/
     nodes/
       <sanitized_node_id>-<hash8>.md
+  episodic/
+    memories.jsonl
+  preferences.md
+  skills/
+    <skill_id>-<hash8>.md
 ```
 
 说明：
 - 用户习惯与行为模式会作为 Layer 2 episodic 记录写入 `episodic/memories.jsonl`，不再单独生成额外文件
 - 访问统计写入 `index/state.json` 内部，不再额外生成运行时状态文件
+- project 目录与 project 注册表目前不是稳定已实现能力
 
 ### 4. API 与 Action
 
@@ -338,9 +387,9 @@ Rust API 入口：`src/api/mod.rs`。
 - `suggest_exploration`
 - `explore_with_budget`
 - `auto_link_related`
-- `agent_upsert_markdown`（支持 `project`、`parent_node`、`node_type`）
-- `ingest`（支持 `project`、`parent_node`、`node_type`）
-- `sync_markdown`（支持 `project`、`parent_node`、`node_type`）
+- `agent_upsert_markdown`（稳定字段：`parent_node`、`node_type`）
+- `ingest`（稳定字段：`parent_node`、`node_type`）
+- `sync_markdown`（稳定字段：`parent_node`、`node_type`）
 - `rollback_node`
 - `node_history`
 - `record_episodic`
@@ -352,6 +401,8 @@ Rust API 入口：`src/api/mod.rs`。
 - `list_skills`
 - `search_skills`
 - `read_skill`
+
+以下 project action 仍属于计划中，不应视为当前已实现接口：
 - `create_project`
 - `list_projects`
 - `get_project`

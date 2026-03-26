@@ -1,64 +1,46 @@
 # KB Schema and Conventions
 
-This document defines schema and naming conventions for markdown-first memory nodes.
+This document describes the current markdown-first schema used by Mempedia.
+It intentionally separates implemented behavior from planned extensions so the
+docs stay aligned with the codebase.
 
-## 1. Node Identity
+## 1. Implemented Now
 
-- `node_id`: stable identifier used by API and version graph.
+### 1.1 Node Identity
+
+- `node_id`: stable identifier used by the API and version graph.
 - Recommended format: lowercase snake_case.
 - Avoid changing `node_id` after creation.
 
-## 2. Project Hierarchy
+### 1.2 Hierarchy and Node Semantics
 
-### 2.1 Projects
+The currently implemented hierarchy fields are:
 
-A **project** is a top-level domain or knowledge-base category (e.g., `real_estate`, `technology`, `product`).
-Projects group related nodes and store their markdown files under a dedicated directory:
+- `parent_node`: optional parent node id used for Notion-style nesting.
+- `node_type`: optional semantic role marker.
 
-```
-knowledge/projects/<project_id>/<sanitized_node_id>-<hash8>.md
-```
-
-Nodes that are not assigned to a project continue to use the legacy flat directory:
-
-```
-knowledge/nodes/<sanitized_node_id>-<hash8>.md
-```
-
-Project metadata is stored in `knowledge/projects/_index.json`.
-
-### 2.2 Node Hierarchy (Notion-style)
-
-Within a project, nodes can form a parent–child tree using the `parent_node` field.
-This enables Notion-like hierarchical page nesting:
-
-- A project typically starts with an **index** node (`node_type: index`) that acts as the root.
-- Child nodes reference their parent via `parent_node: <parent_node_id>`.
-- The depth of the hierarchy is not bounded by the schema.
-
-### 2.3 Node Types
-
-Use `node_type` to classify the semantic role of a node:
+Recommended `node_type` values:
 
 | Value | Purpose |
 |---|---|
-| `index` | Root / table-of-contents page for a project or subtopic |
+| `index` | Root / table-of-contents page for a topic |
 | `concept` | Explanation of a domain concept or term |
-| `process` | Step-by-step process or workflow description |
+| `process` | Step-by-step workflow description |
 | `reference` | Reference data, specifications, or lookup table |
 | `decision` | Decision record (ADR-style) with rationale |
 | `glossary` | Definitions of domain-specific terms |
 
-Other values are permitted; the above are conventions, not hard constraints.
+Other values are permitted; the table above is convention, not a hard schema.
 
-## 3. Markdown Projection File
+### 1.3 Markdown Projection File
 
-Each head version is projected into a markdown file whose location depends on the node's project:
+Each head version is projected to:
 
-- With project: `.mempedia/memory/knowledge/projects/<project_id>/<sanitized_node_id>-<hash8>.md`
-- Without project: `.mempedia/memory/knowledge/nodes/<sanitized_node_id>-<hash8>.md`
+```text
+.mempedia/memory/knowledge/nodes/<sanitized_node_id>-<hash8>.md
+```
 
-Front matter fields:
+Current front matter fields:
 
 ```yaml
 ---
@@ -70,7 +52,6 @@ title: "<title>"
 summary: "<summary>"
 source: "<originating source, optional>"
 origin: "<author or agent id, optional>"
-project: "<project_id, optional>"
 parent_node: "<parent node_id, optional>"
 node_type: "<node type, optional>"
 parents:
@@ -78,25 +59,35 @@ parents:
 ---
 ```
 
-Body:
-- Preserve markdown body text from current head version.
+Important current constraint:
+
+- `project` is not a stable persisted front matter field today.
+- Markdown projection paths are not project-scoped today.
+
+Body rules:
+
+- Preserve markdown body text from the current head version.
 - If body is empty, emit a single markdown heading from title.
-- AI writes must preserve original meaning, respect facts, and be detailed.
+- AI writes must preserve meaning, respect facts, and avoid information loss.
 
-## 4. Structured Data Keys
+### 1.4 Structured Data Keys
 
-Reserved keys inserted by runtime:
+Reserved keys inserted by the runtime:
+
 - `content_type = markdown`
 - `kb.last_agent_id`
 - `kb.last_reason`
 - `kb.last_source`
 - `kb.updated_at`
-- `meta.*` (derived from markdown front matter on parse)
-  - `meta.source` / `meta.origin` are reflected in front matter when present
+- `meta.*` derived from markdown front matter on parse
+  - `meta.source`
+  - `meta.origin`
+  - `meta.parent_node`
+  - `meta.node_type`
 
-### 4.1 Optional Structured Sections in Markdown Body
+### 1.5 Optional Structured Sections in Markdown Body
 
-These sections allow humans to edit knowledge in markdown while keeping it structured for agents.
+These sections are human-editable and partially normalized by the parser.
 Section headings are case-insensitive and accept synonyms:
 
 - Facts: `Facts`, `Fact`, `Claims`, `Claim`
@@ -106,28 +97,29 @@ Section headings are case-insensitive and accept synonyms:
 Format rules:
 
 - **Facts**: bullet lines in `key: value` or `key = value` form.
-  - Stored as `fact.<key>` in `structured_data` (key is normalized to `snake_case`).
+  Stored as `fact.<key>` in `structured_data` after key normalization.
 - **Relations**: bullet lines in one of the following forms:
   - `Target | label | weight`
   - `Target(label=..., weight=...)`
   - `Target`
-  - Stored as graph links with optional `label` and `weight`.
-- **Evidence**: bullet lines, stored as `evidence.01`, `evidence.02`, etc.
+  Stored as graph links with optional `label` and `weight`.
+- **Evidence**: bullet lines, stored as `evidence.01`, `evidence.02`, and so on.
 
-### 4.2 Recommended Narrative Sections
+### 1.6 Recommended Narrative Sections
 
-The following sections are recommended for richer human-readable knowledge capture. They are preserved in markdown even when not all of them are currently normalized into structured keys:
+These sections are preserved in markdown even when not all of them are
+normalized into structured keys:
 
-- `Data`: concrete values such as numbers, dates, versions, limits, ports, paths, configuration values, and metrics.
-- `History`: version evolution, migrations, regressions, chronology, and before/after changes.
-- `Viewpoints`: opinions, interpretations, preferences, or stakeholder positions, ideally with attribution.
-- `Uncertainties`: unresolved questions, caveats, conditions, and explicit unknowns.
+- `Data`: numbers, dates, versions, limits, ports, paths, config values, metrics
+- `History`: migrations, regressions, chronology, before/after changes
+- `Viewpoints`: opinions, interpretations, preferences, with attribution when possible
+- `Uncertainties`: unresolved questions, caveats, conditions, explicit unknowns
 
-These sections should never contain fabricated content; if the source does not support them, omit them.
+Do not fabricate any of this content. Omit unsupported sections instead.
 
-## 5. Audit Log Schema
+### 1.7 Audit Log Schema
 
-`index/agent_actions.log` (JSONL), one object per line:
+`index/agent_actions.log` is JSONL, one object per line:
 
 ```json
 {
@@ -141,37 +133,47 @@ These sections should never contain fabricated content; if the source does not s
 }
 ```
 
-## 6. Retrieval Behavior
+### 1.8 Retrieval Behavior
 
-- Keyword search uses an in-memory inverted index generated from latest heads.
+- Keyword search uses an in-memory inverted index built from latest heads.
 - Tokens include ASCII terms and CJK-friendly terms.
 - Search result scores combine weighted term signals and token coverage.
-- Project membership is not a retrieval filter by default; use `list_project_nodes` to enumerate project contents.
+- Hybrid retrieval combines BM25, vectors, and graph signals when embeddings are available.
+- There is no implemented project-scoped retrieval filter today.
 
-## 7. Storage Layout
+### 1.9 Storage Layout
 
 ```text
 .mempedia/memory/
   index/
-    state.json                    # index snapshot (heads + nodes)
-    heads.json                    # compatibility/readable copy
-    nodes.json                    # compatibility/readable copy
-    access.log                    # optional access log
-    agent_actions.log             # autonomous agent update audit
-    node_project_index.json       # node_id → project_id mapping
+    state.json
+    heads.json
+    nodes.json
+    access.log
+    agent_actions.log
   objects/
     <hash_prefix>/
       <version_hash>.json
   knowledge/
-    nodes/                        # nodes without a project (legacy / unclassified)
+    nodes/
       <sanitized_node_id>-<hash8>.md
-    projects/
-      _index.json                 # project metadata registry
-      <project_id>/               # one directory per project
-        <sanitized_node_id>-<hash8>.md
   episodic/
     memories.jsonl
   preferences.md
   skills/
     <skill_id>-<hash8>.md
 ```
+
+## 2. Planned, Not Yet Stable
+
+The following ideas may still be implemented later, but should not be treated
+as current schema guarantees:
+
+- `project` as a stable node field persisted through markdown and runtime APIs
+- project-scoped markdown directories such as `knowledge/projects/<project_id>/...`
+- project registry files such as `knowledge/projects/_index.json`
+- indexes such as `node_project_index.json`
+- dedicated project actions such as `create_project`, `list_projects`, `get_project`, or `list_project_nodes`
+
+Until those are implemented end-to-end, documentation and tooling should treat
+`parent_node` and `node_type` as the stable hierarchy features.
