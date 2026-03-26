@@ -798,20 +798,7 @@ impl MemoryEngine {
             content.node_type = Some(t);
         }
 
-        let (linked_body, auto_links) = self.auto_wikilink_markdown_body(node_id, &content.body)?;
-        if linked_body != content.body {
-            content.body = linked_body;
-        }
-        let mut existing_targets: HashSet<String> = content
-            .links
-            .iter()
-            .map(|link| link.target.clone())
-            .collect();
-        for link in auto_links {
-            if existing_targets.insert(link.target.clone()) {
-                content.links.push(link);
-            }
-        }
+        self.enrich_markdown_links(node_id, &mut content)?;
         let mut content = normalize_content(content);
         let now = now_ts();
         content
@@ -949,6 +936,7 @@ impl MemoryEngine {
         if let Some(t) = node_type {
             content.node_type = Some(t);
         }
+        self.enrich_markdown_links(&resolved_node_id, &mut content)?;
 
         content
             .structured_data
@@ -1128,6 +1116,12 @@ impl MemoryEngine {
             }
         }
 
+        let resolved_node_id = node_id
+            .clone()
+            .or_else(|| parsed.frontmatter.get("node_id").cloned())
+            .unwrap_or_else(|| derive_node_id(&content.title));
+        self.enrich_markdown_links(&resolved_node_id, &mut content)?;
+
         let mut content = normalize_content(content);
         // Apply hierarchy fields. Values from explicit arguments take
         // precedence over those parsed from the markdown frontmatter.
@@ -1159,9 +1153,6 @@ impl MemoryEngine {
             .structured_data
             .insert("kb.updated_at".to_string(), now.to_string());
 
-        let resolved_node_id = node_id
-            .or_else(|| parsed.frontmatter.get("node_id").cloned())
-            .unwrap_or_else(|| derive_node_id(&content.title));
         let version = if self.head(&resolved_node_id).is_some() {
             let patch = NodePatch {
                 title: Some(content.title.clone()),
@@ -2608,6 +2599,19 @@ impl MemoryEngine {
         Ok(())
     }
 
+    fn enrich_markdown_links(
+        &self,
+        node_id: &str,
+        content: &mut NodeContent,
+    ) -> MemoryResult<()> {
+        let (linked_body, markdown_links) = self.auto_wikilink_markdown_body(node_id, &content.body)?;
+        content.body = linked_body;
+        for link in markdown_links {
+            merge_link_by_target(&mut content.links, link);
+        }
+        Ok(())
+    }
+
     fn auto_wikilink_markdown_body(
         &self,
         node_id: &str,
@@ -2617,20 +2621,33 @@ impl MemoryEngine {
         let mut links = Vec::new();
         let mut linked_targets: HashSet<String> = HashSet::new();
         let mut token_to_targets: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut candidates: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        let mut exact_to_targets: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut candidates: Vec<MarkdownLinkCandidate> = Vec::new();
         for (target, version_id) in &self.heads {
             if target == node_id {
                 continue;
             }
+            let version = self.storage.read_object(version_id)?;
             let mut replace_keywords = vec![target.clone()];
             let mut alias_keywords = Vec::new();
-            let version = self.storage.read_object(version_id)?;
+            exact_to_targets
+                .entry(target.to_lowercase())
+                .or_default()
+                .insert(target.clone());
             let title = version.content.title.trim();
             if title.chars().count() >= 2 {
                 replace_keywords.push(title.to_string());
+                exact_to_targets
+                    .entry(title.to_lowercase())
+                    .or_default()
+                    .insert(target.clone());
             }
             for alias in extract_node_id_alias_tokens(target) {
                 token_to_targets
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(target.clone());
+                exact_to_targets
                     .entry(alias.to_lowercase())
                     .or_default()
                     .insert(target.clone());
@@ -2641,46 +2658,61 @@ impl MemoryEngine {
                     .entry(alias.to_lowercase())
                     .or_default()
                     .insert(target.clone());
+                exact_to_targets
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(target.clone());
                 alias_keywords.push(alias);
             }
-            candidates.push((target.clone(), replace_keywords, alias_keywords));
+            sort_and_dedup_keywords(&mut replace_keywords);
+            sort_and_dedup_keywords(&mut alias_keywords);
+            candidates.push(MarkdownLinkCandidate {
+                target: target.clone(),
+                replace_keywords,
+                alias_keywords,
+                importance: version.importance,
+            });
+        }
+        candidates.sort_by(|a, b| {
+            b.max_replace_keyword_len()
+                .cmp(&a.max_replace_keyword_len())
+                .then_with(|| b.max_alias_keyword_len().cmp(&a.max_alias_keyword_len()))
+                .then_with(|| b.importance.total_cmp(&a.importance))
+                .then_with(|| a.target.cmp(&b.target))
+        });
+
+        for explicit in extract_explicit_wikilinks(&out) {
+            if let Some(target) = resolve_unique_target(&exact_to_targets, &explicit.target) {
+                if linked_targets.insert(target.clone()) {
+                    links.push(Link {
+                        target,
+                        label: Some("wikilink_present".to_string()),
+                        weight: 0.85,
+                    });
+                }
+            }
         }
 
-        for (target, replace_keywords, mut alias_keywords) in candidates {
-            if linked_targets.contains(&target) {
+        for mut candidate in candidates {
+            if linked_targets.contains(&candidate.target) {
                 continue;
             }
-            if out.contains(&format!("[[{target}]]")) {
-                linked_targets.insert(target.clone());
-                links.push(Link {
-                    target: target.clone(),
-                    label: Some("wikilink_present".to_string()),
-                    weight: 0.8,
-                });
-                continue;
-            }
-            alias_keywords.retain(|k| {
+            candidate.alias_keywords.retain(|k| {
                 token_to_targets
                     .get(&k.to_lowercase())
                     .map(|set| set.len() == 1)
                     .unwrap_or(false)
             });
-            alias_keywords.sort_by(|a, b| {
-                b.chars()
-                    .count()
-                    .cmp(&a.chars().count())
-                    .then_with(|| a.cmp(b))
-            });
 
             let mut linked = false;
-            for keyword in &replace_keywords {
-                if replace_keyword_with_wikilink_once(&mut out, keyword, &target) {
+            for keyword in &candidate.replace_keywords {
+                if replace_keyword_with_wikilink_once(&mut out, keyword, &candidate.target) {
                     linked = true;
                     break;
                 }
             }
             if !linked {
-                for keyword in &alias_keywords {
+                for keyword in &candidate.alias_keywords {
                     let precise = keyword.contains('/')
                         || keyword.contains('-')
                         || keyword.contains('.')
@@ -2688,14 +2720,14 @@ impl MemoryEngine {
                     if !precise {
                         continue;
                     }
-                    if replace_keyword_with_wikilink_once(&mut out, keyword, &target) {
+                    if replace_keyword_with_wikilink_once(&mut out, keyword, &candidate.target) {
                         linked = true;
                         break;
                     }
                 }
             }
             if !linked {
-                for keyword in &replace_keywords {
+                for keyword in &candidate.replace_keywords {
                     if contains_keyword_with_boundary(&out, keyword) {
                         linked = true;
                         break;
@@ -2703,17 +2735,17 @@ impl MemoryEngine {
                 }
             }
             if !linked {
-                for keyword in &alias_keywords {
-                    if contains_keyword_with_boundary(&out, keyword) {
+                for keyword in &candidate.alias_keywords {
+                    if contains_keyword_with_boundary_anywhere(&out, keyword) {
                         linked = true;
                         break;
                     }
                 }
             }
             if linked {
-                linked_targets.insert(target.clone());
+                linked_targets.insert(candidate.target.clone());
                 links.push(Link {
-                    target,
+                    target: candidate.target,
                     label: Some("auto_keyword".to_string()),
                     weight: 0.75,
                 });
@@ -3548,6 +3580,85 @@ fn temporal_proximity_score(left_ts: u64, right_ts: u64) -> f32 {
     1.0 / (1.0 + days)
 }
 
+#[derive(Debug, Clone)]
+struct MarkdownLinkCandidate {
+    target: String,
+    replace_keywords: Vec<String>,
+    alias_keywords: Vec<String>,
+    importance: f32,
+}
+
+impl MarkdownLinkCandidate {
+    fn max_replace_keyword_len(&self) -> usize {
+        self.replace_keywords
+            .iter()
+            .map(|keyword| keyword.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn max_alias_keyword_len(&self) -> usize {
+        self.alias_keywords
+            .iter()
+            .map(|keyword| keyword.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExplicitWikilinkRef {
+    target: String,
+}
+
+fn merge_link_by_target(links: &mut Vec<Link>, incoming: Link) {
+    if let Some(existing) = links.iter_mut().find(|link| link.target == incoming.target) {
+        if incoming.weight > existing.weight {
+            existing.weight = incoming.weight;
+        }
+        if link_label_priority(incoming.label.as_deref()) > link_label_priority(existing.label.as_deref()) {
+            existing.label = incoming.label;
+        } else if existing.label.is_none() {
+            existing.label = incoming.label;
+        }
+        return;
+    }
+    links.push(incoming);
+}
+
+fn link_label_priority(label: Option<&str>) -> u8 {
+    match label.unwrap_or("") {
+        "wikilink_present" => 3,
+        "auto_keyword" => 2,
+        _ => 1,
+    }
+}
+
+fn sort_and_dedup_keywords(keywords: &mut Vec<String>) {
+    keywords.retain(|keyword| keyword.trim().chars().count() >= 2);
+    keywords.sort_by(|a, b| {
+        b.chars()
+            .count()
+            .cmp(&a.chars().count())
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+            .then_with(|| a.cmp(b))
+    });
+    let mut seen = HashSet::new();
+    keywords.retain(|keyword| seen.insert(keyword.to_lowercase()));
+}
+
+fn resolve_unique_target(
+    exact_to_targets: &HashMap<String, HashSet<String>>,
+    keyword: &str,
+) -> Option<String> {
+    let normalized = keyword.trim().to_lowercase();
+    let targets = exact_to_targets.get(&normalized)?;
+    if targets.len() != 1 {
+        return None;
+    }
+    targets.iter().next().cloned()
+}
+
 fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: &str) -> bool {
     let needle = keyword.trim();
     if needle.chars().count() < 2 {
@@ -3556,7 +3667,9 @@ fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: 
 
     let mut cursor = 0usize;
     while let Some((start, end)) = find_keyword_span(text, needle, cursor) {
-        if is_inside_existing_wikilink(text, start) {
+        if is_inside_existing_wikilink(text, start)
+            || overlaps_protected_markdown_span(text, start, end)
+        {
             cursor = end;
             continue;
         }
@@ -3571,6 +3684,28 @@ fn replace_keyword_with_wikilink_once(text: &mut String, keyword: &str, target: 
 }
 
 fn contains_keyword_with_boundary(text: &str, keyword: &str) -> bool {
+    let needle = keyword.trim();
+    if needle.chars().count() < 2 {
+        return false;
+    }
+    let mut cursor = 0usize;
+    while let Some((start, end)) = find_keyword_span(text, needle, cursor) {
+        if is_inside_existing_wikilink(text, start)
+            || overlaps_protected_markdown_span(text, start, end)
+        {
+            cursor = end;
+            continue;
+        }
+        if !is_token_boundary(text, start, end) {
+            cursor = end;
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn contains_keyword_with_boundary_anywhere(text: &str, keyword: &str) -> bool {
     let needle = keyword.trim();
     if needle.chars().count() < 2 {
         return false;
@@ -3730,6 +3865,206 @@ fn extract_url_aliases(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn extract_explicit_wikilinks(text: &str) -> Vec<ExplicitWikilinkRef> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            let inner_start = i + 2;
+            if let Some(rel_end) = text[inner_start..].find("]]") {
+                let inner_end = inner_start + rel_end;
+                let inner = text[inner_start..inner_end].trim();
+                let target = inner
+                    .split_once('|')
+                    .map(|(left, _)| left.trim())
+                    .unwrap_or(inner);
+                if !target.is_empty() {
+                    out.push(ExplicitWikilinkRef {
+                        target: target.to_string(),
+                    });
+                }
+                i = inner_end + 2;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn overlaps_protected_markdown_span(text: &str, start: usize, end: usize) -> bool {
+    collect_protected_markdown_spans(text)
+        .into_iter()
+        .any(|(span_start, span_end)| start < span_end && end > span_start)
+}
+
+fn collect_protected_markdown_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    collect_fenced_code_spans(text, &mut spans);
+    collect_inline_code_spans(text, &mut spans);
+    collect_markdown_link_spans(text, &mut spans);
+    collect_explicit_wikilink_spans(text, &mut spans);
+    collect_url_spans(text, &mut spans);
+    normalize_spans(spans)
+}
+
+fn collect_fenced_code_spans(text: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'`' && bytes[i + 1] == b'`' && bytes[i + 2] == b'`' {
+            let start = i;
+            let search_from = i + 3;
+            if let Some(rel_end) = text[search_from..].find("```") {
+                let end = search_from + rel_end + 3;
+                spans.push((start, end));
+                i = end;
+            } else {
+                spans.push((start, text.len()));
+                break;
+            }
+            continue;
+        }
+        i += text[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+}
+
+fn collect_inline_code_spans(text: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let tick_count = bytes[i..]
+                .iter()
+                .take_while(|byte| **byte == b'`')
+                .count();
+            if tick_count >= 3 {
+                i += tick_count;
+                continue;
+            }
+            let delimiter = "`".repeat(tick_count);
+            let start = i;
+            let search_from = i + tick_count;
+            if let Some(rel_end) = text[search_from..].find(&delimiter) {
+                let end = search_from + rel_end + tick_count;
+                spans.push((start, end));
+                i = end;
+                continue;
+            }
+        }
+        i += text[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+}
+
+fn collect_markdown_link_spans(text: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let is_image = bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[';
+        let start = if is_image { i + 1 } else { i };
+        if bytes[start] == b'[' && (start + 1 >= bytes.len() || bytes[start + 1] != b'[') {
+            if let Some(close_bracket) = text[start + 1..].find(']') {
+                let text_end = start + 1 + close_bracket;
+                if text_end + 1 < bytes.len() && bytes[text_end + 1] == b'(' {
+                    let mut depth = 0usize;
+                    let mut j = text_end + 1;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'(' => depth += 1,
+                            b')' => {
+                                if depth == 0 {
+                                    break;
+                                }
+                                depth -= 1;
+                                if depth == 0 {
+                                    let span_start = if is_image { i } else { start };
+                                    spans.push((span_start, j + 1));
+                                    i = j + 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                    if i == j + 1 {
+                        continue;
+                    }
+                }
+            }
+        }
+        i += text[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+}
+
+fn collect_explicit_wikilink_spans(text: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            let search_from = i + 2;
+            if let Some(rel_end) = text[search_from..].find("]]") {
+                let end = search_from + rel_end + 2;
+                spans.push((i, end));
+                i = end;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+}
+
+fn collect_url_spans(text: &str, spans: &mut Vec<(usize, usize)>) {
+    const PREFIXES: [&str; 2] = ["https://", "http://"];
+    let mut i = 0usize;
+    while i < text.len() {
+        let slice = &text[i..];
+        let Some(prefix) = PREFIXES.iter().find(|prefix| slice.starts_with(**prefix)) else {
+            i += text[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+            continue;
+        };
+        let start = i;
+        let mut end = i + prefix.len();
+        for ch in text[end..].chars() {
+            if ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`') {
+                break;
+            }
+            end += ch.len_utf8();
+        }
+        while end > start {
+            let ch = text[..end].chars().next_back().unwrap_or_default();
+            if matches!(ch, '.' | ',' | ';' | ':' | '!' | '?') {
+                end -= ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+        if end > start {
+            spans.push((start, end));
+        }
+        i = end.max(start + prefix.len());
+    }
+}
+
+fn normalize_spans(mut spans: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    spans.retain(|(start, end)| start < end);
+    spans.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some((last_start, last_end)) if start <= *last_end => {
+                *last_start = (*last_start).min(start);
+                *last_end = (*last_end).max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 fn is_inside_existing_wikilink(text: &str, start: usize) -> bool {
@@ -4696,6 +5031,191 @@ Notable repos include `kortix-ai/suna`.
                 .links
                 .iter()
                 .any(|link| link.target == "github-kortix-suna")
+        );
+    }
+
+    #[test]
+    fn agent_upsert_markdown_prefers_more_specific_keyword_match() {
+        let dir = temp_data_dir("agent-upsert-specific-keyword-link");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "rust",
+                NodeContent {
+                    title: "Rust".to_string(),
+                    summary: "Rust programming language".to_string(),
+                    body: "systems programming".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["rust".to_string()],
+                    ..Default::default()
+                },
+                1.4,
+            )
+            .expect("create rust");
+
+        engine
+            .create_node(
+                "rust_memory_engine",
+                NodeContent {
+                    title: "Rust Memory Engine".to_string(),
+                    summary: "Rust implementation of an append-only memory engine.".to_string(),
+                    body: "append-only versioned knowledge storage".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["rust memory engine".to_string()],
+                    ..Default::default()
+                },
+                2.0,
+            )
+            .expect("create rust memory engine");
+
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "draft".to_string(),
+            markdown: "# Notes\n\nRust Memory Engine keeps versions auditable.\n".to_string(),
+            importance: 1.0,
+            agent_id: "agent-main".to_string(),
+            reason: "补充实现说明细节".to_string(),
+            source: "user_request".to_string(),
+            parent_node: None,
+            node_type: None,
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(created.content.body.contains("[[rust_memory_engine]] keeps versions"));
+        assert!(!created.content.body.contains("[[rust]] Memory Engine"));
+        assert!(
+            created
+                .content
+                .links
+                .iter()
+                .any(|link| link.target == "rust_memory_engine")
+        );
+        assert!(
+            !created
+                .content
+                .links
+                .iter()
+                .any(|link| link.target == "rust")
+        );
+    }
+
+    #[test]
+    fn agent_upsert_markdown_resolves_explicit_wikilinks_to_graph_links() {
+        let dir = temp_data_dir("agent-upsert-explicit-wikilink-link");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "rust_memory_engine",
+                NodeContent {
+                    title: "Rust Memory Engine".to_string(),
+                    summary: "Rust implementation of append-only memory engine.".to_string(),
+                    body: "append-only versioned knowledge storage".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["rust memory engine".to_string()],
+                    ..Default::default()
+                },
+                2.0,
+            )
+            .expect("create related node");
+
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "draft".to_string(),
+            markdown: "# Notes\n\nSee [[Rust Memory Engine]] and [[rust_memory_engine|engine notes]].\n".to_string(),
+            importance: 1.0,
+            agent_id: "agent-main".to_string(),
+            reason: "记录显式引用关系".to_string(),
+            source: "user_request".to_string(),
+            parent_node: None,
+            node_type: None,
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(created.content.body.contains("[[Rust Memory Engine]]"));
+        assert!(created
+            .content
+            .body
+            .contains("[[rust_memory_engine|engine notes]]"));
+        let links: Vec<&Link> = created
+            .content
+            .links
+            .iter()
+            .filter(|link| link.target == "rust_memory_engine")
+            .collect();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label.as_deref(), Some("wikilink_present"));
+    }
+
+    #[test]
+    fn agent_upsert_markdown_skips_keywords_inside_code_links_and_urls() {
+        let dir = temp_data_dir("agent-upsert-protected-keyword-spans");
+        let mut engine = MemoryEngine::open(&dir).expect("open engine");
+
+        engine
+            .create_node(
+                "rust_memory_engine",
+                NodeContent {
+                    title: "rust_memory_engine".to_string(),
+                    summary: "Rust implementation of append-only memory engine.".to_string(),
+                    body: "append-only versioned knowledge storage".to_string(),
+                    structured_data: BTreeMap::new(),
+                    links: vec![],
+                    highlights: vec!["rust_memory_engine".to_string()],
+                    ..Default::default()
+                },
+                2.0,
+            )
+            .expect("create related node");
+
+        let markdown = r#"# Notes
+
+Inline code: `rust_memory_engine`
+
+```txt
+rust_memory_engine
+```
+
+[rust_memory_engine](https://example.com/docs)
+
+https://example.com/rust_memory_engine
+"#;
+
+        let response = engine.execute_action(ToolAction::AgentUpsertMarkdown {
+            node_id: "draft".to_string(),
+            markdown: markdown.to_string(),
+            importance: 1.0,
+            agent_id: "agent-main".to_string(),
+            reason: "检查 markdown 保护区域".to_string(),
+            source: "user_request".to_string(),
+            parent_node: None,
+            node_type: None,
+        });
+
+        let created = match response {
+            ToolResponse::Version { version } => version,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(created.content.body.contains("`rust_memory_engine`"));
+        assert!(created.content.body.contains("[rust_memory_engine](https://example.com/docs)"));
+        assert!(created
+            .content
+            .body
+            .contains("https://example.com/rust_memory_engine"));
+        assert!(
+            !created
+                .content
+                .links
+                .iter()
+                .any(|link| link.target == "rust_memory_engine")
         );
     }
 
